@@ -2,9 +2,9 @@ use bevy::asset::LoadState;
 use bevy::gltf::{GltfAssetLabel, GltfMaterial};
 use bevy::prelude::*;
 
-use super::config::{ANIMATED_MODEL, STATIC_MODEL};
+use super::config::MarkerModelSet;
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct MarkerAssets {
     pub static_mesh: Handle<Mesh>,
     pub animated_material_source: Handle<GltfMaterial>,
@@ -16,34 +16,53 @@ pub struct MarkerAssets {
     pub ready: bool,
 }
 
-pub fn load_marker_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let static_mesh = asset_server
-        .load(GltfAssetLabel::Primitive { mesh: 0, primitive: 0 }.from_asset(STATIC_MODEL));
-    let animated_material_source = asset_server.load(
-        GltfAssetLabel::Material {
-            index: 0,
-            is_scale_inverted: false,
-        }
-        .from_asset(ANIMATED_MODEL),
-    );
-    let static_material_source = asset_server.load(
-        GltfAssetLabel::Material {
-            index: 0,
-            is_scale_inverted: false,
-        }
-        .from_asset(STATIC_MODEL),
-    );
+impl MarkerAssets {
+    pub fn load(asset_server: &AssetServer, models: &MarkerModelSet) -> Self {
+        let static_mesh = asset_server.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(models.still),
+        );
+        let animated_material_source = asset_server.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(models.animated),
+        );
+        let static_material_source = asset_server.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(models.still),
+        );
 
-    commands.insert_resource(MarkerAssets {
-        static_mesh,
-        animated_material_source,
-        static_material_source,
-        animated_material: Handle::default(),
-        static_material: Handle::default(),
-        materials_ready: false,
-        static_mesh_ready: false,
-        ready: false,
-    });
+        Self {
+            static_mesh,
+            animated_material_source,
+            static_material_source,
+            animated_material: Handle::default(),
+            static_material: Handle::default(),
+            materials_ready: false,
+            static_mesh_ready: false,
+            ready: false,
+        }
+    }
+}
+
+pub fn load_marker_assets(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    models: Res<MarkerModelSet>,
+) {
+    info!(
+        "stress marker models: {} (animated), {} (static), lod={}",
+        models.animated, models.still, models.lod
+    );
+    commands.insert_resource(MarkerAssets::load(&asset_server, &models));
 }
 
 pub fn finalize_marker_assets(

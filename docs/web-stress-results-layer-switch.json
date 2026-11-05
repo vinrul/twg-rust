@@ -1,0 +1,64 @@
+{
+  "generatedAt": "2026-11-05T04:43:56.002Z",
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002182) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "webglVersion": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+  "headless": true,
+  "warmupSecs": 3,
+  "sampleSecs": 3,
+  "zoom": 19,
+  "layer": "osm",
+  "lod": true,
+  "diagnostics": {
+    "tileRequests": 81,
+    "requestZooms": [
+      "19"
+    ],
+    "hosts": [
+      "tile.openstreetmap.org"
+    ],
+    "cacheEntries": 162,
+    "cacheNames": [
+      "twg-tiles-v1"
+    ],
+    "sample": [
+      "https://tile.openstreetmap.org/19/429949/274783.png",
+      "https://tile.openstreetmap.org/19/429948/274783.png",
+      "https://tile.openstreetmap.org/19/429950/274783.png",
+      "https://tile.openstreetmap.org/19/429951/274783.png",
+      "https://tile.openstreetmap.org/19/429952/274783.png"
+    ]
+  },
+  "switchedDiagnostics": {
+    "tileRequests": 162,
+    "requestZooms": [
+      "19"
+    ],
+    "hosts": [
+      "server.arcgisonline.com",
+      "tile.openstreetmap.org"
+    ],
+    "cacheEntries": 243,
+    "cacheNames": [
+      "twg-tiles-v1"
+    ],
+    "sample": [
+      "https://tile.openstreetmap.org/19/429949/274783.png",
+      "https://tile.openstreetmap.org/19/429948/274783.png",
+      "https://tile.openstreetmap.org/19/429950/274783.png",
+      "https://tile.openstreetmap.org/19/429951/274783.png",
+      "https://tile.openstreetmap.org/19/429952/274783.png"
+    ]
+  },
+  "results": [
+    {
+      "mode": "static",
+      "modeLabel": "Static",
+      "count": 1000,
+      "fps": 99.93,
+      "worstFrameMs": 13.9,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Static count=1000 fps=99.93 worst_ms=13.90",
+      "seconds": 16.3
+    }
+  ]
+}

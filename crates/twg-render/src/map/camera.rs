@@ -34,11 +34,7 @@ pub fn update_camera_transform(
     let pitch = state.pitch_degrees.to_radians();
     let bearing = -state.bearing_degrees.to_radians();
     let offset = Quat::from_rotation_y(bearing)
-        * Vec3::new(
-            0.0,
-            distance * pitch.cos(),
-            distance * pitch.sin(),
-        );
+        * Vec3::new(0.0, distance * pitch.cos(), distance * pitch.sin());
     let up = Quat::from_rotation_y(bearing) * Vec3::new(0.0, pitch.sin(), -pitch.cos());
 
     for (mut transform, mut projection) in &mut cameras {

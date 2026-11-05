@@ -7,9 +7,10 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
 tower-http.workspace = true
 tracing.workspace = true
+ureq = "3.3"
 twg-auth.workspace = true
 twg-contracts.workspace = true
 twg-domain.workspace = true

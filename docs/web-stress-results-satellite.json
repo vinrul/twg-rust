@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-11-05T04:01:16.915Z",
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002182) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "webglVersion": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+  "headless": true,
+  "warmupSecs": 3,
+  "sampleSecs": 5,
+  "zoom": 19,
+  "layer": "satellite",
+  "lod": true,
+  "diagnostics": {
+    "tileRequests": 81,
+    "requestZooms": [
+      "19"
+    ],
+    "cacheEntries": 162,
+    "cacheNames": [
+      "twg-tiles-v1"
+    ],
+    "sample": [
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/19/274783/429948",
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/19/274783/429949",
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/19/274783/429950",
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/19/274783/429951",
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/19/274783/429952"
+    ]
+  },
+  "results": [
+    {
+      "mode": "static",
+      "modeLabel": "Static",
+      "count": 1000,
+      "fps": 100.02,
+      "worstFrameMs": 12.9,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Static count=1000 fps=100.02 worst_ms=12.90",
+      "seconds": 18
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-11-05T04:00:44.904Z",
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002182) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "webglVersion": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+  "headless": true,
+  "warmupSecs": 3,
+  "sampleSecs": 3,
+  "zoom": 26,
+  "layer": "osm",
+  "lod": true,
+  "diagnostics": {
+    "tileRequests": 25,
+    "requestZooms": [
+      "19"
+    ],
+    "cacheEntries": 106,
+    "cacheNames": [
+      "twg-tiles-v1"
+    ],
+    "sample": [
+      "https://tile.openstreetmap.org/19/429951/274785.png",
+      "https://tile.openstreetmap.org/19/429950/274785.png",
+      "https://tile.openstreetmap.org/19/429953/274785.png",
+      "https://tile.openstreetmap.org/19/429952/274785.png",
+      "https://tile.openstreetmap.org/19/429954/274785.png"
+    ]
+  },
+  "results": [
+    {
+      "mode": "static",
+      "modeLabel": "Static",
+      "count": 1000,
+      "fps": 99.99,
+      "worstFrameMs": 12.7,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Static count=1000 fps=99.99 worst_ms=12.70",
+      "seconds": 14.8
+    }
+  ]
+}

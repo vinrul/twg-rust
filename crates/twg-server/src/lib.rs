@@ -2,10 +2,13 @@ use axum::{Json, Router, routing::get};
 use tower_http::trace::TraceLayer;
 use twg_contracts::HealthResponse;
 
+pub mod tiles;
+
 pub fn router() -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .merge(tiles::router())
         .layer(TraceLayer::new_for_http())
 }
 

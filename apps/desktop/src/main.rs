@@ -4,8 +4,8 @@ use bevy::window::{PresentMode, WindowPlugin};
 use bevy::winit::WinitSettings;
 use twg_map::{BaseLayer, MapCameraState};
 use twg_render::{
-    BaseLayerResource, DEFAULT_STRESS_ZOOM, DracoProbe, MapCameraResource, StressMode, StressRun,
-    TacticalRenderPlugin,
+    BaseLayerResource, DEFAULT_STRESS_ZOOM, DracoProbe, MapCameraResource, MarkerModelSet,
+    MemoryProbe, StressMode, StressRun, TacticalRenderPlugin, TileProxyConfig,
 };
 use twg_ui::TacticalUiPlugin;
 
@@ -32,6 +32,10 @@ fn main() {
     )
     .insert_resource(WinitSettings::continuous());
 
+    if let Ok(proxy) = std::env::var("TWG_TILE_PROXY") {
+        app.insert_resource(TileProxyConfig(Some(proxy)));
+    }
+
     if let Some(run) = cli.stress {
         app.insert_resource(run);
     }
@@ -40,6 +44,10 @@ fn main() {
             exit_when_done: true,
         });
     }
+    if cli.memory_probe {
+        app.insert_resource(MemoryProbe::new(true));
+    }
+    app.insert_resource(cli.models);
 
     app.add_plugins((TacticalRenderPlugin, TacticalUiPlugin));
 
@@ -65,7 +73,9 @@ fn main() {
 
 struct CliArgs {
     stress: Option<StressRun>,
+    models: MarkerModelSet,
     probe_draco: bool,
+    memory_probe: bool,
     zoom: Option<f32>,
     pitch: Option<f32>,
     bearing: Option<f32>,
@@ -80,6 +90,8 @@ impl CliArgs {
         let mut benchmark = false;
         let mut exit = false;
         let mut probe_draco = false;
+        let mut memory_probe = false;
+        let mut lod = cfg!(target_arch = "wasm32");
         let mut zoom = DEFAULT_STRESS_ZOOM;
         let mut warmup_secs = 3.0f32;
         let mut sample_secs = 8.0f32;
@@ -152,6 +164,9 @@ impl CliArgs {
                 }
                 "--exit" => exit = true,
                 "--probe-draco" => probe_draco = true,
+                "--memory-probe" => memory_probe = true,
+                "--stress-lod" | "--lod" => lod = true,
+                "--stress-full" | "--full" => lod = false,
                 _ => {}
             }
             index += 1;
@@ -165,11 +180,28 @@ impl CliArgs {
             sample_secs,
             exit_when_done: exit || benchmark,
             zoom,
+            pitch_degrees: pitch,
+            bearing_degrees: bearing,
+        });
+        let stress = stress.or_else(|| {
+            memory_probe.then_some(StressRun {
+                count: 10_000,
+                mode: StressMode::Static,
+                benchmark: false,
+                warmup_secs: 0.0,
+                sample_secs: 0.0,
+                exit_when_done: false,
+                zoom,
+                pitch_degrees: pitch,
+                bearing_degrees: bearing,
+            })
         });
 
         Self {
             stress,
+            models: MarkerModelSet::for_lod(lod),
             probe_draco,
+            memory_probe,
             zoom: view_zoom,
             pitch,
             bearing,

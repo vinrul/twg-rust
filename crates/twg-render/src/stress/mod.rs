@@ -2,20 +2,27 @@ mod assets;
 mod bake;
 mod benchmark;
 mod config;
+mod memory;
 mod probe;
+mod reload;
+mod selection;
 mod spawn;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
 
 use bevy::prelude::*;
+use bevy::transform::TransformSystems;
 
 pub use benchmark::{BenchPhase, BenchResult, StressBenchmark};
 pub use config::{
-    ANIMATED_MODEL, DEFAULT_STRESS_ZOOM, STATIC_MODEL, STRESS_COUNTS, StressMode, StressRequest,
-    StressRun, StressState,
+    ANIMATED_MODEL, ANIMATED_MODEL_LOD, DEFAULT_STRESS_ZOOM, MarkerModelReload, MarkerModelSet,
+    STATIC_MODEL, STATIC_MODEL_LOD, STRESS_COUNTS, StressMode, StressRequest, StressRun,
+    StressState,
 };
+pub use memory::{MemoryProbe, MemoryProbePhase, MemoryStats};
 pub use probe::DracoProbe;
+pub use selection::SelectionState;
 
 pub const BAKED_FRAMES: usize = 20;
 
@@ -32,27 +39,48 @@ impl Plugin for StressPlugin {
         app.init_resource::<StressRequest>()
             .init_resource::<StressState>()
             .init_resource::<StressBenchmark>()
+            .init_resource::<MarkerModelSet>()
+            .init_resource::<MarkerModelReload>()
+            .init_resource::<MemoryStats>()
+            .init_resource::<SelectionState>()
             .add_systems(
                 Startup,
                 (
+                    resolve_marker_models,
                     bake::setup_bake,
                     assets::load_marker_assets,
                     auto_start_from_run,
                     probe::setup_probe,
-                ),
+                    selection::spawn_selection_assets,
+                )
+                    .chain(),
             )
             .add_systems(
                 Update,
                 (
+                    keyboard_toggle_lod,
+                    keyboard_clear,
+                    reload::reload_marker_models,
                     assets::finalize_marker_assets,
                     bake::advance_bake_time,
                     spawn::apply_stress_request,
+                    memory::sample_memory,
+                    memory::probe_memory,
                     spawn::animate_instanced_markers,
                     benchmark::tick_benchmark,
                 )
                     .chain(),
             )
             .add_systems(Update, probe::report_probe)
+            .add_systems(
+                PostUpdate,
+                (
+                    selection::validate_selection,
+                    selection::handle_selection_click,
+                )
+                    .chain()
+                    .after(TransformSystems::Propagate),
+            )
             .add_systems(Last, bake::bake_frame)
             .add_observer(bake::on_bake_template_ready);
 
@@ -62,11 +90,52 @@ impl Plugin for StressPlugin {
     }
 }
 
-fn auto_start_from_run(
-    run: Option<Res<StressRun>>,
-    mut request: ResMut<StressRequest>,
-) {
+fn auto_start_from_run(run: Option<Res<StressRun>>, mut request: ResMut<StressRequest>) {
     if let Some(run) = run {
         request.0 = Some(*run);
     }
+}
+
+/// Chooses the marker mesh set before the asset handles are created.
+///
+/// Native builds keep the full-detail mesh. Browser builds default to the
+/// lower-detail proxy because WebGL2 is triangle-throughput bound, and the
+/// `lod` query parameter can still override the choice per run.
+/// Keyboard equivalent of the LOD button: `M` switches full <-> LOD.
+fn keyboard_toggle_lod(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut models: ResMut<MarkerModelSet>,
+    mut reload: ResMut<MarkerModelReload>,
+    state: Res<StressState>,
+) {
+    if keys.just_pressed(KeyCode::KeyM) {
+        let lod = !models.lod;
+        reload.request(&mut models, &state, lod);
+    }
+}
+
+fn keyboard_clear(keys: Res<ButtonInput<KeyCode>>, mut request: ResMut<StressRequest>) {
+    if keys.just_pressed(KeyCode::KeyC) {
+        request.0 = Some(StressRun {
+            count: 0,
+            mode: StressMode::default(),
+            benchmark: false,
+            warmup_secs: 0.0,
+            sample_secs: 0.0,
+            exit_when_done: false,
+            zoom: DEFAULT_STRESS_ZOOM,
+            pitch_degrees: None,
+            bearing_degrees: None,
+        });
+    }
+}
+
+fn resolve_marker_models(mut models: ResMut<MarkerModelSet>) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(lod) = web::lod_preference() {
+        *models = MarkerModelSet::for_lod(lod);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = &mut models;
 }

@@ -4353,6 +4353,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-stats"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c73f5c649995a115e1a0220b35e4df0a1294500477f97a91d0660fb5abeb574a"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5581,7 +5591,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6749,6 +6759,7 @@ name = "twg-render"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "memory-stats",
  "twg-map",
  "web-sys",
 ]
@@ -6768,6 +6779,7 @@ dependencies = [
  "twg-contracts",
  "twg-domain",
  "twg-storage",
+ "ureq",
 ]
 
 [[package]]
@@ -6909,6 +6921,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea7109cdcd5864d4eeb1b58a1648dc9bf520360d7af16ec26d0a9354bafcfc0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "log",
  "percent-encoding",
  "rustls",

@@ -322,8 +322,8 @@ mod tests {
         let origin = GeoPoint::new(115.225, -8.648);
         let target = GeoPoint::new(115.226, -8.649);
         let offset = target.local_offset(origin).unwrap();
-        let round_trip = GeoPoint::from_local_offset(origin, offset.east_meters, offset.north_meters)
-            .unwrap();
+        let round_trip =
+            GeoPoint::from_local_offset(origin, offset.east_meters, offset.north_meters).unwrap();
         assert!((round_trip.longitude - target.longitude).abs() < 1.0e-9);
         assert!((round_trip.latitude - target.latitude).abs() < 1.0e-9);
     }

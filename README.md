@@ -16,19 +16,29 @@ dari workspace ini. Baseline, kontrak, fixture, dan hasil capture berada di
 Fase 1: workspace, batas crate, server health scaffold, desktop/web scaffold,
 dan CI native + WASM.
 Fase 2: kontrak domain/DTO modular dan golden contract tests.
-Fase 3: spike `twg-map` — tile OSM, kamera, cursor lat/lon, marker GLTF
-non-Draco, dan overlay FPS. Native sudah berjalan; WASM compile dan
-`trunk build` lulus. Runtime browser belum diuji.
+Fase 3: spike `twg-map` — tile OSM dan Esri, overzoom sampai zoom 26,
+kamera, cursor lat/lon, marker GLTF, overlay FPS, cache tile, dan stress test
+1k/5k/10k marker. Native dan Chrome WebGL2 sudah diuji. Hasil web: 9/9 skenario
+PASS, minimum 47,19 FPS pada 10.000 marker. Input web sudah stepwise (wheel
+Line/Pixel dinormalisasi), pan mengikuti bearing kamera (diuji pada 45°),
+marker memakai `GeoAnchor` agar ikut saat peta di-pan, dan tersedia tombol **Full 9.6k / LOD 2.4k** (shortcut `M`). Klik
+marker memilih model dengan selection ring; memori native dan web sudah diukur
+lewat `--memory-probe` / `?memory=1`.
 
-`cargo check`/`build` WebAssembly dan `trunk build` sudah berhasil. Bundle web
-masih debug dan berukuran besar; optimasi release dikerjakan pada fase
-packaging.
+Fase 3 juga mencakup fly-to (double-click, `N` ke utara), panel kompas/zoom,
+quadtree tile cover, placeholder/error tile, tile proxy server-side dengan rate
+limit, serta overlay line, polygon/building extrusion, dan floor plan. Detail
+teknis dan angka terbaru ada di [laporan Fase 3](docs/PHASE3_REPORT.md).
+
+`cargo check`/`build` WebAssembly dan `trunk build --cargo-profile
+wasm-release` sudah berhasil. Bundle WASM release 46 MB; optimasi
+`wasm-opt`/Brotli dikerjakan pada fase packaging.
 
 Belum diimplementasikan pada fase ini:
 
 - Auth PASETO/bcrypt.
 - Query SQLx dan migrasi.
-- Object picking/selection dan editor peta.
+- Editor peta dan authoring line/polygon/floor plan.
 - Animasi runtime penuh.
 - UI editor.
 - WebSocket server.
@@ -42,7 +52,7 @@ crates/
   twg-contracts/       envelope respons dan kontrak bersama
   twg-auth/            konfigurasi auth dan error
   twg-storage/         koneksi PostgreSQL/SQLx
-  twg-server/          router Axum dan health endpoint
+  twg-server/          router Axum, health endpoint, dan tile proxy
   twg-client/          state client
   twg-map/             geo, tile source/cover, dan kamera peta
   twg-render/          plugin Bevy, tile OSM, marker, kamera
@@ -52,6 +62,8 @@ apps/
   server/              binary server
   desktop/              binary native Bevy
   web/                  library WASM + Trunk
+tools/
+  web-stress.mjs       harness stress browser (Chrome DevTools Protocol)
 ```
 
 Aturan dependency:
@@ -66,7 +78,7 @@ Aturan dependency:
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p twg-domain -p twg-contracts -p twg-auth -p twg-map -p twg-client -p twg-server
+cargo test -p twg-domain -p twg-contracts -p twg-auth -p twg-map -p twg-client -p twg-server -p twg-render
 cargo check -p twg-web --target wasm32-unknown-unknown
 ```
 
@@ -82,8 +94,8 @@ Desktop:
 cargo run -p twg-desktop
 ```
 
-Desktop mencari aset di `../../assets` relatif terhadap executable. Override
-dengan `TWG_ASSET_PATH` bila perlu.
+Desktop mencari aset di `../../assets` relatif terhadap direktori kerja.
+Override dengan `TWG_ASSET_PATH` bila perlu.
 
 Web:
 
@@ -94,10 +106,22 @@ trunk build
 trunk serve
 ```
 
-Runtime browser belum diverifikasi otomatis karena `agent-browser` belum
-terpasang di mesin pengembangan.
+Stress test web otomatis memakai Chrome DevTools Protocol tanpa dependency npm:
+
+```bash
+cd apps/web
+trunk build --cargo-profile wasm-release
+cd ../..
+node tools/web-stress.mjs --sample=10
+```
 
 `HTTP_SERVER_ADDRESS` dapat dioverride; default `127.0.0.1:8010`.
+
+Tile proxy server-side tersedia di `GET /tiles/{layer}/{z}/{x}/{y}.png`
+(`layer`: `osm` atau `satellite`) dengan disk cache di `.tile-cache/`. Client
+web memakai route yang sama lewat `?proxy=<origin>`; desktop memakai
+`TWG_TILE_PROXY=<origin>`. Bila tidak diset, client mengambil tile langsung
+dari provider.
 
 ## Dependency policy
 
@@ -113,6 +137,7 @@ terpasang di mesin pengembangan.
 - [Laporan Fase 1](docs/PHASE1_REPORT.md)
 - [Laporan Fase 2](docs/PHASE2_REPORT.md)
 - [Laporan Fase 3](docs/PHASE3_REPORT.md)
+- [Laporan stress test web Gate G1](docs/WEB_STRESS_REPORT.md)
 - [Baseline Fase 0](baseline/phase0-report.md)
 - [Golden HTTP](baseline/golden/verification.generated.md)
 - [WebSocket baseline](baseline/golden/websocket-capture.generated.md)

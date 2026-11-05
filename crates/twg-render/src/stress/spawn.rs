@@ -5,12 +5,12 @@ use bevy::prelude::*;
 use super::assets::MarkerAssets;
 use super::bake::BakedAnimation;
 use super::benchmark::StressBenchmark;
-use super::config::{StressMarker, StressMode, StressRequest, StressState};
-use crate::map::{DemoMarker, MapCameraResource};
+use super::config::{MARKER_MODEL_SCALE, StressMarker, StressMode, StressRequest, StressState};
+use crate::map::{DemoMarker, GeoAnchor, MapCameraResource};
 
 const STRESS_SPAN_METERS: f32 = 300.0;
-const MARKER_MODEL_SCALE: f32 = 0.02;
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_stress_request(
     mut commands: Commands,
     mut request: ResMut<StressRequest>,
@@ -47,6 +47,7 @@ pub fn apply_stress_request(
 
     state.count = run.count;
     state.mode = run.mode;
+    state.zoom = run.zoom;
     state.ready = 0;
     state.active = run.count > 0;
     state.generation += 1;
@@ -58,8 +59,8 @@ pub fn apply_stress_request(
     }
 
     camera.0.set_zoom(run.zoom);
-    camera.0.pitch_degrees = 55.0;
-    camera.0.bearing_degrees = 0.0;
+    camera.0.pitch_degrees = run.pitch_degrees.unwrap_or(55.0).clamp(0.0, 85.0);
+    camera.0.bearing_degrees = run.bearing_degrees.unwrap_or(0.0).rem_euclid(360.0);
 
     let side = (run.count as f32).sqrt().ceil().max(1.0) as usize;
     let spacing = (STRESS_SPAN_METERS / side as f32).max(0.25);
@@ -75,6 +76,7 @@ pub fn apply_stress_request(
         baked.frames.len()
     );
 
+    let mut spawned = 0usize;
     for index in 0..run.count {
         let animated = run.mode.animated_share(index);
         let mesh = if animated {
@@ -89,24 +91,43 @@ pub fn apply_stress_request(
         };
         let column = (index % side) as f32;
         let row = (index / side) as f32;
+        let world_x = (column - half) * spacing;
+        let world_z = (row - half) * spacing;
+        // Anchor each marker to its geographic point so it travels with the
+        // raster when the camera center moves.
+        let Some(anchor) = GeoAnchor::new(
+            camera
+                .0
+                .world_to_geo(world_x, world_z)
+                .unwrap_or(camera.0.center),
+        ) else {
+            continue;
+        };
         let rotation = Quat::from_rotation_y((index as f32 * 0.618_034) % TAU);
         let phase = index as f32 / run.count as f32;
 
         commands.spawn((
             Mesh3d(mesh),
             MeshMaterial3d(material),
-            Transform::from_xyz((column - half) * spacing, 0.0, (row - half) * spacing)
+            Transform::from_xyz(world_x, 0.0, world_z)
                 .with_scale(Vec3::splat(MARKER_MODEL_SCALE))
                 .with_rotation(rotation),
-            StressMarker { animated, phase },
+            anchor,
+            StressMarker {
+                animated,
+                phase,
+                index,
+            },
         ));
+        spawned += 1;
     }
 
-    state.ready = run.count;
+    state.ready = spawned;
 }
 
 pub fn animate_instanced_markers(
     time: Res<Time>,
+    state: Res<StressState>,
     baked: Res<BakedAnimation>,
     mut markers: Query<(&StressMarker, &mut Mesh3d)>,
     mut accumulator: Local<f32>,
@@ -115,16 +136,21 @@ pub fn animate_instanced_markers(
         return;
     }
 
-    // WebGL2 has no GPU preprocessing, so re-batching every instance each
-    // frame is expensive. Updating at 10 Hz keeps animation moving while
-    // leaving the renderer time to draw.
-    if cfg!(target_arch = "wasm32") {
-        *accumulator += time.delta_secs();
-        if *accumulator < 0.1 {
-            return;
-        }
-        *accumulator = 0.0;
+    // Re-batching 10.000 markers is expensive on both targets. Small groups
+    // update every frame on native (and 10 Hz on WebGL2); large groups update
+    // at 10 Hz native / 5 Hz web so the renderer keeps the Gate G1 FPS floor.
+    let interval = if cfg!(target_arch = "wasm32") {
+        if state.count >= 5_000 { 0.2 } else { 0.1 }
+    } else if state.count >= 5_000 {
+        0.1
+    } else {
+        0.0
+    };
+    *accumulator += time.delta_secs();
+    if *accumulator < interval {
+        return;
     }
+    *accumulator = 0.0;
 
     let frame_count = baked.frames.len();
     let cycle = time.elapsed_secs() / baked.duration;

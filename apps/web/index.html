@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
     <title>Tactical Game 3D</title>
     <style>
       html,
@@ -18,5 +19,17 @@
   <body>
     <link data-trunk rel="rust" />
     <link data-trunk rel="copy-dir" href="../../assets" />
+    <link data-trunk rel="copy-file" href="tile-cache-sw.js" />
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", function () {
+          navigator.serviceWorker
+            .register("./tile-cache-sw.js")
+            .catch(function (error) {
+              console.warn("tile cache service worker unavailable", error);
+            });
+        });
+      }
+    </script>
   </body>
 </html>

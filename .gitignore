@@ -2,6 +2,7 @@
 /.runtime/
 **/.runtime/
 *.log
+!docs/web-stress-console*.log
 .env
 .env.*
 !.env.example
@@ -11,3 +12,4 @@ apps/web/.trunk/
 node_modules/
 coverage/
 /.web-asset-cache/
+/.tile-cache/

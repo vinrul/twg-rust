@@ -5,7 +5,7 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 
-use super::config::{ANIMATED_MODEL, BakeTemplate};
+use super::config::{BakeTemplate, MarkerModelSet};
 use super::{BAKED_FRAMES, StressAnimations};
 
 #[derive(Resource)]
@@ -24,19 +24,19 @@ pub struct BakedAnimation {
     pub ready: bool,
 }
 
-pub fn setup_bake(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
-) {
-    let clip =
-        asset_server.load(GltfAssetLabel::Animation(0).from_asset(ANIMATED_MODEL));
+pub fn begin_bake(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    graphs: &mut Assets<AnimationGraph>,
+    models: &MarkerModelSet,
+) -> (StressAnimations, BakedAnimation) {
+    let clip = asset_server.load(GltfAssetLabel::Animation(0).from_asset(models.animated));
     let (graph, index) = AnimationGraph::from_clip(clip.clone());
-    commands.insert_resource(StressAnimations {
+    let animations = StressAnimations {
         graph: graphs.add(graph),
         index,
-    });
-    commands.insert_resource(BakedAnimation {
+    };
+    let bake = BakedAnimation {
         clip,
         index,
         total_frames: BAKED_FRAMES,
@@ -49,19 +49,31 @@ pub fn setup_bake(
         duration_known: false,
         started: false,
         ready: false,
-    });
+    };
 
     commands.spawn((
-        WorldAssetRoot(
-            asset_server.load(GltfAssetLabel::Scene(0).from_asset(ANIMATED_MODEL)),
-        ),
+        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(models.animated))),
         Transform::default(),
         Visibility::Hidden,
         BakeTemplate,
         Name::new("animation bake template"),
     ));
+
+    (animations, bake)
 }
 
+pub fn setup_bake(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    models: Res<MarkerModelSet>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+) {
+    let (animations, bake) = begin_bake(&mut commands, &asset_server, &mut graphs, &models);
+    commands.insert_resource(animations);
+    commands.insert_resource(bake);
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn on_bake_template_ready(
     ready: On<WorldInstanceReady>,
     templates: Query<&BakeTemplate>,
@@ -78,14 +90,14 @@ pub fn on_bake_template_ready(
     bake.template = Some(ready.entity);
 
     for child in children.iter_descendants(ready.entity) {
-        if bake.player.is_none() {
-            if let Ok(mut player) = players.get_mut(child) {
-                player.play(animations.index).repeat().set_speed(0.0);
-                commands
-                    .entity(child)
-                    .insert(AnimationGraphHandle(animations.graph.clone()));
-                bake.player = Some(child);
-            }
+        if bake.player.is_none()
+            && let Ok(mut player) = players.get_mut(child)
+        {
+            player.play(animations.index).repeat().set_speed(0.0);
+            commands
+                .entity(child)
+                .insert(AnimationGraphHandle(animations.graph.clone()));
+            bake.player = Some(child);
         }
         if bake.skinned.is_none() && skinned_meshes.contains(child) {
             bake.skinned = Some(child);
@@ -177,6 +189,7 @@ pub fn bake_frame(
     if bake.next_frame >= bake.total_frames {
         bake.ready = true;
         commands.entity(template).despawn();
+        bake.template = None;
         info!(
             "baked {} animation frames over {:.2}s",
             bake.frames.len(),
@@ -216,9 +229,7 @@ fn build_skinned_frame(
     }
 
     let mut matrices = Vec::with_capacity(joint_count);
-    for (&entity, &inverse_bindpose) in
-        skinned.joints.iter().zip(inverse_bindposes.iter())
-    {
+    for (&entity, &inverse_bindpose) in skinned.joints.iter().zip(inverse_bindposes.iter()) {
         let global = joints.get(entity).ok()?;
         matrices.push(Mat4::from(global.affine()) * inverse_bindpose);
     }
@@ -257,7 +268,12 @@ fn build_skinned_frame(
 
     let indices = source
         .indices()
-        .map(|indices| indices.iter().map(|index| index as u32).collect::<Vec<u32>>())
+        .map(|indices| {
+            indices
+                .iter()
+                .map(|index| index as u32)
+                .collect::<Vec<u32>>()
+        })
         .unwrap_or_default();
 
     let mut mesh = Mesh::new(

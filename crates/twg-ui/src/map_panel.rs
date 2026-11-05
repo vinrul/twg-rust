@@ -29,16 +29,18 @@ pub fn draw_map_panel(
                 "center  {:.6}, {:.6}",
                 camera.center.latitude, camera.center.longitude
             ));
+            let max_tile_zoom = layer.0.max_zoom();
             ui.monospace(format!(
-                "zoom    {:.2} / max {:.0}   tile z{}",
+                "zoom    {:.2} / max {:.0}   tile z{} (provider {})",
                 camera.zoom,
                 MAX_ZOOM,
-                camera.tile_zoom()
+                camera.tile_zoom_for(max_tile_zoom),
+                max_tile_zoom
             ));
             ui.monospace(format!(
-                "scale   {:.2} m/px   tile {:.1} m",
+                "scale   {:.3} m/px   tile {:.1} m",
                 camera.meters_per_pixel(),
-                camera.tile_world_size()
+                camera.tile_world_size_for(max_tile_zoom)
             ));
             ui.monospace(format!(
                 "pitch   {:.1}°   bearing {:.1}°",
@@ -66,8 +68,8 @@ pub fn draw_map_panel(
             });
             ui.small(layer.0.attribution());
             ui.separator();
-            ui.label("Drag: pan  ·  Right-drag: orbit  ·  Wheel: zoom");
-            ui.label("WASD/arrows: pan  ·  Q/E: rotate  ·  R/F: pitch  ·  H: reset");
+            ui.label("Drag: pan  ·  Right-drag: orbit  ·  Wheel: zoom  ·  Click marker: select");
+            ui.label("WASD/arrows: pan  ·  Q/E: rotate  ·  R/F: pitch  ·  N: north  ·  H: reset");
             ui.label("L: switch base layer  ·  +/-: zoom step");
         });
 

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::geo::{GeoError, GeoPoint, TileId};
 
 pub const OSM_TILE_TEMPLATE: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -8,8 +10,9 @@ pub const ARCGIS_IMAGERY_ATTRIBUTION: &str = "Tiles © Esri — Source: Esri, i-
 pub const ARCGIS_IMAGERY_MAX_ZOOM: u8 = 19;
 pub const OSM_MAX_ZOOM: u8 = 19;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum BaseLayer {
+    #[default]
     OpenStreetMap,
     ArcGisImagery,
 }
@@ -38,6 +41,28 @@ impl BaseLayer {
         }
     }
 
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::OpenStreetMap => "osm",
+            Self::ArcGisImagery => "satellite",
+        }
+    }
+
+    pub fn tile_source_with_proxy(self, proxy: Option<&str>) -> XyzTileSource {
+        match proxy.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(base) => XyzTileSource::new(
+                format!(
+                    "{}/tiles/{}/{{z}}/{{x}}/{{y}}.png",
+                    base.trim_end_matches('/'),
+                    self.slug()
+                ),
+                self.attribution(),
+                self.max_zoom(),
+            ),
+            None => self.tile_source(),
+        }
+    }
+
     pub fn tile_source(self) -> XyzTileSource {
         match self {
             Self::OpenStreetMap => XyzTileSource::osm(),
@@ -50,12 +75,6 @@ impl BaseLayer {
             Self::OpenStreetMap => Self::ArcGisImagery,
             Self::ArcGisImagery => Self::OpenStreetMap,
         }
-    }
-}
-
-impl Default for BaseLayer {
-    fn default() -> Self {
-        Self::OpenStreetMap
     }
 }
 
@@ -141,26 +160,51 @@ pub fn cover_tiles(center: GeoPoint, zoom: u8, radius: u32) -> Result<TileCover,
     let center_x = i64::from(center_tile.x);
     let center_y = i64::from(center_tile.y);
     let radius = i64::from(radius);
-    let mut tiles = Vec::new();
 
-    for delta_y in -radius..=radius {
-        let y = center_y + delta_y;
-        if !(0..count).contains(&y) {
-            continue;
-        }
-        for delta_x in -radius..=radius {
-            let x = (center_x + delta_x).rem_euclid(count);
-            let tile = TileId {
-                zoom,
-                x: x as u32,
-                y: y as u32,
-            };
-            if !tiles.contains(&tile) {
-                tiles.push(tile);
-            }
+    let y_min = (center_y - radius).max(0);
+    let y_max = (center_y + radius).min(count - 1);
+    if y_max < y_min {
+        return Ok(TileCover {
+            zoom,
+            center: center_tile,
+            radius: radius as u32,
+            tiles: Vec::new(),
+        });
+    }
+
+    // Split the wrapped longitude range into at most two non-wrapping
+    // intervals, then run a quadtree range traversal over each interval.
+    let min_x = center_x - radius;
+    let max_x = center_x + radius;
+    let width = max_x - min_x + 1;
+    let mut intervals = Vec::new();
+    if width >= count {
+        intervals.push((0, count - 1));
+    } else {
+        let start = min_x.rem_euclid(count);
+        if start + width <= count {
+            intervals.push((start, start + width - 1));
+        } else {
+            intervals.push((start, count - 1));
+            intervals.push((0, start + width - count - 1));
         }
     }
 
+    let mut found = HashSet::new();
+    for (x_min, x_max) in intervals {
+        quadtree_cover(
+            zoom,
+            TileRange {
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+            },
+            &mut found,
+        );
+    }
+
+    let mut tiles = found.into_iter().collect::<Vec<_>>();
     tiles.sort_unstable_by_key(|tile| (tile.y, tile.x));
     Ok(TileCover {
         zoom,
@@ -168,6 +212,55 @@ pub fn cover_tiles(center: GeoPoint, zoom: u8, radius: u32) -> Result<TileCover,
         radius: radius as u32,
         tiles,
     })
+}
+
+struct TileRange {
+    x_min: i64,
+    x_max: i64,
+    y_min: i64,
+    y_max: i64,
+}
+
+fn quadtree_cover(zoom: u8, range: TileRange, found: &mut HashSet<TileId>) {
+    fn visit(
+        level: u8,
+        x: u32,
+        y: u32,
+        target: u8,
+        range: &TileRange,
+        found: &mut HashSet<TileId>,
+    ) {
+        let span = 1i64 << (target - level);
+        let tile_min_x = i64::from(x) * span;
+        let tile_max_x = tile_min_x + span - 1;
+        let tile_min_y = i64::from(y) * span;
+        let tile_max_y = tile_min_y + span - 1;
+        if tile_max_x < range.x_min
+            || tile_min_x > range.x_max
+            || tile_max_y < range.y_min
+            || tile_min_y > range.y_max
+        {
+            return;
+        }
+        if level == target {
+            found.insert(TileId { zoom: target, x, y });
+            return;
+        }
+        for child_y in 0..2 {
+            for child_x in 0..2 {
+                visit(
+                    level + 1,
+                    x * 2 + child_x,
+                    y * 2 + child_y,
+                    target,
+                    range,
+                    found,
+                );
+            }
+        }
+    }
+
+    visit(0, 0, 0, zoom, &range, found);
 }
 
 #[cfg(test)]
@@ -222,5 +315,25 @@ mod tests {
             assert_eq!(source.max_zoom(), layer.max_zoom());
             assert_eq!(source.attribution(), layer.attribution());
         }
+    }
+
+    #[test]
+    fn proxy_source_uses_the_local_tile_route() {
+        let source =
+            BaseLayer::ArcGisImagery.tile_source_with_proxy(Some("http://127.0.0.1:8010/"));
+        assert_eq!(
+            source.url(TileId::new(19, 429948, 274783).unwrap()),
+            "http://127.0.0.1:8010/tiles/satellite/19/429948/274783.png"
+        );
+        assert_eq!(source.max_zoom(), 19);
+    }
+
+    #[test]
+    fn switching_layers_cycles_back_to_the_first_layer() {
+        let mut layer = BaseLayer::default();
+        for _ in 0..BaseLayer::ALL.len() {
+            layer = layer.next();
+        }
+        assert_eq!(layer, BaseLayer::default());
     }
 }

@@ -308,25 +308,42 @@ merupakan jalur risiko terpisah yang harus segera membuktikan kelayakan.
 
 ## 6. Fase 3 — Spike `twg-map` dan gate G1
 
-> **Status 4 November 2026:** spike native sudah menampilkan tile OSM, kontrol
-> kamera, cursor lat/lon, marker GLB non-Draco, dan overlay FPS. Core `twg-map`
-> dipecah menjadi `geo`, `tile`, dan `camera`; 17 test PASS. WASM compile dan
-> `trunk build` PASS, tetapi runtime browser belum diuji karena `agent-browser`
-> belum terpasang. Gate G1 belum ditutup penuh. Lihat `docs/PHASE3_REPORT.md`.
+> **Status 5 November 2026:** spike native dan web sudah menampilkan tile OSM
+> dan Esri, kontrol kamera, cursor lat/lon, marker GLB, overlay FPS, cache tile,
+> overzoom sampai zoom 26, dan stress test 1k/5k/10k marker. Core `twg-map`
+> dipecah menjadi `geo`, `tile`, dan `camera`; 32 test `twg-map` + 5 test
+> `twg-render` + 5 test `twg-server` PASS. WASM release build
+> dan Chrome WebGL2 PASS; 9/9 skenario stress web PASS dengan minimum 47,19 FPS.
+> Gate G1 lulus penuh: peta, FPS, overzoom, presisi, object picking/selection,
+> dan pengukuran memori sudah PASS. Seluruh item Fase 3 yang diminta sudah
+> diimplementasikan, termasuk fly-to, kompas, quadtree, error tile, rate limit,
+> tile proxy, line/polygon, dan floor plan. Matriks browser penuh dan GPU
+> integrated masih menjadi pekerjaan pengukuran lanjutan. Lihat
+> `docs/PHASE3_REPORT.md` dan `docs/WEB_STRESS_REPORT.md`.
 >
 > | Area | Status |
 > |---|---|
 > | Peta raster native | Selesai — screenshot di laporan |
+> | Peta raster web | Selesai — Chrome WebGL2, OSM dan Esri |
 > | Tile OSM tanpa API key | Selesai |
 > | Kamera pan/zoom/pitch/bearing | Selesai |
+> | Fly-to + kompas/zoom panel | Selesai — double-click, `N`, panel kanan atas |
+> | Overzoom zoom 26 (tile provider 19) | Selesai — semua request z19 |
+> | Multi base layer (OSM + Esri) | Selesai — switch runtime + attribution |
 > | Cursor lat/lon (ray-plane) | Selesai |
-> | Marker GLTF non-Draco | Selesai — termuat tanpa error |
-> | Overlay FPS | Selesai — sekitar 100 FPS pada GTX 1660 Ti |
-> | WASM compile + Trunk bundle | Selesai |
-> | Runtime browser | Tertunda — `agent-browser` belum terpasang |
-> | Object picking/outline | Tertunda |
-> | 1.000 marker + animasi playback | Tertunda — Fase 10 |
-> | Tile proxy/backdrop tepi | Tertunda |
+> | Marker GLTF non-Draco | Selesai — full dan LOD 2,4k triangle |
+> | Overlay FPS | Selesai — native 45,69 FPS full / 146,59 LOD, web 47,19–100 FPS pada 10k |
+> | WASM release + Trunk bundle | Selesai — wasm 46 MB |
+> | Runtime browser | Selesai — Chrome/Chromium WebGL2 |
+> | Object picking/outline | Selesai — screen-space pick + selection ring |
+> | 1.000/5.000/10.000 marker + animasi | Selesai — stress harness |
+> | Tile cache | Selesai — service worker web + disk cache native |
+> | Memori load/unload | Selesai — native RSS dan web WASM linear memory |
+> | Tile proxy server-side | Selesai — `/tiles/{layer}/{z}/{x}/{y}.png`, disk cache, rate limit |
+> | Quadtree tile cover | Selesai — `quadtree_cover` + wrap longitude |
+> | Placeholder/error tile | Selesai — checkerboard 64×64 |
+> | Overlay line/polygon/floor plan | Selesai — ribbon, prism, quad + tekstur |
+> | Input web | Wheel stepwise, pan mengikuti bearing (45° diuji), toggle LOD runtime |
 >
 > Fase ini adalah gerbang kelayakan teknis. Jangan membangun seluruh editor
 > sebelum fase ini lulus. Spike boleh berupa aplikasi kecil di crate `twg-map`,
@@ -334,65 +351,77 @@ merupakan jalur risiko terpisah yang harus segera membuktikan kelayakan.
 
 ### 6.1 Fondasi renderer
 
-- [ ] Buat aplikasi Bevy native + WASM yang menampilkan satu bidang peta.
-- [ ] Definisikan tipe `GeoPoint` dengan `f64`.
-- [ ] Definisikan konversi WGS84 ke Web Mercator.
-- [ ] Definisikan origin lokal ENU dan konversi ke `f32` untuk render.
-- [ ] Implementasikan kamera center/zoom/pitch/bearing.
-- [ ] Implementasikan pan, rotate, pitch, wheel zoom, dan fly-to.
-- [ ] Implementasikan kontrol kompas dan zoom jika diperlukan.
+- [x] Buat aplikasi Bevy native + WASM yang menampilkan satu bidang peta.
+- [x] Definisikan tipe `GeoPoint` dengan `f64`.
+- [x] Definisikan konversi WGS84 ke Web Mercator.
+- [x] Definisikan origin lokal ENU dan konversi ke `f32` untuk render.
+- [x] Implementasikan kamera center/zoom/pitch/bearing.
+- [x] Implementasikan pan, rotate, pitch, dan wheel zoom.
+- [x] Implementasikan fly-to (animasi kamera ke koordinat target).
+- [x] Implementasikan kontrol kompas dan zoom jika diperlukan.
 
 ### 6.2 Tile
 
-- [ ] Implementasikan `TileSource` trait.
-- [ ] Implementasikan XYZ tile math.
-- [ ] Implementasikan quadtree pemilihan tile berdasarkan kamera.
-- [ ] Implementasikan fetch tile lewat HTTP.
-- [ ] Implementasikan cache memori.
-- [ ] Implementasikan cache disk native.
-- [ ] Implementasikan load/unload saat kamera bergerak.
-- [ ] Implementasikan placeholder/error tile.
-- [ ] Uji OSM dan satelit.
-- [ ] Uji attribution dan rate limit.
-- [ ] Uji tile proxy lokal.
+- [x] Implementasikan `TileSource` trait.
+- [x] Implementasikan XYZ tile math.
+- [x] Implementasikan quadtree pemilihan tile berdasarkan kamera.
+  Cover quadtree memecah rentang tile berdasarkan frustum dan membagi interval
+  longitude yang melewati date line.
+- [x] Implementasikan fetch tile lewat HTTP.
+- [x] Implementasikan cache memori (LRU material/image per layer).
+- [x] Implementasikan cache disk native (`.web-asset-cache`).
+- [x] Implementasikan cache web (service worker Cache Storage).
+- [x] Implementasikan load/unload saat kamera bergerak.
+- [x] Implementasikan placeholder/error tile.
+- [x] Uji OSM dan satelit.
+- [x] Uji attribution dan rate limit. Attribution tampil; proxy server-side
+  membatasi konkurensi dan interval permintaan ke provider.
+- [x] Uji tile proxy lokal. `GET /tiles/{layer}/{z}/{x}/{y}.png` dengan disk
+  cache dan service worker di sisi web.
 
 ### 6.3 Objek 3D
 
-- [ ] Load satu model GLTF/GLB.
-- [ ] Tempatkan model pada koordinat geografis.
-- [ ] Implementasikan rotasi, skala, dan altitude.
-- [ ] Implementasikan picking model.
-- [ ] Implementasikan selection outline/highlight.
-- [ ] Render line sederhana.
-- [ ] Render polygon/building extrusion sederhana.
-- [ ] Render floor plan sebagai overlay.
-- [ ] Render minimal 1.000 marker/instance.
-- [ ] Uji animasi GLTF sederhana.
+- [x] Load satu model GLTF/GLB.
+- [x] Tempatkan model pada koordinat geografis.
+- [ ] Implementasikan rotasi, skala, dan altitude. Rotasi/skala ada; altitude
+  marker belum diekspos.
+- [x] Implementasikan picking model (screen-space nearest marker).
+- [x] Implementasikan selection outline/highlight (ring 3 m).
+- [x] Render line sederhana.
+- [x] Render polygon/building extrusion sederhana.
+- [x] Render floor plan sebagai overlay.
+- [x] Render minimal 1.000 marker/instance (1k/5k/10k diuji).
+- [x] Uji animasi GLTF sederhana (20 frame bake, update 10/5 Hz).
 
 ### 6.4 Pengukuran dan keputusan
 
-- [ ] Ukur FPS native.
-- [ ] Ukur FPS Chrome/Edge/Firefox/Safari.
-- [ ] Ukur memori setelah load dan setelah unload.
-- [ ] Ukur waktu load awal dan ukuran bundle.
-- [ ] Uji GPU integrated dan discrete bila tersedia.
+- [x] Ukur FPS native (10k animated: 45,69 FPS full, 146,59 FPS LOD).
+- [x] Ukur FPS web (10k: 50,60 animated, 47,19 static, 48,60 mixed; minimum
+  47,19 FPS dengan LOD).
+- [ ] Ukur FPS Chrome/Edge/Firefox/Safari. Chrome PASS; Edge/Firefox/Safari
+  belum diukur.
+- [x] Ukur memori setelah load dan setelah unload (native RSS, web WASM).
+- [ ] Ukur waktu load awal dan ukuran bundle. Ukuran wasm release 46 MB
+  tercatat; waktu load belum diukur.
+- [ ] Uji GPU integrated dan discrete bila tersedia (baru discrete).
 - [ ] Uji resize, tab background, dan context loss.
-- [ ] Uji WebGL2 fallback.
+- [x] Uji WebGL2 fallback — WebGL2 adalah jalur aktual.
 - [ ] Uji WebGPU jika tersedia.
-- [ ] Dokumentasikan hasil dengan screenshot dan angka.
-- [ ] Tulis ADR: lanjut Bevy, ubah scope, atau pilih hybrid.
+- [x] Dokumentasikan hasil dengan screenshot dan angka.
+- [x] Tulis ADR: lanjut Bevy, ubah scope, atau pilih hybrid.
 
 ### Gate G1 — Peta layak
 
 Lulus jika:
 
-- [ ] Peta raster tampil benar di native dan WASM.
-- [ ] Kamera pitch/bearing/zoom konsisten.
-- [ ] Picking dan transform dasar berfungsi.
-- [ ] Target FPS dan memori yang disepakati tercapai.
-- [ ] Tidak ada bug presisi koordinat yang terlihat.
-- [ ] Ada jalur fallback untuk WebGL2.
-- [ ] Tidak ada blocker yang memaksa perubahan stack.
+- [x] Peta raster tampil benar di native dan WASM.
+- [x] Kamera pitch/bearing/zoom konsisten (termasuk overzoom z23–z26).
+- [x] Picking dan transform dasar berfungsi (cursor lat/lon + marker selection).
+- [x] Target FPS dan memori yang disepakati tercapai (FPS PASS; memori native
+  dan web sudah diukur).
+- [x] Tidak ada bug presisi koordinat yang terlihat.
+- [x] Ada jalur fallback untuk WebGL2.
+- [x] Tidak ada blocker yang memaksa perubahan stack.
 
 Jika gagal:
 

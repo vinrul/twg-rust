@@ -41,8 +41,7 @@ pub fn setup_probe(
             asset_server.load(GltfAssetLabel::Scene(0).from_asset(path));
         commands.spawn((
             WorldAssetRoot(handle.clone()),
-            Transform::from_xyz(index as f32 * 25.0, 0.0, 0.0)
-                .with_scale(Vec3::splat(0.02)),
+            Transform::from_xyz(index as f32 * 25.0, 0.0, 0.0).with_scale(Vec3::splat(0.02)),
             Name::new(*model),
         ));
         entries.push(((*model).to_string(), handle));

@@ -1,16 +1,18 @@
-use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use twg_map::MapCameraState;
+use twg_map::{CameraFlight, MapCameraState};
 
-use super::{BaseLayerResource, MapCameraResource};
+use super::{BaseLayerResource, CameraFlightState, MapCameraResource};
 
 const KEYBOARD_PAN_SPEED: f64 = 1.1;
 
+#[allow(clippy::too_many_arguments)]
 pub fn map_input(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut layers: ResMut<BaseLayerResource>,
+    mut flight: ResMut<CameraFlightState>,
     mut mouse_motion: MessageReader<MouseMotion>,
     mut mouse_wheel: MessageReader<MouseWheel>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -28,6 +30,7 @@ pub fn map_input(
     let mouse_inside = window.cursor_position().is_some();
     let camera = &mut camera.0;
 
+    let mut cancel_flight = false;
     let mut delta = Vec2::ZERO;
     for motion in mouse_motion.read() {
         delta += motion.delta;
@@ -36,6 +39,9 @@ pub fn map_input(
     if mouse_inside
         && (mouse_buttons.pressed(MouseButton::Left) || mouse_buttons.pressed(MouseButton::Middle))
     {
+        if delta != Vec2::ZERO {
+            cancel_flight = true;
+        }
         camera.pan_from_screen_delta(
             delta.x,
             delta.y,
@@ -45,16 +51,28 @@ pub fn map_input(
     }
 
     if mouse_inside && mouse_buttons.pressed(MouseButton::Right) {
+        if delta != Vec2::ZERO {
+            cancel_flight = true;
+        }
         camera.rotate_by(delta.x * 0.25);
         camera.pitch_by(-delta.y * 0.25);
     }
 
-    let mut wheel_delta = 0.0;
+    // Browsers report pixel deltas (often ~100 per notch) while native
+    // backends report lines. Normalizing both to "lines" and clamping the
+    // per-frame total prevents a single wheel notch from jumping straight to
+    // MAX_ZOOM or MIN_ZOOM on the web.
+    let mut wheel_lines = 0.0;
     for wheel in mouse_wheel.read() {
-        wheel_delta += wheel.y;
+        let lines = match wheel.unit {
+            MouseScrollUnit::Line => wheel.y,
+            MouseScrollUnit::Pixel => wheel.y / 100.0,
+        };
+        wheel_lines += lines;
     }
-    if mouse_inside && wheel_delta.abs() > f32::EPSILON {
-        camera.zoom_by(wheel_delta * 0.15);
+    if mouse_inside && wheel_lines.abs() > f32::EPSILON {
+        cancel_flight = true;
+        camera.zoom_by(wheel_lines.clamp(-1.0, 1.0) * 0.15);
     }
 
     let dt = f64::from(time.delta_secs());
@@ -73,38 +91,53 @@ pub fn map_input(
         east -= 1.0;
     }
     if east != 0.0 || north != 0.0 {
-        let bearing = f64::from(camera.bearing_degrees.to_radians());
-        let rotated_east = east * bearing.cos() - north * bearing.sin();
-        let rotated_north = east * bearing.sin() + north * bearing.cos();
-        camera.pan_by_tiles(
-            rotated_east * KEYBOARD_PAN_SPEED * dt,
-            rotated_north * KEYBOARD_PAN_SPEED * dt,
+        cancel_flight = true;
+        camera.pan_by_screen_tiles(
+            east * KEYBOARD_PAN_SPEED * dt,
+            north * KEYBOARD_PAN_SPEED * dt,
         );
     }
 
     if keys.pressed(KeyCode::KeyQ) {
+        cancel_flight = true;
         camera.rotate_by(-45.0 * dt as f32);
     }
     if keys.pressed(KeyCode::KeyE) {
+        cancel_flight = true;
         camera.rotate_by(45.0 * dt as f32);
     }
     if keys.pressed(KeyCode::KeyR) {
+        cancel_flight = true;
         camera.pitch_by(30.0 * dt as f32);
     }
     if keys.pressed(KeyCode::KeyF) {
+        cancel_flight = true;
         camera.pitch_by(-30.0 * dt as f32);
     }
 
     if keys.just_pressed(KeyCode::KeyH) {
+        cancel_flight = true;
         *camera = MapCameraState::default();
     }
     if keys.just_pressed(KeyCode::KeyL) {
         layers.0 = layers.0.next();
     }
     if keys.just_pressed(KeyCode::Equal) {
+        cancel_flight = true;
         camera.zoom_by(0.5);
     }
     if keys.just_pressed(KeyCode::Minus) {
+        cancel_flight = true;
         camera.zoom_by(-0.5);
+    }
+
+    if cancel_flight {
+        flight.0 = None;
+    }
+
+    if keys.just_pressed(KeyCode::KeyN) {
+        let mut target = *camera;
+        target.bearing_degrees = 0.0;
+        flight.0 = Some(CameraFlight::new(*camera, target, 0.5));
     }
 }
