@@ -7,13 +7,12 @@ use std::{
 
 use axum::{
     Router,
-    extract::{Path as AxumPath, State},
+    extract::{Extension, Path as AxumPath},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 use tokio::sync::{Mutex, Semaphore};
-use tower_http::cors::CorsLayer;
 
 const OSM_TEMPLATE: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const ESRI_TEMPLATE: &str =
@@ -55,15 +54,17 @@ impl TileProxy {
     }
 }
 
-pub fn router() -> Router {
+pub fn router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new()
         .route("/tiles/{layer}/{z}/{x}/{y}", get(tile))
-        .layer(CorsLayer::permissive())
-        .with_state(TileProxy::from_env())
+        .layer(Extension(TileProxy::from_env()))
 }
 
 async fn tile(
-    State(proxy): State<TileProxy>,
+    Extension(proxy): Extension<TileProxy>,
     AxumPath((layer, z, x, y)): AxumPath<(String, u8, u32, String)>,
 ) -> Response {
     let Some(layer) = normalize_layer(&layer) else {

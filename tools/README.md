@@ -48,3 +48,32 @@ what the browser client sees in production. Pass `--proxy=<url>` to test a
 different proxy origin directly.
 
 Set `CHROME_PATH` if Chrome/Edge is not in a standard location.
+
+## `phase4-smoke.mjs`
+
+Auth smoke test against a running server and PostgreSQL. It checks login,
+single-device conflict, identify, refresh rotation/replay, logout, revoked
+session, and wrong password.
+
+```bash
+BASE_URL=http://127.0.0.1:8011 \
+TWG_USERNAME=baselineadmin TWG_PASSWORD='Baseline#2026' \
+node tools/phase4-smoke.mjs
+```
+
+Use `TWG_USERNAME` (not `USERNAME`) because Windows sets `USERNAME` to the OS
+account name.
+
+## `paseto-parity.mjs`
+
+Bidirectional auth parity check. Both servers must share the same baseline
+database and `TOKEN_SYMMETRIC_KEY`. It verifies that the Rust server accepts a
+legacy Go PASETO/refresh token and that the legacy server accepts Rust tokens.
+
+```bash
+OLD_URL=http://127.0.0.1:8013 NEW_URL=http://127.0.0.1:8011 \
+node tools/paseto-parity.mjs
+```
+
+Use `TWG_USERNAME` to test a multi-device role such as `baselineuser`; the
+default `baselineadmin` exercises the single-device path.

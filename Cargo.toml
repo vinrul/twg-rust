@@ -10,20 +10,28 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
 axum = "0.8.9"
+base64 = "0.22"
+bcrypt = "0.17"
 bevy = { version = "0.20.1", features = ["http", "https", "jpeg", "web_asset_cache"] }
 bevy_egui = "0.43.1"
+chacha20poly1305 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 console_error_panic_hook = "0.1"
+dotenvy = "0.15"
+hex = "0.4"
 http-body-util = "0.1"
+rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
 serde_json = "1.0"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
 strum = { version = "0.27", features = ["derive"] }
 thiserror = "2.0"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.7", features = ["trace", "cors"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "fs", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4", "serde", "js"] }

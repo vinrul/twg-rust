@@ -11,4 +11,6 @@ axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+twg-auth.workspace = true
 twg-server.workspace = true
+twg-storage.workspace = true

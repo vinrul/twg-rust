@@ -30,14 +30,21 @@ quadtree tile cover, placeholder/error tile, tile proxy server-side dengan rate
 limit, serta overlay line, polygon/building extrusion, dan floor plan. Detail
 teknis dan angka terbaru ada di [laporan Fase 3](docs/PHASE3_REPORT.md).
 
+Fase 4: fondasi server Axum + PostgreSQL — config `app.env`/environment,
+request ID, error envelope, CORS allowlist, body limit, readiness DB, graceful
+shutdown, rate limit login/refresh, dan migrasi SQLx. Auth memakai bcrypt legacy,
+PASETO v2.local, access/refresh token, session per device (single-device untuk
+`admin`/`admin_satker`), rotasi refresh single-flight, identify, logout, dan
+password change. Parity token diuji dua arah dengan server Go lama. Detail ada di
+[laporan Fase 4](docs/PHASE4_REPORT.md).
+
 `cargo check`/`build` WebAssembly dan `trunk build --cargo-profile
 wasm-release` sudah berhasil. Bundle WASM release 46 MB; optimasi
 `wasm-opt`/Brotli dikerjakan pada fase packaging.
 
 Belum diimplementasikan pada fase ini:
 
-- Auth PASETO/bcrypt.
-- Query SQLx dan migrasi.
+- Query read/write API SQLx (Fase 5–6).
 - Editor peta dan authoring line/polygon/floor plan.
 - Animasi runtime penuh.
 - UI editor.
@@ -50,9 +57,9 @@ Belum diimplementasikan pada fase ini:
 crates/
   twg-domain/          aturan role dan scoping satker
   twg-contracts/       envelope respons dan kontrak bersama
-  twg-auth/            konfigurasi auth dan error
-  twg-storage/         koneksi PostgreSQL/SQLx
-  twg-server/          router Axum, health endpoint, dan tile proxy
+  twg-auth/            bcrypt, PASETO v2.local, session, dan auth service
+  twg-storage/         koneksi PostgreSQL/SQLx, migrasi, dan auth store
+  twg-server/          router Axum, auth, middleware, health, dan tile proxy
   twg-client/          state client
   twg-map/             geo, tile source/cover, dan kamera peta
   twg-render/          plugin Bevy, tile OSM, marker, kamera
@@ -64,6 +71,8 @@ apps/
   web/                  library WASM + Trunk
 tools/
   web-stress.mjs       harness stress browser (Chrome DevTools Protocol)
+  phase4-smoke.mjs     smoke test auth terhadap server + PostgreSQL
+  paseto-parity.mjs    parity token Rust vs server Go lama
 ```
 
 Aturan dependency:
@@ -78,15 +87,20 @@ Aturan dependency:
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p twg-domain -p twg-contracts -p twg-auth -p twg-map -p twg-client -p twg-server -p twg-render
+cargo test -p twg-domain -p twg-contracts -p twg-auth -p twg-storage -p twg-map -p twg-client -p twg-server -p twg-render
 cargo check -p twg-web --target wasm32-unknown-unknown
 ```
 
 Server:
 
 ```bash
+cp .env.example app.env   # isi DB_SOURCE dan TOKEN_SYMMETRIC_KEY lokal
 cargo run -p twg-server-app
 ```
+
+`app.env` dibaca dari working directory; environment process tetap menang.
+`TOKEN_SYMMETRIC_KEY` wajib tepat 32 byte. `readyz` melakukan ping PostgreSQL;
+`GET /tiles/...` tetap tersedia untuk proxy tile.
 
 Desktop:
 
@@ -138,6 +152,7 @@ dari provider.
 - [Laporan Fase 2](docs/PHASE2_REPORT.md)
 - [Laporan Fase 3](docs/PHASE3_REPORT.md)
 - [Laporan stress test web Gate G1](docs/WEB_STRESS_REPORT.md)
+- [Laporan Fase 4](docs/PHASE4_REPORT.md)
 - [Baseline Fase 0](baseline/phase0-report.md)
 - [Golden HTTP](baseline/golden/verification.generated.md)
 - [WebSocket baseline](baseline/golden/websocket-capture.generated.md)

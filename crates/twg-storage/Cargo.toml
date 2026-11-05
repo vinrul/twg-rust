@@ -6,4 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+chrono.workspace = true
 sqlx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+twg-auth.workspace = true
+twg-domain.workspace = true
+uuid.workspace = true

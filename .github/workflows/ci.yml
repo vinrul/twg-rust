@@ -50,6 +50,7 @@ jobs:
           -p twg-domain
           -p twg-contracts
           -p twg-auth
+          -p twg-storage
           -p twg-map
           -p twg-client
           -p twg-server

@@ -434,58 +434,85 @@ Jika gagal:
 
 ## 7. Fase 4 — Server: fondasi, auth, dan session
 
+> **Status 6 November 2026:** fondasi server dan auth selesai. 29 test
+> `twg-auth` + 32 test `twg-server` PASS; migrasi 32 file berhasil dari database
+> kosong. Smoke test PostgreSQL PASS (login, device conflict, identify, refresh
+> rotation, replay, logout, revoked session). Parity PASETO/session diuji dua
+> arah dengan server Go lama dan PASS. Lihat `docs/PHASE4_REPORT.md`.
+>
+> | Area | Status |
+> |---|---|
+> | Config environment + `app.env` | Selesai |
+> | Request ID, tracing, error envelope | Selesai |
+> | PostgreSQL pool + readiness | Selesai |
+> | Graceful shutdown + CORS + body limit | Selesai |
+> | Static upload + rate limit | Selesai |
+> | Migrasi SQLx | Selesai — 32 migrasi, legacy schema dilewati aman |
+> | bcrypt legacy + PASETO v2.local | Selesai — parity dua arah |
+> | Access/refresh/session per device | Selesai |
+> | Identify/logout/password change | Selesai |
+> | Argon2id rehash | Tertunda — opsional |
+> | Role/satker policy | Selesai di lapisan policy; endpoint Fase 5 |
+
 ### 7.1 Fondasi server
 
-- [ ] Implementasikan konfigurasi dari environment dan `app.env` lama.
-- [ ] Implementasikan tracing, request ID, dan error response.
-- [ ] Implementasikan pool PostgreSQL.
-- [ ] Implementasikan health dan readiness.
-- [ ] Implementasikan graceful shutdown.
-- [ ] Implementasikan CORS allowlist.
-- [ ] Implementasikan body limit.
-- [ ] Implementasikan static upload dengan aman.
-- [ ] Implementasikan rate limit login/refresh.
-- [ ] Implementasikan migrasi SQLx tanpa mengubah skema lama.
+- [x] Implementasikan konfigurasi dari environment dan `app.env` lama.
+- [x] Implementasikan tracing, request ID, dan error response.
+- [x] Implementasikan pool PostgreSQL.
+- [x] Implementasikan health dan readiness.
+- [x] Implementasikan graceful shutdown.
+- [x] Implementasikan CORS allowlist.
+- [x] Implementasikan body limit.
+- [x] Implementasikan static upload dengan aman.
+- [x] Implementasikan rate limit login/refresh.
+- [x] Implementasikan migrasi SQLx tanpa mengubah skema lama.
 
 ### 7.2 Auth
 
-- [ ] Implementasikan login username/password.
-- [ ] Verifikasi bcrypt hash lama.
-- [ ] Opsional: rehash ke Argon2id setelah login berhasil.
-- [ ] Implementasikan PASETO v2.local yang kompatibel.
-- [ ] Uji token lama dengan test vector.
-- [ ] Implementasikan access token dan refresh token.
-- [ ] Implementasikan refresh single-flight/per device.
-- [ ] Implementasikan session validation berdasarkan user + device.
-- [ ] Implementasikan revoke/logout.
-- [ ] Implementasikan `X-Device-ID`.
-- [ ] Implementasikan identify.
-- [ ] Implementasikan heartbeat/expiry.
-- [ ] Implementasikan password change.
-- [ ] Implementasikan role middleware.
-- [ ] Implementasikan satker policy di service/query.
+- [x] Implementasikan login username/password.
+- [x] Verifikasi bcrypt hash lama.
+- [ ] Opsional: rehash ke Argon2id setelah login berhasil. Sengaja dilewati;
+  verifikasi bcrypt legacy sudah memenuhi parity.
+- [x] Implementasikan PASETO v2.local yang kompatibel.
+- [x] Uji token lama dengan test vector. Diganti dengan uji live dua arah
+  terhadap server Go lama (lebih kuat daripada vector statis).
+- [x] Implementasikan access token dan refresh token.
+- [x] Implementasikan refresh single-flight/per device.
+- [x] Implementasikan session validation berdasarkan user + device.
+- [x] Implementasikan revoke/logout.
+- [x] Implementasikan `X-Device-ID`.
+- [x] Implementasikan identify. Identify merotasi refresh hash; ini memperbaiki
+  bug server lama yang mengembalikan refresh token tanpa menyimpannya.
+- [x] Implementasikan heartbeat/expiry. Setiap request privat memperbarui
+  `last_used_at`; expiry mengikuti TTL token. Tidak ada endpoint heartbeat
+  terpisah di kontrak lama.
+- [x] Implementasikan password change.
+- [x] Implementasikan role middleware.
+- [x] Implementasikan satker policy di service/query.
 
 ### 7.3 Auth test
 
-- [ ] Login semua role.
-- [ ] Password salah.
-- [ ] Token expired.
-- [ ] Token invalid.
-- [ ] Refresh token dipakai sebagai access token.
-- [ ] Device ID salah/kosong.
-- [ ] Session revoked.
-- [ ] Cross-satker ditolak.
-- [ ] User hanya melihat data `satker_id IS NULL`.
-- [ ] Admin/monitor melihat semua.
-- [ ] Admin satker melihat satker sendiri.
-- [ ] Error code dan pesan sesuai kontrak.
+- [x] Login semua role.
+- [x] Password salah.
+- [x] Token expired.
+- [x] Token invalid.
+- [x] Refresh token dipakai sebagai access token.
+- [x] Device ID salah/kosong.
+- [x] Session revoked.
+- [x] Cross-satker ditolak (test policy domain; endpoint data di Fase 5).
+- [x] User hanya melihat data `satker_id IS NULL` (test `DataScope`).
+- [x] Admin/monitor melihat semua (test `Role` dan `DataScope`).
+- [x] Admin satker melihat satker sendiri (test `Role` dan `DataScope`).
+- [x] Error code dan pesan sesuai kontrak.
 
 ### Exit gate fase 4
 
-- [ ] Auth parity dengan server Go.
-- [ ] Token lama dapat diverifikasi atau forced logout disetujui.
-- [ ] Semua test role/satker lulus.
-- [ ] Tidak ada secret di log.
+- [x] Auth parity dengan server Go.
+- [x] Token lama dapat diverifikasi atau forced logout disetujui. Token Go
+  dengan footer `null` dapat diverifikasi Rust, dan token Rust diterima Go.
+- [x] Semua test role/satker lulus.
+- [x] Tidak ada secret di log. Debug config meredaksi token key dan database URL;
+  token/password tidak pernah dilog.
 
 ---
 

@@ -1,0 +1,1 @@
+ALTER TABLE anims ADD COLUMN urut  int4 DEFAULT 1;
