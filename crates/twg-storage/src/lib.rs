@@ -1,8 +1,10 @@
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use thiserror::Error;
 
+mod read;
 mod store;
 
+pub use read::{ReadStore, SatkerScope, UserListScope};
 pub use store::PgAuthStore;
 
 pub const DEFAULT_MAX_CONNECTIONS: u32 = 10;

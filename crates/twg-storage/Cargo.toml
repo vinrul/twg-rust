@@ -8,9 +8,11 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 twg-auth.workspace = true
+twg-contracts.workspace = true
 twg-domain.workspace = true
 uuid.workspace = true

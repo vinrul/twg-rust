@@ -31,6 +31,18 @@ impl ApiError {
         Self::new(StatusCode::UNAUTHORIZED, message)
     }
 
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, message)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, message)
+    }
+
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
+    }
+
     pub fn too_many_requests(retry_after: Duration) -> Self {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,

@@ -38,13 +38,21 @@ PASETO v2.local, access/refresh token, session per device (single-device untuk
 password change. Parity token diuji dua arah dengan server Go lama. Detail ada di
 [laporan Fase 4](docs/PHASE4_REPORT.md).
 
+Fase 5: endpoint read-only — 14 endpoint publik (skenario, marker, text marker,
+particle, building, line, alur, anim, last position, home operasi, user online,
+snapshot), tujuh endpoint privat dengan satker policy, dan dua endpoint admin
+category. Pagination `pageSize`/`pageNumber`, search case-insensitive, mapping
+DTO, dan timestamp WITA mengikuti server Go. Differential terhadap server Go
+lama pada database baseline yang sama: **193 check PASS, 0 FAIL, 3 skip** yang
+tervalidasi golden. Detail ada di [laporan Fase 5](docs/PHASE5_REPORT.md).
+
 `cargo check`/`build` WebAssembly dan `trunk build --cargo-profile
 wasm-release` sudah berhasil. Bundle WASM release 46 MB; optimasi
 `wasm-opt`/Brotli dikerjakan pada fase packaging.
 
 Belum diimplementasikan pada fase ini:
 
-- Query read/write API SQLx (Fase 5–6).
+- Write API dan upload (Fase 6).
 - Editor peta dan authoring line/polygon/floor plan.
 - Animasi runtime penuh.
 - UI editor.
@@ -58,7 +66,7 @@ crates/
   twg-domain/          aturan role dan scoping satker
   twg-contracts/       envelope respons dan kontrak bersama
   twg-auth/            bcrypt, PASETO v2.local, session, dan auth service
-  twg-storage/         koneksi PostgreSQL/SQLx, migrasi, dan auth store
+  twg-storage/         koneksi PostgreSQL/SQLx, migrasi, auth store, dan read store
   twg-server/          router Axum, auth, middleware, health, dan tile proxy
   twg-client/          state client
   twg-map/             geo, tile source/cover, dan kamera peta
@@ -73,6 +81,7 @@ tools/
   web-stress.mjs       harness stress browser (Chrome DevTools Protocol)
   phase4-smoke.mjs     smoke test auth terhadap server + PostgreSQL
   paseto-parity.mjs    parity token Rust vs server Go lama
+  read-parity.mjs      differential endpoint read-only Rust vs server Go lama
 ```
 
 Aturan dependency:
@@ -153,6 +162,7 @@ dari provider.
 - [Laporan Fase 3](docs/PHASE3_REPORT.md)
 - [Laporan stress test web Gate G1](docs/WEB_STRESS_REPORT.md)
 - [Laporan Fase 4](docs/PHASE4_REPORT.md)
+- [Laporan Fase 5](docs/PHASE5_REPORT.md)
 - [Baseline Fase 0](baseline/phase0-report.md)
 - [Golden HTTP](baseline/golden/verification.generated.md)
 - [WebSocket baseline](baseline/golden/websocket-capture.generated.md)

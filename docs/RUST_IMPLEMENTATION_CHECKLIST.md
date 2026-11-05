@@ -518,33 +518,55 @@ Jika gagal:
 
 ## 8. Fase 5 — Server: endpoint read-only
 
+> **Status 6 November 2026:** seluruh endpoint read-only publik, privat, dan
+> admin selesai dan lolos differential terhadap server Go lama pada database
+> baseline yang sama. Hasil: **193 check PASS, 0 FAIL, 3 skip** (server Go
+> panic di zerolog Windows); ketiga skip tetap cocok dengan golden. Detail di
+> `docs/PHASE5_REPORT.md`.
+>
+> | Area | Status |
+> |---|---|
+> | Health + 14 endpoint publik | Selesai |
+> | Endpoint privat + satker policy | Selesai |
+> | Admin category | Selesai |
+> | Pagination, search, `total` | Selesai |
+> | Mapping DTO + timestamp WITA | Selesai |
+> | Differential Go vs Rust | Selesai — 193 check |
+> | Golden fixture langsung | Selesai — 30+ response |
+> | Shadow traffic | Siap — harness differential dapat diarahkan ke traffic nyata |
+
 ### 8.1 Endpoint
 
-- [ ] Health/public endpoints.
-- [ ] Public skenario, marker, text marker, particle, building, line, anim,
+- [x] Health/public endpoints.
+- [x] Public skenario, marker, text marker, particle, building, line, anim,
       last position, home operasi, snapshot.
-- [ ] Private identify, operasi, home operasi.
-- [ ] Private user, satker, category.
-- [ ] Admin category.
-- [ ] Pagination dan filter.
-- [ ] Mapping DTO.
+- [x] Private identify, operasi, home operasi.
+- [x] Private user, satker, category.
+- [x] Admin category.
+- [x] Pagination dan filter. `pageSize`/`pageNumber` 1-based, `search`
+      case-insensitive, `total` setelah filter, dan `total` dihilangkan saat 0.
+- [x] Mapping DTO. `MapMode`, `BaseLayer`, `TextAlign`, role, `indoor_config`,
+      snapshot, serta `LastMap` kosong yang identik dengan Go.
 
 ### 8.2 Differential test
 
-- [ ] Jalankan server Go dan Rust pada database uji yang sama.
-- [ ] Bandingkan status code, header penting, dan body JSON.
-- [ ] Bandingkan urutan list dan nilai `total`.
-- [ ] Bandingkan null/omit dan timestamp.
-- [ ] Uji semua role.
-- [ ] Uji data kosong.
-- [ ] Uji data besar/pagination akhir.
-- [ ] Simpan hasil perbedaan yang disengaja.
+- [x] Jalankan server Go dan Rust pada database uji yang sama.
+- [x] Bandingkan status code, header penting, dan body JSON.
+- [x] Bandingkan urutan list dan nilai `total`.
+- [x] Bandingkan null/omit dan timestamp.
+- [x] Uji semua role.
+- [x] Uji data kosong.
+- [x] Uji data besar/pagination akhir.
+- [x] Simpan hasil perbedaan yang disengaja.
 
 ### Exit gate fase 5
 
-- [ ] Semua endpoint read parity.
-- [ ] Tidak ada perbedaan kontrak tanpa persetujuan.
-- [ ] Shadow traffic read-only dapat dijalankan.
+- [x] Semua endpoint read parity. 193 check PASS; tiga skip tervalidasi golden.
+- [x] Tidak ada perbedaan kontrak tanpa persetujuan. Satu-satunya perbedaan
+  adalah format angka JSON (`15.0` vs `15`) yang identik setelah di-parse.
+- [x] Shadow traffic read-only dapat dijalankan. `tools/read-parity.mjs`
+  membandingkan dua origin sekaligus sehingga dapat diarahkan ke traffic
+  shadow; belum dijalankan sebagai proses produksi.
 
 ---
 

@@ -29,7 +29,60 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(handlers::health::healthz))
         .route("/readyz", get(handlers::health::readyz))
         .route("/auth/login", post(handlers::auth::login))
-        .route("/auth/refresh", post(handlers::auth::refresh));
+        .route("/auth/refresh", post(handlers::auth::refresh))
+        .route(
+            "/public/skenarios/{operasi_id}",
+            get(handlers::public::scenarios),
+        )
+        .route(
+            "/public/skenarios/get/{id}",
+            get(handlers::public::scenario_detail),
+        )
+        .route(
+            "/public/markers/list/{skenario_id}",
+            get(handlers::public::markers),
+        )
+        .route(
+            "/public/text-markers/list/{skenario_id}",
+            get(handlers::public::text_markers),
+        )
+        .route(
+            "/public/particles/list/{skenario_id}",
+            get(handlers::public::particles),
+        )
+        .route(
+            "/public/buildings/list/{skenario_id}",
+            get(handlers::public::buildings),
+        )
+        .route(
+            "/public/lines/list/{skenario_id}",
+            get(handlers::public::lines),
+        )
+        .route(
+            "/public/alurs/list/{skenario_id}",
+            get(handlers::public::alurs),
+        )
+        .route(
+            "/public/anims/list/{skenario_id}",
+            get(handlers::public::anims),
+        )
+        .route(
+            "/public/last_positions/{skenario_id}",
+            get(handlers::public::last_positions),
+        )
+        .route(
+            "/public/list/operasis",
+            get(handlers::public::home_operations),
+        )
+        .route(
+            "/public/get/home/operasis/{id}",
+            get(handlers::public::home_operation_detail),
+        )
+        .route("/public/users/online", get(handlers::public::online_users))
+        .route(
+            "/public/game-sessions/snapshot/{skenario_id}",
+            get(handlers::public::snapshot),
+        );
 
     let logout = Router::new()
         .route("/auth/logout", post(handlers::auth::logout))
@@ -44,6 +97,44 @@ pub fn router(state: AppState) -> Router {
             "/private/profile/password",
             put(handlers::auth::change_password),
         )
+        .route("/private/operasis", get(handlers::private::operations))
+        .route(
+            "/private/operasis/{id}",
+            get(handlers::private::operation_detail),
+        )
+        .route(
+            "/private/home/operasis",
+            get(handlers::private::home_operations),
+        )
+        .route("/private/users", get(handlers::private::users))
+        .route("/private/satkers", get(handlers::private::satkers))
+        .route(
+            "/private/categories/all",
+            get(handlers::private::categories),
+        )
+        .route(
+            "/private/game-sessions/snapshot/{skenario_id}",
+            get(handlers::public::snapshot),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::require_session,
+        ));
+
+    let admin = Router::new()
+        .route("/admin/categories", get(handlers::admin::categories))
+        .route(
+            "/admin/categories/{id}",
+            get(handlers::admin::category_detail),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            middleware::RoleGuard(vec![
+                twg_domain::Role::Admin,
+                twg_domain::Role::AdminMonitor,
+                twg_domain::Role::AdminSatker,
+            ]),
+            middleware::require_roles,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_session,
@@ -55,6 +146,7 @@ pub fn router(state: AppState) -> Router {
         .merge(public)
         .merge(logout)
         .merge(private)
+        .merge(admin)
         .merge(tiles::router::<AppState>())
         .nest_service("/uploads", uploads)
         .layer(DefaultBodyLimit::max(max_body_bytes))
@@ -642,6 +734,20 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn read_endpoints_require_a_database() {
+        let (status, _, body) = send(
+            router(test_state(100)),
+            Method::GET,
+            "/public/list/operasis",
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["message"], "database is not available");
     }
 
     #[tokio::test]

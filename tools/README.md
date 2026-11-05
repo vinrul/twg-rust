@@ -77,3 +77,26 @@ node tools/paseto-parity.mjs
 
 Use `TWG_USERNAME` to test a multi-device role such as `baselineuser`; the
 default `baselineadmin` exercises the single-device path.
+
+## `read-parity.mjs`
+
+Differential check for every read-only endpoint. Both servers must share the
+same baseline database and `TOKEN_SYMMETRIC_KEY`. The script compares status,
+content type, `X-Request-ID`, parsed JSON body, list order, `total`, null/omit,
+and timestamps across all roles and pagination edge cases.
+
+```bash
+OLD_URL=http://127.0.0.1:8013 NEW_URL=http://127.0.0.1:8011 \
+TWG_PASSWORD='Baseline#2026' node tools/read-parity.mjs
+```
+
+| Env | Default | Meaning |
+|---|---|---|
+| `OLD_URL` | `http://127.0.0.1:8013` | Legacy Go server |
+| `NEW_URL` | `http://127.0.0.1:8011` | Rust server |
+| `TWG_PASSWORD` | `Baseline#2026` | Password for all baseline accounts |
+
+Exit code is non-zero on any mismatch. Three 403 checks are skipped because the
+legacy Windows binary panics in zerolog; their golden fixtures are checked
+instead. The same harness can be pointed at shadow traffic by setting `OLD_URL`
+to the production origin.
