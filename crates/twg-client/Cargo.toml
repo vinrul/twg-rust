@@ -1,0 +1,12 @@
+[package]
+name = "twg-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+twg-contracts.workspace = true
+twg-domain.workspace = true
+uuid.workspace = true

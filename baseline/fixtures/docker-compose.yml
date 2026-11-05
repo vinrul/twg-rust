@@ -1,0 +1,25 @@
+name: twg-baseline
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    container_name: twg-baseline-postgres
+    environment:
+      POSTGRES_DB: twg_baseline
+      POSTGRES_USER: twg_baseline
+      POSTGRES_PASSWORD: twg_baseline_local
+    ports:
+      - "55432:5432"
+    volumes:
+      - twg_baseline_pgdata:/var/lib/postgresql
+      - ./bootstrap.sql:/fixtures/bootstrap.sql:ro
+      - ./seed.sql:/fixtures/seed.sql:ro
+      - ./migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twg_baseline -d twg_baseline"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  twg_baseline_pgdata:

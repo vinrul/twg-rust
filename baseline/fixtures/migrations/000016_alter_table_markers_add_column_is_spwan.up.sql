@@ -1,0 +1,1 @@
+ALTER TABLE markers ADD COLUMN is_spawn  int DEFAULT 0;

@@ -1,0 +1,575 @@
+{
+    "captured_at":  "2026-11-04T07:24:37.1178104Z",
+    "base_url":  "http://127.0.0.1:8010",
+    "source_commit":  "91d364d0cfc5f411c11160bc4e02717be73f3a05",
+    "total_requests":  81,
+    "results":  [
+                    {
+                        "Name":  "auth-login-admin",
+                        "Method":  "POST",
+                        "Path":  "/auth/login",
+                        "Status":  201,
+                        "Bytes":  1151
+                    },
+                    {
+                        "Name":  "auth-login-admin_monitor",
+                        "Method":  "POST",
+                        "Path":  "/auth/login",
+                        "Status":  201,
+                        "Bytes":  1190
+                    },
+                    {
+                        "Name":  "auth-login-admin_satker",
+                        "Method":  "POST",
+                        "Path":  "/auth/login",
+                        "Status":  201,
+                        "Bytes":  1393
+                    },
+                    {
+                        "Name":  "auth-login-user_satker",
+                        "Method":  "POST",
+                        "Path":  "/auth/login",
+                        "Status":  201,
+                        "Bytes":  1385
+                    },
+                    {
+                        "Name":  "auth-login-user",
+                        "Method":  "POST",
+                        "Path":  "/auth/login",
+                        "Status":  201,
+                        "Bytes":  1143
+                    },
+                    {
+                        "Name":  "public_healthz",
+                        "Method":  "GET",
+                        "Path":  "/healthz",
+                        "Status":  200,
+                        "Bytes":  15
+                    },
+                    {
+                        "Name":  "public_readyz",
+                        "Method":  "GET",
+                        "Path":  "/readyz",
+                        "Status":  200,
+                        "Bytes":  28
+                    },
+                    {
+                        "Name":  "public_public_list_operasis",
+                        "Method":  "GET",
+                        "Path":  "/public/list/operasis",
+                        "Status":  200,
+                        "Bytes":  746
+                    },
+                    {
+                        "Name":  "public_public_skenarios_33333333_3333_4333_8333_333333333331",
+                        "Method":  "GET",
+                        "Path":  "/public/skenarios/33333333-3333-4333-8333-333333333331",
+                        "Status":  200,
+                        "Bytes":  1361
+                    },
+                    {
+                        "Name":  "public_public_skenarios_get_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/skenarios/get/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  642
+                    },
+                    {
+                        "Name":  "public_public_markers_list_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/markers/list/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  1267
+                    },
+                    {
+                        "Name":  "public_public_text_markers_list_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/text-markers/list/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  1124
+                    },
+                    {
+                        "Name":  "public_public_particles_list_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/particles/list/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  1125
+                    },
+                    {
+                        "Name":  "public_public_buildings_list_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/buildings/list/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  1168
+                    },
+                    {
+                        "Name":  "public_public_lines_list_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/lines/list/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  1124
+                    },
+                    {
+                        "Name":  "public_public_alurs_list_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/alurs/list/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  1023
+                    },
+                    {
+                        "Name":  "public_public_anims_list_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/anims/list/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  4941
+                    },
+                    {
+                        "Name":  "public_public_last_positions_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/last_positions/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  724
+                    },
+                    {
+                        "Name":  "public_public_get_home_operasis_33333333_3333_4333_8333_333333333331",
+                        "Method":  "GET",
+                        "Path":  "/public/get/home/operasis/33333333-3333-4333-8333-333333333331",
+                        "Status":  200,
+                        "Bytes":  345
+                    },
+                    {
+                        "Name":  "public_public_game_sessions_snapshot_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/public/game-sessions/snapshot/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  458
+                    },
+                    {
+                        "Name":  "public_public_users_online",
+                        "Method":  "GET",
+                        "Path":  "/public/users/online",
+                        "Status":  200,
+                        "Bytes":  2709
+                    },
+                    {
+                        "Name":  "private-admin-_private_identify",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1151
+                    },
+                    {
+                        "Name":  "private-admin-_private_operasis_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  606
+                    },
+                    {
+                        "Name":  "private-admin-_private_operasis_33333333_3333_4333_8333_333333333331",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis/33333333-3333-4333-8333-333333333331",
+                        "Status":  200,
+                        "Bytes":  241
+                    },
+                    {
+                        "Name":  "private-admin-_private_home_operasis",
+                        "Method":  "GET",
+                        "Path":  "/private/home/operasis",
+                        "Status":  200,
+                        "Bytes":  746
+                    },
+                    {
+                        "Name":  "private-admin-_private_categories_all",
+                        "Method":  "GET",
+                        "Path":  "/private/categories/all",
+                        "Status":  200,
+                        "Bytes":  370
+                    },
+                    {
+                        "Name":  "private-admin-_private_users",
+                        "Method":  "GET",
+                        "Path":  "/private/users",
+                        "Status":  200,
+                        "Bytes":  1383
+                    },
+                    {
+                        "Name":  "private-admin-_private_satkers",
+                        "Method":  "GET",
+                        "Path":  "/private/satkers",
+                        "Status":  200,
+                        "Bytes":  501
+                    },
+                    {
+                        "Name":  "private-admin-_private_game_sessions_snapshot_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/private/game-sessions/snapshot/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  458
+                    },
+                    {
+                        "Name":  "admin-admin-_admin_categories_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/admin/categories?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  380
+                    },
+                    {
+                        "Name":  "admin-admin-_admin_users_aaaaaaaa_aaaa_4aaa_8aaa_aaaaaaaaaaa3_sessions",
+                        "Method":  "GET",
+                        "Path":  "/admin/users/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3/sessions",
+                        "Status":  200,
+                        "Bytes":  359
+                    },
+                    {
+                        "Name":  "auth-identify-admin",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1151
+                    },
+                    {
+                        "Name":  "auth-refresh-admin",
+                        "Method":  "POST",
+                        "Path":  "/auth/refresh",
+                        "Status":  200,
+                        "Bytes":  1149
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_identify",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1190
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_operasis_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  606
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_operasis_33333333_3333_4333_8333_333333333331",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis/33333333-3333-4333-8333-333333333331",
+                        "Status":  200,
+                        "Bytes":  241
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_home_operasis",
+                        "Method":  "GET",
+                        "Path":  "/private/home/operasis",
+                        "Status":  200,
+                        "Bytes":  746
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_categories_all",
+                        "Method":  "GET",
+                        "Path":  "/private/categories/all",
+                        "Status":  200,
+                        "Bytes":  370
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_users",
+                        "Method":  "GET",
+                        "Path":  "/private/users",
+                        "Status":  200,
+                        "Bytes":  1383
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_satkers",
+                        "Method":  "GET",
+                        "Path":  "/private/satkers",
+                        "Status":  200,
+                        "Bytes":  501
+                    },
+                    {
+                        "Name":  "private-admin_monitor-_private_game_sessions_snapshot_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/private/game-sessions/snapshot/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  458
+                    },
+                    {
+                        "Name":  "admin-admin_monitor-_admin_categories_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/admin/categories?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  380
+                    },
+                    {
+                        "Name":  "admin-admin_monitor-_admin_users_aaaaaaaa_aaaa_4aaa_8aaa_aaaaaaaaaaa3_sessions",
+                        "Method":  "GET",
+                        "Path":  "/admin/users/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3/sessions",
+                        "Status":  200,
+                        "Bytes":  359
+                    },
+                    {
+                        "Name":  "auth-identify-admin_monitor",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1190
+                    },
+                    {
+                        "Name":  "auth-refresh-admin_monitor",
+                        "Method":  "POST",
+                        "Path":  "/auth/refresh",
+                        "Status":  200,
+                        "Bytes":  1190
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_identify",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1391
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_operasis_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  253
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_operasis_33333333_3333_4333_8333_333333333331",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis/33333333-3333-4333-8333-333333333331",
+                        "Status":  200,
+                        "Bytes":  241
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_home_operasis",
+                        "Method":  "GET",
+                        "Path":  "/private/home/operasis",
+                        "Status":  200,
+                        "Bytes":  357
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_categories_all",
+                        "Method":  "GET",
+                        "Path":  "/private/categories/all",
+                        "Status":  200,
+                        "Bytes":  370
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_users",
+                        "Method":  "GET",
+                        "Path":  "/private/users",
+                        "Status":  200,
+                        "Bytes":  638
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_satkers",
+                        "Method":  "GET",
+                        "Path":  "/private/satkers",
+                        "Status":  200,
+                        "Bytes":  277
+                    },
+                    {
+                        "Name":  "private-admin_satker-_private_game_sessions_snapshot_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/private/game-sessions/snapshot/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  458
+                    },
+                    {
+                        "Name":  "admin-admin_satker-_admin_categories_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/admin/categories?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  380
+                    },
+                    {
+                        "Name":  "admin-admin_satker-_admin_users_aaaaaaaa_aaaa_4aaa_8aaa_aaaaaaaaaaa3_sessions",
+                        "Method":  "GET",
+                        "Path":  "/admin/users/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3/sessions",
+                        "Status":  200,
+                        "Bytes":  359
+                    },
+                    {
+                        "Name":  "auth-identify-admin_satker",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1393
+                    },
+                    {
+                        "Name":  "auth-refresh-admin_satker",
+                        "Method":  "POST",
+                        "Path":  "/auth/refresh",
+                        "Status":  200,
+                        "Bytes":  1388
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_identify",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1385
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_operasis_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  253
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_operasis_33333333_3333_4333_8333_333333333331",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis/33333333-3333-4333-8333-333333333331",
+                        "Status":  200,
+                        "Bytes":  241
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_home_operasis",
+                        "Method":  "GET",
+                        "Path":  "/private/home/operasis",
+                        "Status":  200,
+                        "Bytes":  357
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_categories_all",
+                        "Method":  "GET",
+                        "Path":  "/private/categories/all",
+                        "Status":  200,
+                        "Bytes":  370
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_users",
+                        "Method":  "GET",
+                        "Path":  "/private/users",
+                        "Status":  200,
+                        "Bytes":  1383
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_satkers",
+                        "Method":  "GET",
+                        "Path":  "/private/satkers",
+                        "Status":  200,
+                        "Bytes":  277
+                    },
+                    {
+                        "Name":  "private-user_satker-_private_game_sessions_snapshot_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/private/game-sessions/snapshot/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  458
+                    },
+                    {
+                        "Name":  "admin-user_satker-_admin_categories_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/admin/categories?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  403,
+                        "Bytes":  39
+                    },
+                    {
+                        "Name":  "admin-user_satker-_admin_users_aaaaaaaa_aaaa_4aaa_8aaa_aaaaaaaaaaa3_sessions",
+                        "Method":  "GET",
+                        "Path":  "/admin/users/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3/sessions",
+                        "Status":  403,
+                        "Bytes":  39
+                    },
+                    {
+                        "Name":  "auth-identify-user_satker",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1385
+                    },
+                    {
+                        "Name":  "auth-refresh-user_satker",
+                        "Method":  "POST",
+                        "Path":  "/auth/refresh",
+                        "Status":  200,
+                        "Bytes":  1385
+                    },
+                    {
+                        "Name":  "private-user-_private_identify",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1143
+                    },
+                    {
+                        "Name":  "private-user-_private_operasis_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  200,
+                        "Bytes":  203
+                    },
+                    {
+                        "Name":  "private-user-_private_operasis_33333333_3333_4333_8333_333333333331",
+                        "Method":  "GET",
+                        "Path":  "/private/operasis/33333333-3333-4333-8333-333333333331",
+                        "Status":  403,
+                        "Bytes":  62
+                    },
+                    {
+                        "Name":  "private-user-_private_home_operasis",
+                        "Method":  "GET",
+                        "Path":  "/private/home/operasis",
+                        "Status":  200,
+                        "Bytes":  222
+                    },
+                    {
+                        "Name":  "private-user-_private_categories_all",
+                        "Method":  "GET",
+                        "Path":  "/private/categories/all",
+                        "Status":  200,
+                        "Bytes":  370
+                    },
+                    {
+                        "Name":  "private-user-_private_users",
+                        "Method":  "GET",
+                        "Path":  "/private/users",
+                        "Status":  200,
+                        "Bytes":  1383
+                    },
+                    {
+                        "Name":  "private-user-_private_satkers",
+                        "Method":  "GET",
+                        "Path":  "/private/satkers",
+                        "Status":  403,
+                        "Bytes":  34
+                    },
+                    {
+                        "Name":  "private-user-_private_game_sessions_snapshot_44444444_4444_4444_8444_444444444441",
+                        "Method":  "GET",
+                        "Path":  "/private/game-sessions/snapshot/44444444-4444-4444-8444-444444444441",
+                        "Status":  200,
+                        "Bytes":  458
+                    },
+                    {
+                        "Name":  "admin-user-_admin_categories_pageSize_10_pageNumber_1_search_",
+                        "Method":  "GET",
+                        "Path":  "/admin/categories?pageSize=10\u0026pageNumber=1\u0026search=",
+                        "Status":  403,
+                        "Bytes":  39
+                    },
+                    {
+                        "Name":  "admin-user-_admin_users_aaaaaaaa_aaaa_4aaa_8aaa_aaaaaaaaaaa3_sessions",
+                        "Method":  "GET",
+                        "Path":  "/admin/users/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3/sessions",
+                        "Status":  403,
+                        "Bytes":  39
+                    },
+                    {
+                        "Name":  "auth-identify-user",
+                        "Method":  "GET",
+                        "Path":  "/private/identify",
+                        "Status":  200,
+                        "Bytes":  1141
+                    },
+                    {
+                        "Name":  "auth-refresh-user",
+                        "Method":  "POST",
+                        "Path":  "/auth/refresh",
+                        "Status":  200,
+                        "Bytes":  1143
+                    }
+                ]
+}

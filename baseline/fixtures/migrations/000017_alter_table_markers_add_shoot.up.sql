@@ -1,0 +1,2 @@
+ALTER TABLE markers
+    ADD COLUMN shoot TEXT DEFAULT '';

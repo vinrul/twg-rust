@@ -1,0 +1,60 @@
+{
+  "source": {
+    "path": "E:\\tactical_game",
+    "branch": "main",
+    "upstream": "origin/main",
+    "commit": "91d364d0cfc5f411c11160bc4e02717be73f3a05",
+    "commit_date": "2026-09-07T02:26:35+08:00",
+    "commit_subject": "add hiace brimob dan timeout unlimited",
+    "worktree_clean": true
+  },
+  "new_workspace": {
+    "path": "F:\\twgrev",
+    "baseline_path": "F:\\twgrev\\baseline",
+    "source_policy": "read-only"
+  },
+  "counts": {
+    "go_files": 108,
+    "go_bytes": 443532,
+    "typescript_tsx_files": 411,
+    "typescript_tsx_bytes": 3867720,
+    "migration_pairs": 31,
+    "migration_files": 62,
+    "api_routes": 111,
+    "asset_files": 580,
+    "asset_bytes": 228179005,
+    "gltf_glb_files": 515,
+    "gltf_glb_draco": 453,
+    "gltf_glb_meshopt": 0
+  },
+  "api_routes_by_access": {
+    "public": 19,
+    "bearer": 1,
+    "bearer_session": 62,
+    "admin_roles": 25,
+    "snapshot_write_roles": 3,
+    "public_static": 1
+  },
+  "tooling": {
+    "rustc": "1.99.1",
+    "go": "1.26.10",
+    "node": "24.22.2",
+    "pnpm": true,
+    "podman_client": "6.1.4",
+    "podman_server": "6.0.2",
+    "postgres_image": "docker.io/library/postgres:18.4-alpine",
+    "centrifugo_image": "docker.io/centrifugo/centrifugo:v6.2.5",
+    "psql": false
+  },
+  "runtime": {
+    "fixture_database": true,
+    "fixture_container": "twg-baseline-postgres",
+    "fixture_port": 55432,
+    "golden_captures": 81,
+    "golden_verification": "pass",
+    "server_latency_measured": true,
+    "websocket_runtime": "pass",
+    "websocket_channel": "twg-baseline"
+  },
+  "analyzed_at": "2026-11-04"
+}

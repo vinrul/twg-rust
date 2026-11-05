@@ -1,0 +1,30 @@
+{
+  "http_server": {
+    "port": 8000,
+    "address": "0.0.0.0"
+  },
+  "http_api": {
+    "key": "baseline-only-not-secret"
+  },
+  "client": {
+    "insecure": true,
+    "allowed_origins": [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173"
+    ],
+    "ping_interval": "25s",
+    "pong_timeout": "8s"
+  },
+  "engine": {
+    "type": "memory"
+  },
+  "log": {
+    "level": "debug"
+  },
+  "health": {
+    "enabled": true
+  },
+  "usage_stats": {
+    "disabled": true
+  }
+}

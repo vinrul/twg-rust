@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "powershell",
+      "Shell(git:*)",
+      "Shell($paths = @('E:\\tactical_game\\server\\app.env','E:\\tactical_game\\server\\app.env.example','E:\\tactical_game\\3dmap\\.env','E:\\tactical_game\\3dmap\\.env.local'); foreach ($p in $paths) { \"{0}`t{1}\" -f $p, (Test-Path -LiteralPath $p) }; \"DOCKER`t\" + [bool](Get-Command docker -ErrorAction SilentlyContinue); \"PSQL`t\" + [bool](Get-Command psql -ErrorAction SilentlyContinue); \"RUSTC`t\" + [bool](Get-Command rustc -ErrorAction SilentlyContinue); if (Get-Command rustc -ErrorAction SilentlyContinue) { rustc --version }; \"CARGO`t\" + [bool](Get-Command cargo -ErrorAction SilentlyContinue); \"NODE`t\" + [bool](Get-Command node -ErrorAction SilentlyContinue); \"PNPM`t\" + [bool](Get-Command pnpm -ErrorAction SilentlyContinue))",
+      "Shell(Get-ChildItem:*)",
+      "Shell(Sort-Object:*)",
+      "Shell(Select-Object:*)",
+      "Shell(Format-Table:*)",
+      "Shell(Get-Content:*)",
+      "Shell(cargo:*)",
+      "Shell(set RUST_LOG=info,wgpu=warn && target\\debug\\twg-desktop.exe > target\\desktop-run.log 2>&1)",
+      "Shell(targetdebugtwg-desktop.exe:*)",
+      "Shell(trunk:*)",
+      "Shell(agent-browser:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

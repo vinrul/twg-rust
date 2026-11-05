@@ -1,0 +1,8 @@
+# Runtime baseline, binary, dan output capture mentah tidak disimpan di Git.
+.runtime/
+golden/raw/
+*.log
+
+# Binary tool lokal
+scripts/hash-bcrypt/hash-bcrypt
+scripts/hash-bcrypt/hash-bcrypt.exe

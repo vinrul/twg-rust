@@ -1,0 +1,40 @@
+{
+  "captured_at": "2026-11-04T07:45:12.724Z",
+  "base_url": "http://127.0.0.1:8010",
+  "centrifugo_url": "ws://127.0.0.1:8000/connection/websocket",
+  "channel": "twg-baseline",
+  "login": {
+    "username": "baselineadminsatker",
+    "role": "admin_satker",
+    "device_id": "baseline-admin_satker-device",
+    "http_status": 201
+  },
+  "subscribed": true,
+  "publish_allowed": {
+    "http_status": 201,
+    "body": {
+      "offset": 0,
+      "epoch": ""
+    }
+  },
+  "publication": {
+    "channel": "twg-baseline",
+    "data": {
+      "operasi_id": "33333333-3333-4333-8333-333333333331",
+      "skenario_id": "44444444-4444-4444-8444-444444444441",
+      "marker_id": "55555555-5555-4555-8555-555555555551",
+      "command": "MOVE",
+      "data": "{\"x\":115.2251,\"y\":-8.6481,\"z\":0,\"source\":\"ws-baseline\"}",
+      "is_save": 1,
+      "satker_id": "11111111-1111-4111-8111-111111111111"
+    }
+  },
+  "cross_satker": {
+    "http_status": 403,
+    "body": {
+      "code": 403,
+      "message": "cross-satker command not allowed"
+    }
+  },
+  "errors": []
+}

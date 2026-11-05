@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+axum = "0.8.9"
+bevy = { version = "0.20.1", features = ["https", "jpeg", "web_asset_cache"] }
+bevy_egui = "0.43.1"
+chrono = { version = "0.4", features = ["serde"] }
+console_error_panic_hook = "0.1"
+http-body-util = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+strum = { version = "0.27", features = ["derive"] }
+thiserror = "2.0"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.0", features = ["v4", "serde", "js"] }
+wasm-bindgen = "0.2"
+
+twg-auth = { path = "crates/twg-auth" }
+twg-contracts = { path = "crates/twg-contracts" }
+twg-domain = { path = "crates/twg-domain" }
+twg-map = { path = "crates/twg-map" }
+twg-render = { path = "crates/twg-render" }
+twg-server = { path = "crates/twg-server" }
+twg-storage = { path = "crates/twg-storage" }
+twg-ui = { path = "crates/twg-ui" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+strip = true
