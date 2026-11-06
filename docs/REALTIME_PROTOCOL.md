@@ -275,6 +275,11 @@ CENTRIFUGO_KEY=<key>
 CHANNEL=twg-jagradewata
 ```
 
+Untuk development, `compose.yaml` menyediakan Centrifugo 6 di port 8000 dengan
+API key `twg-centrifugo-test-key` (lihat `docker/centrifugo/config.json`).
+Config tersebut memakai `client.insecure` dan `allowed_origins: ["*"]`; hanya
+untuk testing lokal, bukan produksi.
+
 Saat aktif, setiap event yang diterima juga dikirim ke channel Centrifugo lama
 dengan bentuk payload yang sama (termasuk `command`, `data`, `marker_id`,
 `satker_id`), sehingga client React lama tetap menerima command selama migrasi.

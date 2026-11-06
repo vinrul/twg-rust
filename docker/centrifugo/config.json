@@ -1,0 +1,18 @@
+{
+  "client": {
+    "token": {
+      "hmac_secret_key": "twg-centrifugo-test-token-secret"
+    },
+    "allowed_origins": ["*"],
+    "insecure": true
+  },
+  "http_api": {
+    "key": "twg-centrifugo-test-key"
+  },
+  "health": {
+    "enabled": true
+  },
+  "log": {
+    "level": "info"
+  }
+}

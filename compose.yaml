@@ -1,0 +1,39 @@
+# Local development containers for the Rust tactical game.
+# Values come from `.env`; the defaults match `.env.example`.
+name: twg
+
+services:
+  db:
+    image: postgres:16.11-alpine
+    container_name: twg-db-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-twg_baseline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-twg_baseline_local}
+      POSTGRES_DB: ${POSTGRES_DB:-twg_baseline}
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - twg-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-twg_baseline} -d ${POSTGRES_DB:-twg_baseline}",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  centrifugo:
+    image: centrifugo/centrifugo:v6.10
+    container_name: twg-centrifugo-local
+    restart: unless-stopped
+    ports:
+      - "${CENTRIFUGO_PORT:-8000}:8000"
+    volumes:
+      - ./docker/centrifugo/config.json:/centrifugo/config.json:ro
+
+volumes:
+  twg-db-data:
