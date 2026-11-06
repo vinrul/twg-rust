@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["multipart"] }
 base64 = "0.22"
 bcrypt = "0.17"
 bevy = { version = "0.20.1", features = ["http", "https", "jpeg", "web_asset_cache"] }
@@ -22,6 +22,7 @@ console_error_panic_hook = "0.1"
 dotenvy = "0.15"
 hex = "0.4"
 http-body-util = "0.1"
+infer = "0.19"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"

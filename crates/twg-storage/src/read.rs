@@ -35,9 +35,9 @@ pub enum UserListScope {
 }
 
 #[derive(Clone)]
-struct ScenarioContext {
-    operation: Operation,
-    scenario: Scenario,
+pub(crate) struct ScenarioContext {
+    pub(crate) operation: Operation,
+    pub(crate) scenario: Scenario,
 }
 
 impl ReadStore {
@@ -426,6 +426,18 @@ impl ReadStore {
         self.operation_by_id(id).await
     }
 
+    pub async fn get_user(&self, id: Uuid) -> Result<Option<User>, sqlx::Error> {
+        let row = sqlx::query_as::<_, UserRow>(
+            "SELECT id, name, username, role, satker_id, profile_img, units,
+                    created_at, updated_at
+             FROM users WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(UserRow::into_contract))
+    }
+
     pub async fn get_category(&self, id: Uuid) -> Result<Option<Category>, sqlx::Error> {
         let row = sqlx::query_as::<_, CategoryRow>(
             "SELECT id, name, icon, created_at, updated_at
@@ -545,7 +557,7 @@ impl ReadStore {
         Ok(row.map(OperationRow::into_contract))
     }
 
-    async fn scenario_context(
+    pub(crate) async fn scenario_context(
         &self,
         skenario_id: Uuid,
     ) -> Result<Option<ScenarioContext>, sqlx::Error> {
@@ -656,6 +668,9 @@ struct MarkerRow {
 
 impl MarkerRow {
     fn into_contract(self, context: &ScenarioContext) -> Marker {
+        let scale = self.scale.unwrap_or(1.0);
+        let scale_y = self.scale_y.filter(|value| *value != 0.0).unwrap_or(scale);
+        let scale_z = self.scale_z.filter(|value| *value != 0.0).unwrap_or(scale);
         Marker {
             id: self.id,
             name: self.name.unwrap_or_default(),
@@ -669,9 +684,9 @@ impl MarkerRow {
             rot_z: self.rot_z.unwrap_or(0.0),
             pos_x: self.pos_x.unwrap_or(0.0),
             pos_y: self.pos_y.unwrap_or(0.0),
-            scale: self.scale.unwrap_or(1.0),
-            scale_y: self.scale_y.unwrap_or(0.0),
-            scale_z: self.scale_z.unwrap_or(0.0),
+            scale,
+            scale_y,
+            scale_z,
             altitude: self.altitude.unwrap_or(0.0),
             is_spawn: self.is_spawn.unwrap_or(0),
             keterangan: self.keterangan.unwrap_or_default(),
@@ -1085,7 +1100,7 @@ fn zero_timestamp() -> Timestamp {
         .with_timezone(&FixedOffset::east_opt(0).expect("UTC offset"))
 }
 
-fn wita(value: Option<NaiveDateTime>) -> Timestamp {
+pub(crate) fn wita(value: Option<NaiveDateTime>) -> Timestamp {
     let naive = value.unwrap_or_else(|| Utc::now().naive_utc());
     Utc.from_utc_datetime(&naive).with_timezone(&wita_offset())
 }

@@ -3,9 +3,13 @@ use thiserror::Error;
 
 mod read;
 mod store;
+mod write;
 
 pub use read::{ReadStore, SatkerScope, UserListScope};
 pub use store::PgAuthStore;
+pub use write::{
+    AnimOrder, NewAnimation, NewScenario, ScenarioUpdate, WriteError, WriteStore, go_json_string,
+};
 
 pub const DEFAULT_MAX_CONNECTIONS: u32 = 10;
 

@@ -39,6 +39,10 @@ impl ApiError {
         Self::new(StatusCode::NOT_FOUND, message)
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, message)
+    }
+
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
     }
@@ -93,6 +97,17 @@ impl From<JsonRejection> for ApiError {
                 Self::new(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported media type")
             }
             _ => Self::bad_request("invalid request body"),
+        }
+    }
+}
+
+impl From<twg_storage::WriteError> for ApiError {
+    fn from(error: twg_storage::WriteError) -> Self {
+        match error {
+            twg_storage::WriteError::NotFound(message) => Self::not_found(message),
+            twg_storage::WriteError::Conflict(message) => Self::conflict(message),
+            twg_storage::WriteError::Invalid(message) => Self::bad_request(message),
+            twg_storage::WriteError::Database(error) => Self::internal(error),
         }
     }
 }

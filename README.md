@@ -46,17 +46,25 @@ DTO, dan timestamp WITA mengikuti server Go. Differential terhadap server Go
 lama pada database baseline yang sama: **193 check PASS, 0 FAIL, 3 skip** yang
 tervalidasi golden. Detail ada di [laporan Fase 5](docs/PHASE5_REPORT.md).
 
+Fase 6: write API dan upload — CRUD user, satker, operasi, skenario (termasuk
+copy dengan remap id JSON), marker, building, line, text marker, alur, seluruh
+tipe animasi, particle/shoot, snapshot, dan command `last_map`/`last_position`.
+Operasi multi-tabel memakai transaksi. Upload gambar/video memvalidasi MIME dari
+magic bytes dengan `infer`, membatasi ukuran, menyanitasi nama file, dan
+menyajikan `/uploads` dengan header aman. Differential write terhadap server Go
+lama: **89 check PASS** plus 8 safety check. Detail ada di
+[laporan Fase 6](docs/PHASE6_REPORT.md).
+
 `cargo check`/`build` WebAssembly dan `trunk build --cargo-profile
 wasm-release` sudah berhasil. Bundle WASM release 46 MB; optimasi
 `wasm-opt`/Brotli dikerjakan pada fase packaging.
 
 Belum diimplementasikan pada fase ini:
 
-- Write API dan upload (Fase 6).
+- WebSocket server dan fan-out real-time (Fase 7).
 - Editor peta dan authoring line/polygon/floor plan.
 - Animasi runtime penuh.
 - UI editor.
-- WebSocket server.
 - Feature parity dengan React/Go.
 
 ## Struktur
@@ -82,6 +90,7 @@ tools/
   phase4-smoke.mjs     smoke test auth terhadap server + PostgreSQL
   paseto-parity.mjs    parity token Rust vs server Go lama
   read-parity.mjs      differential endpoint read-only Rust vs server Go lama
+  write-parity.mjs     differential endpoint write + safety check Rust vs Go
 ```
 
 Aturan dependency:
@@ -163,6 +172,7 @@ dari provider.
 - [Laporan stress test web Gate G1](docs/WEB_STRESS_REPORT.md)
 - [Laporan Fase 4](docs/PHASE4_REPORT.md)
 - [Laporan Fase 5](docs/PHASE5_REPORT.md)
+- [Laporan Fase 6](docs/PHASE6_REPORT.md)
 - [Baseline Fase 0](baseline/phase0-report.md)
 - [Golden HTTP](baseline/golden/verification.generated.md)
 - [WebSocket baseline](baseline/golden/websocket-capture.generated.md)

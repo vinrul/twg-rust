@@ -100,3 +100,29 @@ Exit code is non-zero on any mismatch. Three 403 checks are skipped because the
 legacy Windows binary panics in zerolog; their golden fixtures are checked
 instead. The same harness can be pointed at shadow traffic by setting `OLD_URL`
 to the production origin.
+
+## `write-parity.mjs`
+
+Differential check for the write API and uploads. Both servers must share the
+same baseline database. The script resets the database from
+`baseline/fixtures/seed.sql` before each pass, runs an identical write sequence,
+and compares normalized responses (ids, timestamps, tokens, and upload filename
+prefixes are abstracted). It also runs Rust-only safety checks for conflicts,
+not-found, invalid UUIDs, and invalid uploads.
+
+The legacy server publishes commands through Centrifugo, so the script starts a
+fake Centrifugo endpoint on port 8000 for the duration of the run.
+
+```bash
+OLD_URL=http://127.0.0.1:8013 NEW_URL=http://127.0.0.1:8011 \
+node tools/write-parity.mjs
+```
+
+| Env | Default | Meaning |
+|---|---|---|
+| `OLD_URL` | `http://127.0.0.1:8013` | Legacy Go server |
+| `NEW_URL` | `http://127.0.0.1:8011` | Rust server |
+| `DB_CONTAINER` | `twg-phase6-db` | Docker container used for `psql` reset |
+| `DB_NAME` | `twg_baseline` | Database name |
+| `SEED_PATH` | `baseline/fixtures/seed.sql` | Seed file |
+| `TWG_PASSWORD` | `Baseline#2026` | Password for baseline accounts |

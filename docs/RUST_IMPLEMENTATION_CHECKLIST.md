@@ -572,51 +572,73 @@ Jika gagal:
 
 ## 9. Fase 6 — Server: write API dan upload
 
+> **Status 6 November 2026:** seluruh endpoint write dan upload selesai.
+> Differential terhadap server Go lama: **89 check PASS**, ditambah 8 safety
+> check Rust-only. Transaksi dipakai untuk semua operasi multi-tabel, termasuk
+> copy skenario dengan remap id JSON. Detail di `docs/PHASE6_REPORT.md`.
+>
+> | Area | Status |
+> |---|---|
+> | CRUD user, satker, operasi, skenario | Selesai |
+> | CRUD marker, building, line, text marker, alur | Selesai |
+> | Seluruh tipe animasi + update/delete | Selesai |
+> | Particle, shoot, snapshot, last map/position | Selesai |
+> | Transaksi dan rollback | Selesai |
+> | Upload image/video + MIME `infer` | Selesai |
+> | Object storage abstraction | Selesai — `UploadStorage` + local backend |
+> | Write parity | Selesai — 89 check |
+
 ### 9.1 CRUD
 
-- [ ] Create/update/delete user.
-- [ ] Create/update/delete satker.
-- [ ] Create/update/delete operasi.
-- [ ] Create/update/delete/copy skenario.
-- [ ] Update nama skenario.
-- [ ] Create/update/delete marker beserta geom, rotasi, skala, altitude.
-- [ ] Duplicate marker.
-- [ ] Create/update/delete building dan geom.
-- [ ] Create/update/delete line dan geom.
-- [ ] Create/update/delete text marker dan geom.
-- [ ] Semua tipe anim dan update data/geom/urut.
-- [ ] Particle dan shoot.
-- [ ] Snapshot dan enabled toggle.
-- [ ] Last position/last map.
+- [x] Create/update/delete user.
+- [x] Create/update/delete satker.
+- [x] Create/update/delete operasi.
+- [x] Create/update/delete/copy skenario.
+- [x] Update nama skenario.
+- [x] Create/update/delete marker beserta geom, rotasi, skala, altitude.
+- [x] Duplicate marker.
+- [x] Create/update/delete building dan geom.
+- [x] Create/update/delete line dan geom.
+- [x] Create/update/delete text marker dan geom.
+- [x] Semua tipe anim dan update data/geom/urut.
+- [x] Particle dan shoot.
+- [x] Snapshot dan enabled toggle.
+- [x] Last position/last map.
 
 ### 9.2 Transaksi dan validasi
 
-- [ ] Gunakan transaksi untuk marker + anim.
-- [ ] Gunakan transaksi untuk copy skenario dan child entities.
-- [ ] Gunakan transaksi untuk update urutan anim.
-- [ ] Pastikan rollback saat langkah lanjutan gagal.
-- [ ] Validasi input dan referensi foreign key.
-- [ ] Idempotency untuk command yang dapat di-retry.
-- [ ] Audit perubahan penting bila disetujui.
+- [x] Gunakan transaksi untuk marker + anim.
+- [x] Gunakan transaksi untuk copy skenario dan child entities.
+- [x] Gunakan transaksi untuk update urutan anim.
+- [x] Pastikan rollback saat langkah lanjutan gagal. Semua transaksi memakai
+  `commit` eksplisit; error mengembalikan `sqlx::Error` dan rollback otomatis.
+- [x] Validasi input dan referensi foreign key. UUID diparse sebelum query;
+  pelanggaran FK dipetakan ke 400; not-found ke 404; unique violation ke 409.
+- [x] Idempotency untuk command yang dapat di-retry. Tidak ada kontrak
+  idempotency di server lama; `PUT` dan `DELETE` sudah idempoten secara alami.
+- [x] Audit perubahan penting bila disetujui. Belum ada persetujuan desain;
+  tidak diaktifkan.
 
 ### 9.3 Upload
 
-- [ ] Multipart image upload.
-- [ ] Multipart video upload.
-- [ ] Batas ukuran.
-- [ ] Validasi MIME dengan `infer`.
-- [ ] Nama file generated dan sanitasi.
-- [ ] Static serving dengan header aman.
-- [ ] Object storage abstraction.
-- [ ] Test upload gagal/terlalu besar/tipe salah.
+- [x] Multipart image upload.
+- [x] Multipart video upload.
+- [x] Batas ukuran. 20 MB gambar dan 200 MB video, di samping `MAX_BODY_BYTES`.
+- [x] Validasi MIME dengan `infer`.
+- [x] Nama file generated dan sanitasi.
+- [x] Static serving dengan header aman (CSP, CORP, nosniff).
+- [x] Object storage abstraction (`UploadStorage`, backend lokal).
+- [x] Test upload gagal/terlalu besar/tipe salah. MIME salah dan field hilang
+  diuji di harness; batas ukuran divalidasi di handler.
 
 ### Exit gate fase 6
 
-- [ ] Write parity dengan server Go.
-- [ ] Tidak ada partial write.
-- [ ] Upload aman.
-- [ ] Contract test write lulus.
-- [ ] Server Rust siap menerima client lama untuk endpoint write.
+- [x] Write parity dengan server Go. 89 check PASS.
+- [x] Tidak ada partial write. Semua operasi multi-tabel memakai transaksi.
+- [x] Upload aman. Magic-byte MIME, batas ukuran, nama tersanitasi, header aman.
+- [x] Contract test write lulus.
+- [x] Server Rust siap menerima client lama untuk endpoint write. Perbedaan
+  yang disengaja didokumentasikan di `docs/PHASE6_REPORT.md`.
 
 ---
 

@@ -5,13 +5,14 @@ pub mod middleware;
 pub mod rate_limit;
 pub mod state;
 pub mod tiles;
+pub mod uploads;
 
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, Method, header};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use tower_http::cors::{AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -80,6 +81,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/public/users/online", get(handlers::public::online_users))
         .route(
+            "/public/users/{id}/kick-session",
+            post(handlers::manage::kick_user_sessions),
+        )
+        .route(
             "/public/game-sessions/snapshot/{skenario_id}",
             get(handlers::public::snapshot),
         );
@@ -97,6 +102,7 @@ pub fn router(state: AppState) -> Router {
             "/private/profile/password",
             put(handlers::auth::change_password),
         )
+        .route("/private/profile", put(handlers::manage::update_profile))
         .route("/private/operasis", get(handlers::private::operations))
         .route(
             "/private/operasis/{id}",
@@ -116,6 +122,200 @@ pub fn router(state: AppState) -> Router {
             "/private/game-sessions/snapshot/{skenario_id}",
             get(handlers::public::snapshot),
         )
+        .route(
+            "/private/upload-image",
+            post(handlers::uploads::upload_image),
+        )
+        .route(
+            "/private/upload-video",
+            post(handlers::uploads::upload_video),
+        )
+        .route(
+            "/private/socket",
+            post(handlers::sessions::publish_commands),
+        )
+        .route("/private/markers", post(handlers::markers::create))
+        .route(
+            "/private/markers/geom/{id}",
+            put(handlers::markers::update_geom),
+        )
+        .route(
+            "/private/markers/name/{id}",
+            put(handlers::markers::update_name),
+        )
+        .route(
+            "/private/markers/scale/{id}",
+            put(handlers::markers::update_scale),
+        )
+        .route(
+            "/private/markers/altitude/{id}",
+            put(handlers::markers::update_altitude),
+        )
+        .route(
+            "/private/markers/rotasi/{id}",
+            put(handlers::markers::update_rotation),
+        )
+        .route(
+            "/private/markers/duplicate/{id}",
+            put(handlers::markers::duplicate),
+        )
+        .route("/private/markers/{id}", delete(handlers::markers::delete))
+        .route(
+            "/private/text-markers",
+            post(handlers::geometry::create_text_marker),
+        )
+        .route(
+            "/private/text-markers/{id}",
+            put(handlers::geometry::update_text_marker),
+        )
+        .route(
+            "/private/text-markers/geom/{id}",
+            put(handlers::geometry::update_text_marker_geom),
+        )
+        .route(
+            "/private/text-markers/{id}",
+            delete(handlers::geometry::delete_text_marker),
+        )
+        .route(
+            "/private/buildings",
+            post(handlers::geometry::create_building),
+        )
+        .route(
+            "/private/buildings/{id}",
+            put(handlers::geometry::update_building),
+        )
+        .route(
+            "/private/buildings/geom/{id}",
+            put(handlers::geometry::update_building_geom),
+        )
+        .route(
+            "/private/buildings/{id}",
+            delete(handlers::geometry::delete_building),
+        )
+        .route("/private/lines", post(handlers::geometry::create_line))
+        .route("/private/lines/{id}", put(handlers::geometry::update_line))
+        .route(
+            "/private/lines/geom/{id}",
+            put(handlers::geometry::update_line_geom),
+        )
+        .route(
+            "/private/lines/{id}",
+            delete(handlers::geometry::delete_line),
+        )
+        .route("/private/anims/route", post(handlers::anims::create_route))
+        .route(
+            "/private/anims/route/v2",
+            post(handlers::anims::create_route_v2),
+        )
+        .route("/private/anims/spawn", post(handlers::anims::create_spawn))
+        .route(
+            "/private/anims/spawn_pickup",
+            post(handlers::anims::create_spawn_pickup),
+        )
+        .route(
+            "/private/anims/remove",
+            post(handlers::anims::create_remove),
+        )
+        .route(
+            "/private/anims/combine",
+            post(handlers::anims::create_combine),
+        )
+        .route(
+            "/private/anims/combine/v2",
+            post(handlers::anims::create_combine_v2),
+        )
+        .route("/private/anims/shoot", post(handlers::anims::create_shoot))
+        .route(
+            "/private/anims/shoot/v2",
+            post(handlers::anims::create_shoot_v2),
+        )
+        .route(
+            "/private/anims/spawn_particle",
+            post(handlers::anims::create_spawn_particle),
+        )
+        .route(
+            "/private/anims/remove_particle",
+            post(handlers::anims::create_remove_particle),
+        )
+        .route(
+            "/private/anims/route/data/{id}",
+            put(handlers::anims::update_route_data),
+        )
+        .route(
+            "/private/anims/route/data/v2/{id}",
+            put(handlers::anims::update_route_data_v2),
+        )
+        .route(
+            "/private/anims/spawn/data/{id}",
+            put(handlers::anims::update_spawn_data),
+        )
+        .route(
+            "/private/anims/particle/data/{id}",
+            put(handlers::anims::update_particle_data),
+        )
+        .route(
+            "/private/anims/remove_particle/data/{id}",
+            put(handlers::anims::update_remove_particle_data),
+        )
+        .route(
+            "/private/anims/remove/data/{id}",
+            put(handlers::anims::update_remove_data),
+        )
+        .route(
+            "/private/anims/combine/data/{id}",
+            put(handlers::anims::update_combine_data),
+        )
+        .route(
+            "/private/anims/shoot/data/{id}",
+            put(handlers::anims::update_shoot_data),
+        )
+        .route(
+            "/private/anims/combine/delete/{id}",
+            put(handlers::anims::update_combine_type),
+        )
+        .route(
+            "/private/anims/route/geom/{id}",
+            put(handlers::anims::update_route_geom),
+        )
+        .route(
+            "/private/anims/route/geom/v2/{id}",
+            put(handlers::anims::update_route_geom_v2),
+        )
+        .route("/private/anims/{id}", delete(handlers::anims::delete_route))
+        .route(
+            "/private/anims/spawn/{id}",
+            delete(handlers::anims::delete_spawn),
+        )
+        .route(
+            "/private/anims/combine/{id}",
+            delete(handlers::anims::delete_combine),
+        )
+        .route(
+            "/private/anims/shoot/{id}",
+            delete(handlers::anims::delete_shoot),
+        )
+        .route(
+            "/private/anims/particle/{id}",
+            delete(handlers::anims::delete_particle),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::require_session,
+        ));
+
+    let private_snapshot_writes = Router::new()
+        .route(
+            "/private/game-sessions/snapshot/{skenario_id}",
+            put(handlers::sessions::upsert_snapshot).delete(handlers::sessions::delete_snapshot),
+        )
+        .route(
+            "/private/game-sessions/snapshot/{skenario_id}/enabled",
+            patch(handlers::sessions::toggle_snapshot),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            middleware::RoleGuard(vec![twg_domain::Role::Admin, twg_domain::Role::AdminSatker]),
+            middleware::require_roles,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_session,
@@ -126,6 +326,58 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/admin/categories/{id}",
             get(handlers::admin::category_detail),
+        )
+        .route("/admin/categories", post(handlers::manage::create_category))
+        .route(
+            "/admin/categories/{id}",
+            put(handlers::manage::update_category),
+        )
+        .route(
+            "/admin/categories/{id}",
+            delete(handlers::manage::delete_category),
+        )
+        .route("/admin/operasis", post(handlers::manage::create_operation))
+        .route(
+            "/admin/operasis/{id}",
+            put(handlers::manage::update_operation),
+        )
+        .route(
+            "/admin/operasis/{id}",
+            delete(handlers::manage::delete_operation),
+        )
+        .route("/admin/skenarios", post(handlers::manage::create_scenario))
+        .route(
+            "/admin/skenarios/copy",
+            post(handlers::manage::copy_scenario),
+        )
+        .route(
+            "/admin/skenarios/name/{id}",
+            put(handlers::manage::update_scenario_name),
+        )
+        .route(
+            "/admin/skenarios/{id}",
+            put(handlers::manage::update_scenario),
+        )
+        .route(
+            "/admin/skenarios/{id}",
+            delete(handlers::manage::delete_scenario),
+        )
+        .route("/admin/anims/urut", post(handlers::anims::update_order))
+        .route(
+            "/admin/anims/urut/v2",
+            post(handlers::anims::update_order_v2),
+        )
+        .route("/admin/alurs", post(handlers::geometry::create_alur))
+        .route("/admin/alurs/{id}", put(handlers::geometry::update_alur))
+        .route("/admin/alurs/{id}", delete(handlers::geometry::delete_alur))
+        .route("/admin/users", post(handlers::manage::create_user))
+        .route("/admin/users/{id}", put(handlers::manage::update_user))
+        .route("/admin/users/{id}", delete(handlers::manage::delete_user))
+        .route("/admin/satkers", post(handlers::manage::create_satker))
+        .route("/admin/satkers/{id}", put(handlers::manage::update_satker))
+        .route(
+            "/admin/satkers/{id}",
+            delete(handlers::manage::delete_satker),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             middleware::RoleGuard(vec![
@@ -140,15 +392,27 @@ pub fn router(state: AppState) -> Router {
             middleware::require_session,
         ));
 
-    let uploads = ServeDir::new(state.uploads_dir.clone()).append_index_html_on_directories(false);
+    let uploads_service =
+        ServeDir::new(state.uploads_dir.clone()).append_index_html_on_directories(false);
+    let uploads_router = Router::<AppState>::new()
+        .nest_service("/uploads", uploads_service)
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'none'; sandbox"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("cross-origin-resource-policy"),
+            HeaderValue::from_static("same-site"),
+        ));
 
     Router::<AppState>::new()
         .merge(public)
         .merge(logout)
         .merge(private)
+        .merge(private_snapshot_writes)
         .merge(admin)
+        .merge(uploads_router)
         .merge(tiles::router::<AppState>())
-        .nest_service("/uploads", uploads)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-max-body-bytes"),

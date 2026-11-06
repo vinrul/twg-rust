@@ -3,18 +3,21 @@ use std::sync::Arc;
 
 use sqlx::postgres::PgPool;
 use twg_auth::AuthService;
-use twg_storage::ReadStore;
+use twg_storage::{ReadStore, WriteStore};
 
 use crate::config::{RateLimitConfig, ServerConfig};
 use crate::rate_limit::RateLimiter;
+use crate::uploads::{LocalUploadStorage, UploadStorage};
 
 #[derive(Clone)]
 pub struct AppState {
     pub auth: Arc<AuthService>,
     pub pool: Option<PgPool>,
     pub read_store: Option<Arc<ReadStore>>,
+    pub write_store: Option<Arc<WriteStore>>,
     pub rate_limiter: Arc<RateLimiter>,
     pub uploads_dir: PathBuf,
+    pub uploads: Arc<dyn UploadStorage>,
     pub cors_domains: Vec<String>,
     pub max_body_bytes: usize,
 }
@@ -24,12 +27,17 @@ impl AppState {
         let read_store = pool
             .as_ref()
             .map(|pool| Arc::new(ReadStore::new(pool.clone())));
+        let write_store = pool
+            .as_ref()
+            .map(|pool| Arc::new(WriteStore::new(pool.clone())));
         Self {
             auth: Arc::new(auth),
             pool,
             read_store,
+            write_store,
             rate_limiter: Arc::new(RateLimiter::new(&config.rate_limit)),
             uploads_dir: config.uploads_dir.clone(),
+            uploads: Arc::new(LocalUploadStorage::new(config.uploads_dir.clone())),
             cors_domains: config.cors_domains.clone(),
             max_body_bytes: config.max_body_bytes,
         }
@@ -40,8 +48,12 @@ impl AppState {
             auth: Arc::new(auth),
             pool: None,
             read_store: None,
+            write_store: None,
             rate_limiter: Arc::new(RateLimiter::new(&rate_limit)),
             uploads_dir: PathBuf::from("uploads"),
+            uploads: Arc::new(LocalUploadStorage::new(
+                std::env::temp_dir().join("twg-test-uploads"),
+            )),
             cors_domains: vec!["http://localhost:5173".to_owned()],
             max_body_bytes: 1024 * 1024,
         }
