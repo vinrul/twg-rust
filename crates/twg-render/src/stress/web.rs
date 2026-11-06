@@ -76,6 +76,17 @@ pub fn lod_preference() -> Option<bool> {
     })
 }
 
+/// Reads the optional `draco` query parameter before marker assets are picked.
+pub fn draco_preference() -> Option<bool> {
+    let params = query_params();
+    params.get("draco").map(|value| {
+        matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "draco" | "compressed"
+        )
+    })
+}
+
 pub fn read_web_stress_config(
     mut commands: Commands,
     mut request: ResMut<StressRequest>,
@@ -193,6 +204,7 @@ pub fn publish_web_status(
     let bearing = camera.0.bearing_degrees;
     let pitch = camera.0.pitch_degrees;
     let lod = u8::from(models.lod);
+    let draco = u8::from(models.draco);
     let mem = memory.current_mb;
     let loaded = memory
         .loaded_mb
@@ -205,7 +217,7 @@ pub fn publish_web_status(
         .map_or_else(|| "-".to_owned(), |index| index.to_string());
     let status = if let Some(result) = &benchmark.result {
         format!(
-            "RESULT mode={} count={} fps={:.2} worst_ms={:.2} zoom={zoom:.2} lat={lat:.6} lon={lon:.6} bearing={bearing:.1} pitch={pitch:.1} lod={lod} sel={selected} mem_mb={mem:.1} loaded_mb={loaded} cleared_mb={cleared}",
+            "RESULT mode={} count={} fps={:.2} worst_ms={:.2} zoom={zoom:.2} lat={lat:.6} lon={lon:.6} bearing={bearing:.1} pitch={pitch:.1} lod={lod} draco={draco} sel={selected} mem_mb={mem:.1} loaded_mb={loaded} cleared_mb={cleared}",
             result.mode.label(),
             result.count,
             result.fps,
@@ -213,7 +225,7 @@ pub fn publish_web_status(
         )
     } else if state.active {
         format!(
-            "mode={} ready={}/{} phase={:?} fps={:.1} zoom={zoom:.2} lat={lat:.6} lon={lon:.6} bearing={bearing:.1} pitch={pitch:.1} lod={lod} sel={selected} mem_mb={mem:.1} loaded_mb={loaded} cleared_mb={cleared}",
+            "mode={} ready={}/{} phase={:?} fps={:.1} zoom={zoom:.2} lat={lat:.6} lon={lon:.6} bearing={bearing:.1} pitch={pitch:.1} lod={lod} draco={draco} sel={selected} mem_mb={mem:.1} loaded_mb={loaded} cleared_mb={cleared}",
             state.mode.label(),
             state.ready,
             state.count,
@@ -222,7 +234,7 @@ pub fn publish_web_status(
         )
     } else {
         format!(
-            "idle fps={fps:.1} zoom={zoom:.2} lat={lat:.6} lon={lon:.6} bearing={bearing:.1} pitch={pitch:.1} lod={lod} sel={selected} mem_mb={mem:.1} loaded_mb={loaded} cleared_mb={cleared}"
+            "idle fps={fps:.1} zoom={zoom:.2} lat={lat:.6} lon={lon:.6} bearing={bearing:.1} pitch={pitch:.1} lod={lod} draco={draco} sel={selected} mem_mb={mem:.1} loaded_mb={loaded} cleared_mb={cleared}"
         )
     };
 

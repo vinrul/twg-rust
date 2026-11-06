@@ -1,0 +1,126 @@
+{
+  "generatedAt": "2026-11-06T07:20:50.385Z",
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002182) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "webglVersion": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+  "headless": true,
+  "warmupSecs": 3,
+  "sampleSecs": 10,
+  "zoom": 19,
+  "layer": "osm",
+  "lod": false,
+  "draco": true,
+  "diagnostics": {
+    "tileRequests": 81,
+    "requestZooms": [
+      "19"
+    ],
+    "hosts": [
+      "tile.openstreetmap.org"
+    ],
+    "cacheEntries": 162,
+    "cacheNames": [
+      "twg-tiles-v1"
+    ],
+    "sample": [
+      "https://tile.openstreetmap.org/19/429948/274783.png",
+      "https://tile.openstreetmap.org/19/429949/274783.png",
+      "https://tile.openstreetmap.org/19/429950/274783.png",
+      "https://tile.openstreetmap.org/19/429952/274783.png",
+      "https://tile.openstreetmap.org/19/429951/274783.png"
+    ]
+  },
+  "inputDiagnostics": null,
+  "switchedDiagnostics": null,
+  "results": [
+    {
+      "mode": "animated",
+      "modeLabel": "Animated",
+      "count": 1000,
+      "fps": 68.35,
+      "worstFrameMs": 48.7,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Animated count=1000 fps=68.35 worst_ms=48.70 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=100.5 loaded_mb=- cleared_mb=-",
+      "seconds": 22.4
+    },
+    {
+      "mode": "animated",
+      "modeLabel": "Animated",
+      "count": 5000,
+      "fps": 14.26,
+      "worstFrameMs": 250,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Animated count=5000 fps=14.26 worst_ms=250.00 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=112.0 loaded_mb=- cleared_mb=-",
+      "seconds": 15.3
+    },
+    {
+      "mode": "animated",
+      "modeLabel": "Animated",
+      "count": 10000,
+      "fps": 7.23,
+      "worstFrameMs": 250,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Animated count=10000 fps=7.23 worst_ms=250.00 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=130.1 loaded_mb=- cleared_mb=-",
+      "seconds": 15.5
+    },
+    {
+      "mode": "static",
+      "modeLabel": "Static",
+      "count": 1000,
+      "fps": 65.19,
+      "worstFrameMs": 19.8,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Static count=1000 fps=65.19 worst_ms=19.80 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=111.9 loaded_mb=- cleared_mb=-",
+      "seconds": 23.1
+    },
+    {
+      "mode": "static",
+      "modeLabel": "Static",
+      "count": 5000,
+      "fps": 13.22,
+      "worstFrameMs": 83.9,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Static count=5000 fps=13.22 worst_ms=83.90 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=111.2 loaded_mb=- cleared_mb=-",
+      "seconds": 15.3
+    },
+    {
+      "mode": "static",
+      "modeLabel": "Static",
+      "count": 10000,
+      "fps": 6.82,
+      "worstFrameMs": 155.7,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Static count=10000 fps=6.82 worst_ms=155.70 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=133.6 loaded_mb=- cleared_mb=-",
+      "seconds": 15.1
+    },
+    {
+      "mode": "mixed",
+      "modeLabel": "Mixed 50/50",
+      "count": 1000,
+      "fps": 64.97,
+      "worstFrameMs": 31.9,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Mixed 50/50 count=1000 fps=64.97 worst_ms=31.90 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=111.2 loaded_mb=- cleared_mb=-",
+      "seconds": 15.6
+    },
+    {
+      "mode": "mixed",
+      "modeLabel": "Mixed 50/50",
+      "count": 5000,
+      "fps": 13.64,
+      "worstFrameMs": 127.6,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Mixed 50/50 count=5000 fps=13.64 worst_ms=127.60 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=111.8 loaded_mb=- cleared_mb=-",
+      "seconds": 15.4
+    },
+    {
+      "mode": "mixed",
+      "modeLabel": "Mixed 50/50",
+      "count": 10000,
+      "fps": 7.43,
+      "worstFrameMs": 249.4,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Mixed 50/50 count=10000 fps=7.43 worst_ms=249.40 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=1 sel=- mem_mb=131.7 loaded_mb=- cleared_mb=-",
+      "seconds": 16
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "generatedAt": "2026-11-06T07:22:30.410Z",
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002182) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "webglVersion": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+  "headless": true,
+  "warmupSecs": 2,
+  "sampleSecs": 5,
+  "zoom": 19,
+  "layer": "osm",
+  "lod": true,
+  "draco": false,
+  "diagnostics": {
+    "tileRequests": 81,
+    "requestZooms": [
+      "19"
+    ],
+    "hosts": [
+      "tile.openstreetmap.org"
+    ],
+    "cacheEntries": 162,
+    "cacheNames": [
+      "twg-tiles-v1"
+    ],
+    "sample": [
+      "https://tile.openstreetmap.org/19/429948/274783.png",
+      "https://tile.openstreetmap.org/19/429949/274783.png",
+      "https://tile.openstreetmap.org/19/429950/274783.png",
+      "https://tile.openstreetmap.org/19/429951/274783.png",
+      "https://tile.openstreetmap.org/19/429952/274783.png"
+    ]
+  },
+  "inputDiagnostics": {
+    "wheel": {
+      "status": "PASS",
+      "before": 19,
+      "afterIn": 19.45,
+      "afterOut": 18.55
+    },
+    "pan": {
+      "status": "PASS",
+      "bearing": 45,
+      "beforeLat": -8.648393,
+      "beforeLon": 115.225287,
+      "afterLat": -8.64787,
+      "afterLon": 115.225816,
+      "returnLat": -8.648393,
+      "returnLon": 115.225287
+    },
+    "lodToggle": {
+      "status": "PASS",
+      "before": "TWG G1 | mode=Static ready=1000/1000 phase=Idle fps=9.9 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=0 draco=0 sel=- mem_mb=22.7 loaded_mb=- cleared_mb=-",
+      "after": "TWG G1 | mode=Static ready=1000/1000 phase=Idle fps=110.3 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=1 draco=0 sel=- mem_mb=112.9 loaded_mb=- cleared_mb=-"
+    },
+    "dracoToggle": {
+      "status": "PASS",
+      "before": "TWG G1 | mode=Static ready=1000/1000 phase=Idle fps=47.8 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=1 draco=0 sel=- mem_mb=22.7 loaded_mb=- cleared_mb=-",
+      "after": "TWG G1 | mode=Static ready=1000/1000 phase=Idle fps=102.0 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=1 draco=1 sel=- mem_mb=100.2 loaded_mb=- cleared_mb=-"
+    },
+    "select": {
+      "status": "PASS",
+      "beforeSel": "-",
+      "afterSel": 528,
+      "title": "TWG G1 | mode=Static ready=1000/1000 phase=Idle fps=101.0 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=1 draco=0 sel=528 mem_mb=99.6 loaded_mb=- cleared_mb=-"
+    },
+    "memory": {
+      "status": "PASS",
+      "loadedMb": 136.2,
+      "clearedMb": 136.2,
+      "title": "TWG G1 | idle fps=101.1 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=1 draco=0 sel=- mem_mb=136.2 loaded_mb=136.2 cleared_mb=136.2"
+    },
+    "proxy": {
+      "status": "PASS",
+      "origin": "http://127.0.0.1:16891",
+      "prefix": "http://127.0.0.1:16891/tiles/",
+      "cacheNames": [
+        "twg-tiles-v1"
+      ],
+      "proxyTiles": 81,
+      "cacheEntries": 283,
+      "sample": [
+        "http://127.0.0.1:16891/tiles/osm/18/214976/137389.png",
+        "http://127.0.0.1:16891/tiles/osm/18/214973/137389.png",
+        "http://127.0.0.1:16891/tiles/osm/18/214977/137389.png"
+      ],
+      "samples": [
+        "https://tile.openstreetmap.org/13/6721/4289.png",
+        "https://tile.openstreetmap.org/13/6718/4289.png",
+        "https://tile.openstreetmap.org/13/6714/4289.png",
+        "https://tile.openstreetmap.org/13/6719/4289.png",
+        "https://tile.openstreetmap.org/13/6717/4289.png"
+      ]
+    },
+    "fly": {
+      "status": "PASS",
+      "beforeLat": -8.648393,
+      "beforeLon": 115.225287,
+      "afterLat": -8.649368,
+      "afterLon": 115.226273,
+      "bearing": 0,
+      "title": "TWG G1 | idle fps=101.2 zoom=19.00 lat=-8.649368 lon=115.226273 bearing=0.0 pitch=35.0 lod=1 draco=0 sel=- mem_mb=107.6 loaded_mb=- cleared_mb=-"
+    }
+  },
+  "switchedDiagnostics": null,
+  "results": [
+    {
+      "mode": "static",
+      "modeLabel": "Static",
+      "count": 1000,
+      "fps": 99.99,
+      "worstFrameMs": 13,
+      "status": "PASS",
+      "title": "TWG G1 | RESULT mode=Static count=1000 fps=99.99 worst_ms=13.00 zoom=19.00 lat=-8.648393 lon=115.225287 bearing=0.0 pitch=55.0 lod=1 draco=0 sel=- mem_mb=96.4 loaded_mb=- cleared_mb=-",
+      "seconds": 17.3
+    }
+  ]
+}

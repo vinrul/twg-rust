@@ -7,6 +7,10 @@ pub const ANIMATED_MODEL: &str = "models/polwan_airud_walk_non_draco.glb";
 pub const STATIC_MODEL: &str = "models/polwan_airud_idle_non_draco.glb";
 pub const ANIMATED_MODEL_LOD: &str = "models/polwan_airud_walk_lod2.glb";
 pub const STATIC_MODEL_LOD: &str = "models/polwan_airud_idle_lod2.glb";
+pub const ANIMATED_MODEL_DRACO: &str = "models/polwan_airud_walk_draco.glb";
+pub const STATIC_MODEL_DRACO: &str = "models/polwan_airud_idle_draco.glb";
+pub const ANIMATED_MODEL_LOD_DRACO: &str = "models/polwan_airud_walk_lod2_draco.glb";
+pub const STATIC_MODEL_LOD_DRACO: &str = "models/polwan_airud_idle_lod2_draco.glb";
 
 /// Meshes used by the stress spawner.
 ///
@@ -21,6 +25,7 @@ pub struct MarkerModelSet {
     pub animated: &'static str,
     pub still: &'static str,
     pub lod: bool,
+    pub draco: bool,
 }
 
 impl MarkerModelSet {
@@ -28,24 +33,50 @@ impl MarkerModelSet {
         animated: ANIMATED_MODEL,
         still: STATIC_MODEL,
         lod: false,
+        draco: false,
     };
 
     pub const LOD: Self = Self {
         animated: ANIMATED_MODEL_LOD,
         still: STATIC_MODEL_LOD,
         lod: true,
+        draco: false,
     };
 
+    pub const FULL_DRACO: Self = Self {
+        animated: ANIMATED_MODEL_DRACO,
+        still: STATIC_MODEL_DRACO,
+        lod: false,
+        draco: true,
+    };
+
+    pub const LOD_DRACO: Self = Self {
+        animated: ANIMATED_MODEL_LOD_DRACO,
+        still: STATIC_MODEL_LOD_DRACO,
+        lod: true,
+        draco: true,
+    };
+
+    pub const fn for_variant(lod: bool, draco: bool) -> Self {
+        match (lod, draco) {
+            (false, false) => Self::FULL,
+            (true, false) => Self::LOD,
+            (false, true) => Self::FULL_DRACO,
+            (true, true) => Self::LOD_DRACO,
+        }
+    }
+
     pub const fn for_lod(lod: bool) -> Self {
-        if lod { Self::LOD } else { Self::FULL }
+        Self::for_variant(lod, false)
     }
 }
 
 impl Default for MarkerModelSet {
     fn default() -> Self {
         // The browser needs the lower-detail proxy to reach the Gate G1 FPS
-        // floor with 10.000 markers.
-        Self::for_lod(cfg!(target_arch = "wasm32"))
+        // floor with 10.000 markers. Draco is a transfer-size optimisation
+        // only, so it stays opt-in on both targets.
+        Self::for_variant(cfg!(target_arch = "wasm32"), false)
     }
 }
 
@@ -139,8 +170,14 @@ pub struct MarkerModelReload {
 
 impl MarkerModelReload {
     /// Switches the marker mesh set and re-runs the current scenario, if any.
-    pub fn request(&mut self, models: &mut MarkerModelSet, state: &StressState, lod: bool) {
-        *models = MarkerModelSet::for_lod(lod);
+    pub fn request(
+        &mut self,
+        models: &mut MarkerModelSet,
+        state: &StressState,
+        lod: bool,
+        draco: bool,
+    ) {
+        *models = MarkerModelSet::for_variant(lod, draco);
         self.pending = true;
         self.respawn = (state.count > 0).then_some(StressRun {
             count: state.count,

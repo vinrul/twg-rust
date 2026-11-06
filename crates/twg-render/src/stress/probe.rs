@@ -4,13 +4,48 @@ use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use bevy::world_serialization::{WorldAsset, WorldAssetRoot};
 
-const PROBE_MODELS: [&str; 4] = [
-    "polwan_airud_idle_non_draco.glb",
-    "polwan_airud_walk_non_draco.glb",
-    "polwan_airud_idle_draco.glb",
-    "polwan_airud_walk_draco.glb",
+use super::gltf::load_gltf;
+
+struct ProbeModel {
+    file: &'static str,
+    draco: bool,
+}
+
+const PROBE_MODELS: [ProbeModel; 8] = [
+    ProbeModel {
+        file: "polwan_airud_idle_non_draco.glb",
+        draco: false,
+    },
+    ProbeModel {
+        file: "polwan_airud_walk_non_draco.glb",
+        draco: false,
+    },
+    ProbeModel {
+        file: "polwan_airud_idle_lod2.glb",
+        draco: false,
+    },
+    ProbeModel {
+        file: "polwan_airud_walk_lod2.glb",
+        draco: false,
+    },
+    ProbeModel {
+        file: "polwan_airud_idle_draco.glb",
+        draco: true,
+    },
+    ProbeModel {
+        file: "polwan_airud_walk_draco.glb",
+        draco: true,
+    },
+    ProbeModel {
+        file: "polwan_airud_idle_lod2_draco.glb",
+        draco: true,
+    },
+    ProbeModel {
+        file: "polwan_airud_walk_lod2_draco.glb",
+        draco: true,
+    },
 ];
-const PROBE_TIMEOUT_SECS: f32 = 8.0;
+const PROBE_TIMEOUT_SECS: f32 = 15.0;
 
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct DracoProbe {
@@ -36,15 +71,15 @@ pub fn setup_probe(
 
     let mut entries = Vec::with_capacity(PROBE_MODELS.len());
     for (index, model) in PROBE_MODELS.iter().enumerate() {
-        let path = format!("models/{model}");
+        let path = format!("models/{}", model.file);
         let handle: Handle<WorldAsset> =
-            asset_server.load(GltfAssetLabel::Scene(0).from_asset(path));
+            load_gltf(&asset_server, GltfAssetLabel::Scene(0), path, model.draco);
         commands.spawn((
             WorldAssetRoot(handle.clone()),
             Transform::from_xyz(index as f32 * 25.0, 0.0, 0.0).with_scale(Vec3::splat(0.02)),
-            Name::new(*model),
+            Name::new(model.file),
         ));
-        entries.push(((*model).to_string(), handle));
+        entries.push((model.file.to_string(), handle));
     }
 
     commands.insert_resource(DracoProbeState {

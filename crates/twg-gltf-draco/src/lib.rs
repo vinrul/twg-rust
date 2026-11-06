@@ -1,0 +1,251 @@
+//! Vendored from `bevy_gltf_draco` 0.2.1
+//! (<https://github.com/jiangheng90-opensource/bevy_gltf_draco>), dual
+//! licensed MIT OR Apache-2.0. See `README.md` for the local changes.
+
+use bevy::asset::LoadContext;
+use bevy::asset::RenderAssetUsages;
+use bevy::gltf::extensions::GltfExtensionHandlers;
+use bevy::gltf::gltf_ext::mesh::primitive_topology;
+use bevy::gltf::vertex_attributes::convert_attribute;
+use bevy::gltf::{
+    GltfAssetLabel, GltfLoaderSettings, GltfPlugin, MorphTargetNames, PrimitiveMorphAttributesIter,
+};
+use bevy::mesh::MeshVertexAttribute;
+use bevy::tasks::ConditionalSendFuture;
+use bevy::{
+    app::{App, Plugin},
+    gltf::extensions::ErasedGltfExtensionHandler,
+    log::error,
+    mesh::{Indices, Mesh},
+};
+use bevy::{
+    gltf::{
+        extensions::GltfExtensionHandler,
+        gltf::{Gltf as JsonGltf, Primitive},
+    },
+    platform::collections::HashMap,
+};
+use gltf::Semantic;
+use gltf::mesh::util::ReadIndices;
+use tracing::warn;
+
+use crate::khr_draco_mesh_compression::DracoExtension;
+
+mod khr_draco_mesh_compression;
+
+/// Internal handler that decodes `KHR_draco_mesh_compression` data for each glTF primitive.
+#[derive(Default, Clone)]
+struct GltfDracoDecoderExtensionHandler {
+    load_meshes: RenderAssetUsages,
+    rotate_meshes: bool,
+    /// `GltfPlugin::convert_coordinates`, which a load falls back to when its
+    /// settings leave `convert_coordinates` unset, as Bevy's loader does.
+    default_rotate_meshes: bool,
+}
+
+impl GltfExtensionHandler for GltfDracoDecoderExtensionHandler {
+    fn dyn_clone(&self) -> Box<dyn ErasedGltfExtensionHandler> {
+        Box::new((*self).clone())
+    }
+
+    fn on_root(&mut self, _: &mut LoadContext<'_>, _: &gltf::Gltf, settings: &GltfLoaderSettings) {
+        self.load_meshes = settings.load_meshes;
+        self.rotate_meshes = settings
+            .convert_coordinates
+            .map_or(self.default_rotate_meshes, |cc| cc.rotate_meshes);
+    }
+
+    fn on_gltf_primitive(
+        &mut self,
+        load_context: &mut LoadContext<'_>,
+        gltf: &JsonGltf,
+        gltf_mesh: &gltf::Mesh<'_>,
+        gltf_primitive: &Primitive<'_>,
+        buffer_data: &[Vec<u8>],
+        custom_vertex_attributes: &HashMap<Box<str>, MeshVertexAttribute>,
+        gltf_mesh_on_skinned_nodes: bool,
+        gltf_mesh_on_non_skinned_nodes: bool,
+        user_mesh: &mut Option<Mesh>,
+    ) -> impl ConditionalSendFuture<Output = ()> {
+        async move {
+            let Some(draco_extension) = DracoExtension::parse(load_context, gltf, gltf_primitive)
+            else {
+                // This primitive does not use KHR_draco_mesh_compression; let the
+                // default loader handle it.
+                return;
+            };
+            let Some((config, decode_data)) = draco_extension.decode_mesh(gltf, buffer_data).await
+            else {
+                error!(
+                    "failed to decode draco mesh (mesh {}, primitive {})",
+                    gltf_mesh.index(),
+                    gltf_primitive.index()
+                );
+                return;
+            };
+
+            let Some(draco_primitive_document) =
+                draco_extension.build_document(gltf_primitive, &config)
+            else {
+                error!(
+                    "failed to build draco primitive (mesh {}, primitive {})",
+                    gltf_mesh.index(),
+                    gltf_primitive.index()
+                );
+                return;
+            };
+
+            let draco_primitive = DracoExtension::primitive(&draco_primitive_document);
+
+            let primitive_topology = primitive_topology(draco_primitive.mode())
+                .unwrap_or_else(|err| panic!("fail to build draco primitive, error: {:?}", err));
+
+            let primitive_label = GltfAssetLabel::Primitive {
+                mesh: gltf_mesh.index(),
+                primitive: gltf_primitive.index(),
+            };
+
+            let mut mesh = Mesh::new(primitive_topology, self.load_meshes);
+
+            // Read vertex attributes
+            for (semantic, accessor) in draco_primitive.attributes() {
+                if [Semantic::Joints(0), Semantic::Weights(0)].contains(&semantic) {
+                    if !gltf_mesh_on_skinned_nodes {
+                        warn!(
+                            "Ignoring attribute {:?} for skinned mesh {} used on non skinned nodes (NODE_SKINNED_MESH_WITHOUT_SKIN)",
+                            semantic, primitive_label
+                        );
+                        continue;
+                    } else if gltf_mesh_on_non_skinned_nodes {
+                        error!(
+                            "Skinned mesh {} used on both skinned and non skin nodes, this is likely to cause an error (NODE_SKINNED_MESH_WITHOUT_SKIN)",
+                            primitive_label
+                        );
+                    }
+                }
+                match convert_attribute(
+                    semantic,
+                    accessor,
+                    &decode_data,
+                    custom_vertex_attributes,
+                    self.rotate_meshes,
+                ) {
+                    Ok((attribute, values)) => mesh.insert_attribute(attribute, values),
+                    Err(err) => warn!("{}", err),
+                }
+            }
+
+            // Read vertex indices
+            let reader =
+                draco_primitive.reader(|buffer| Some(decode_data[buffer.index()].as_slice()));
+            if let Some(indices) = reader.read_indices() {
+                mesh.insert_indices(match indices {
+                    ReadIndices::U8(is) => Indices::U16(is.map(|x| x as u16).collect()),
+                    ReadIndices::U16(is) => Indices::U16(is.collect()),
+                    ReadIndices::U32(is) => Indices::U32(is.collect()),
+                });
+            };
+
+            // Morph targets are not compressed: they are the original primitive's
+            // ordinary accessors, indexing the vertices in the order the encoder
+            // wrote them. A stream that decodes to another vertex count has not kept
+            // that order, and applying them anyway would move the wrong vertices.
+            let vertex_count = config.vertex_count() as usize;
+            let targets = gltf_primitive.morph_targets();
+            if targets.len() != 0 {
+                let mismatch = targets
+                    .flat_map(|target| [target.positions(), target.normals(), target.tangents()])
+                    .flatten()
+                    .find(|accessor| accessor.count() != vertex_count);
+                if let Some(accessor) = mismatch {
+                    warn!(
+                        "{}: dropping morph targets: accessor {} has {} values and the Draco stream decoded {} vertices",
+                        primitive_label,
+                        accessor.index(),
+                        accessor.count(),
+                        vertex_count
+                    );
+                } else {
+                    let original = gltf_primitive
+                        .reader(|buffer| buffer_data.get(buffer.index()).map(Vec::as_slice));
+                    mesh.set_morph_targets(
+                        original
+                            .read_morph_targets()
+                            .flat_map(|i| PrimitiveMorphAttributesIter {
+                                convert_coordinates: self.rotate_meshes,
+                                positions: i.0,
+                                normals: i.1,
+                                tangents: i.2,
+                            })
+                            .collect(),
+                    );
+
+                    let extras = gltf_mesh.extras().as_ref();
+                    if let Some(names) = extras.and_then(|extras| {
+                        serde_json::from_str::<MorphTargetNames>(extras.get()).ok()
+                    }) {
+                        mesh.set_morph_target_names(names.target_names);
+                    }
+                }
+            }
+
+            *user_mesh = Some(mesh);
+        }
+    }
+}
+
+/// Bevy plugin that adds runtime Draco decoding support to the glTF loader.
+///
+/// Add this plugin to your app to enable loading glTF models that use the
+/// `KHR_draco_mesh_compression` extension on both native and WebAssembly platforms.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use bevy::prelude::*;
+/// use twg_gltf_draco::GltfDracoDecoderPlugin;
+///
+/// fn main() {
+///     App::new()
+///         .add_plugins(DefaultPlugins)
+///         .add_plugins(GltfDracoDecoderPlugin)
+///         .run();
+/// }
+/// ```
+pub struct GltfDracoDecoderPlugin;
+
+impl Plugin for GltfDracoDecoderPlugin {
+    fn build(&self, app: &mut App) {
+        // Created here as well, so the plugin can be added before `GltfPlugin`:
+        // both only initialize it, and the loader takes the shared list in
+        // `GltfPlugin::finish`.
+        app.init_resource::<GltfExtensionHandlers>();
+    }
+
+    fn finish(&self, app: &mut App) {
+        // Every plugin has been added by now, so `GltfPlugin`'s coordinate
+        // default can be read whichever order the two were added in.
+        let handler = GltfDracoDecoderExtensionHandler {
+            default_rotate_meshes: app
+                .get_added_plugins::<GltfPlugin>()
+                .first()
+                .is_some_and(|gltf| gltf.convert_coordinates.rotate_meshes),
+            ..Default::default()
+        };
+        #[cfg(target_family = "wasm")]
+        bevy::tasks::block_on(async {
+            app.world_mut()
+                .resource_mut::<GltfExtensionHandlers>()
+                .0
+                .write()
+                .await
+                .push(Box::new(handler))
+        });
+        #[cfg(not(target_family = "wasm"))]
+        app.world_mut()
+            .resource_mut::<GltfExtensionHandlers>()
+            .0
+            .write_blocking()
+            .push(Box::new(handler));
+    }
+}

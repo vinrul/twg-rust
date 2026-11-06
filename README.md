@@ -189,6 +189,11 @@ Desktop membuka client shell dan memakai `TWG_API_URL` (default
 menjalankan map demo tanpa shell. Desktop mencari aset di `../../assets`
 relatif terhadap direktori kerja; override dengan `TWG_ASSET_PATH`.
 
+Stress marker memakai mesh LOD2 secara default. Tambahkan `--full` untuk mesh
+penuh dan `--draco` untuk varian terkompresi (lihat
+[laporan Draco](docs/DRACO_REPORT.md)). Di web, padanan query-nya adalah
+`?lod=1` dan `?draco=1`. Toggle runtime: `M` untuk LOD, `D` untuk Draco.
+
 Web:
 
 ```bash
@@ -241,6 +246,7 @@ Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
 - [Laporan Fase 2](docs/PHASE2_REPORT.md)
 - [Laporan Fase 3](docs/PHASE3_REPORT.md)
 - [Laporan stress test web Gate G1](docs/WEB_STRESS_REPORT.md)
+- [Laporan Draco + LOD](docs/DRACO_REPORT.md)
 - [Laporan Fase 4](docs/PHASE4_REPORT.md)
 - [Laporan Fase 5](docs/PHASE5_REPORT.md)
 - [Laporan Fase 6](docs/PHASE6_REPORT.md)

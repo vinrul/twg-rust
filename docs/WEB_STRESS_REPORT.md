@@ -195,6 +195,20 @@ berpindah ke Esri, 81 tile satelit dimuat, dan Cache Storage naik dari 162 ke
 
 ![Switch runtime OSM ke Esri](assets/web-stress/layer-switch-after-switch.png)
 
+## Draco + LOD
+
+Loader `KHR_draco_mesh_compression` di-vendor sebagai `twg-gltf-draco` dan
+aktif di desktop maupun web. Laporan lengkap ada di
+[`DRACO_REPORT.md`](DRACO_REPORT.md). Ringkasan sesi web:
+
+| Varian (Animated) | 1.000 | 5.000 | 10.000 |
+|---|---:|---:|---:|
+| Draco + LOD2 | 99,74 | 54,08 | 26,93 |
+| Draco full | 68,35 | 14,26 | 7,23 |
+
+Toggle runtime `D` dan query `?draco=1` diuji PASS. Draco tidak menaikkan FPS
+karena kompresi hanya memperkecil unduhan; LOD tetap penentu performa.
+
 ## Reproduksi
 
 ```bash
@@ -202,8 +216,8 @@ cd apps/web
 trunk build --cargo-profile wasm-release
 cd ../..
 node tools/web-stress.mjs --sample=10 \
-  --wheel-test --pan-test --lod-toggle-test --select-test \
-  --memory-test --fly-test --proxy-test
+  --wheel-test --pan-test --lod-toggle-test --draco-toggle-test \
+  --select-test --memory-test --fly-test --proxy-test
 ```
 
 Uji proxy memakai route same-origin dari static server harness dan meneruskan
@@ -212,6 +226,8 @@ Uji proxy memakai route same-origin dari static server harness dan meneruskan
 Uji overzoom dan satelit:
 
 ```bash
+node tools/web-stress.mjs --tag=draco-lod --lod=1 --draco=1 --sample=10
+node tools/web-stress.mjs --tag=draco-full --lod=0 --draco=1 --sample=10
 node tools/web-stress.mjs --tag=overzoom-23 --only=static:1000 --zoom=23 --sample=5
 node tools/web-stress.mjs --tag=overzoom-26 --only=static:1000 --zoom=26 --sample=3
 node tools/web-stress.mjs --tag=satellite --only=static:1000 --zoom=19 --layer=satellite --sample=5

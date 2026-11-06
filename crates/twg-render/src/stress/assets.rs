@@ -3,6 +3,7 @@ use bevy::gltf::{GltfAssetLabel, GltfMaterial};
 use bevy::prelude::*;
 
 use super::config::MarkerModelSet;
+use super::gltf::load_gltf;
 
 #[derive(Resource, Default)]
 pub struct MarkerAssets {
@@ -18,26 +19,32 @@ pub struct MarkerAssets {
 
 impl MarkerAssets {
     pub fn load(asset_server: &AssetServer, models: &MarkerModelSet) -> Self {
-        let static_mesh = asset_server.load(
+        let static_mesh = load_gltf(
+            asset_server,
             GltfAssetLabel::Primitive {
                 mesh: 0,
                 primitive: 0,
-            }
-            .from_asset(models.still),
+            },
+            models.still,
+            models.draco,
         );
-        let animated_material_source = asset_server.load(
+        let animated_material_source = load_gltf(
+            asset_server,
             GltfAssetLabel::Material {
                 index: 0,
                 is_scale_inverted: false,
-            }
-            .from_asset(models.animated),
+            },
+            models.animated,
+            models.draco,
         );
-        let static_material_source = asset_server.load(
+        let static_material_source = load_gltf(
+            asset_server,
             GltfAssetLabel::Material {
                 index: 0,
                 is_scale_inverted: false,
-            }
-            .from_asset(models.still),
+            },
+            models.still,
+            models.draco,
         );
 
         Self {
@@ -59,8 +66,8 @@ pub fn load_marker_assets(
     models: Res<MarkerModelSet>,
 ) {
     info!(
-        "stress marker models: {} (animated), {} (static), lod={}",
-        models.animated, models.still, models.lod
+        "stress marker models: {} (animated), {} (static), lod={}, draco={}",
+        models.animated, models.still, models.lod, models.draco
     );
     commands.insert_resource(MarkerAssets::load(&asset_server, &models));
 }

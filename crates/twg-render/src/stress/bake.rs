@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 
 use super::config::{BakeTemplate, MarkerModelSet};
+use super::gltf::load_gltf;
 use super::{BAKED_FRAMES, StressAnimations};
 
 #[derive(Resource)]
@@ -30,7 +31,12 @@ pub fn begin_bake(
     graphs: &mut Assets<AnimationGraph>,
     models: &MarkerModelSet,
 ) -> (StressAnimations, BakedAnimation) {
-    let clip = asset_server.load(GltfAssetLabel::Animation(0).from_asset(models.animated));
+    let clip = load_gltf(
+        asset_server,
+        GltfAssetLabel::Animation(0),
+        models.animated,
+        models.draco,
+    );
     let (graph, index) = AnimationGraph::from_clip(clip.clone());
     let animations = StressAnimations {
         graph: graphs.add(graph),
@@ -52,7 +58,12 @@ pub fn begin_bake(
     };
 
     commands.spawn((
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(models.animated))),
+        WorldAssetRoot(load_gltf(
+            asset_server,
+            GltfAssetLabel::Scene(0),
+            models.animated,
+            models.draco,
+        )),
         Transform::default(),
         Visibility::Hidden,
         BakeTemplate,

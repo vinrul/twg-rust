@@ -2,6 +2,7 @@ mod assets;
 mod bake;
 mod benchmark;
 mod config;
+mod gltf;
 mod memory;
 mod probe;
 mod reload;
@@ -16,8 +17,9 @@ use bevy::transform::TransformSystems;
 
 pub use benchmark::{BenchPhase, BenchResult, StressBenchmark};
 pub use config::{
-    ANIMATED_MODEL, ANIMATED_MODEL_LOD, DEFAULT_STRESS_ZOOM, MarkerModelReload, MarkerModelSet,
-    STATIC_MODEL, STATIC_MODEL_LOD, STRESS_COUNTS, StressMode, StressRequest, StressRun,
+    ANIMATED_MODEL, ANIMATED_MODEL_DRACO, ANIMATED_MODEL_LOD, ANIMATED_MODEL_LOD_DRACO,
+    DEFAULT_STRESS_ZOOM, MarkerModelReload, MarkerModelSet, STATIC_MODEL, STATIC_MODEL_DRACO,
+    STATIC_MODEL_LOD, STATIC_MODEL_LOD_DRACO, STRESS_COUNTS, StressMode, StressRequest, StressRun,
     StressState,
 };
 pub use memory::{MemoryProbe, MemoryProbePhase, MemoryStats};
@@ -59,6 +61,7 @@ impl Plugin for StressPlugin {
                 Update,
                 (
                     keyboard_toggle_lod,
+                    keyboard_toggle_draco,
                     keyboard_clear,
                     reload::reload_marker_models,
                     assets::finalize_marker_assets,
@@ -110,7 +113,22 @@ fn keyboard_toggle_lod(
 ) {
     if keys.just_pressed(KeyCode::KeyM) {
         let lod = !models.lod;
-        reload.request(&mut models, &state, lod);
+        let draco = models.draco;
+        reload.request(&mut models, &state, lod, draco);
+    }
+}
+
+/// Keyboard equivalent of the Draco button: `D` switches plain <-> Draco.
+fn keyboard_toggle_draco(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut models: ResMut<MarkerModelSet>,
+    mut reload: ResMut<MarkerModelReload>,
+    state: Res<StressState>,
+) {
+    if keys.just_pressed(KeyCode::KeyD) {
+        let lod = models.lod;
+        let draco = !models.draco;
+        reload.request(&mut models, &state, lod, draco);
     }
 }
 
@@ -132,8 +150,10 @@ fn keyboard_clear(keys: Res<ButtonInput<KeyCode>>, mut request: ResMut<StressReq
 
 fn resolve_marker_models(mut models: ResMut<MarkerModelSet>) {
     #[cfg(target_arch = "wasm32")]
-    if let Some(lod) = web::lod_preference() {
-        *models = MarkerModelSet::for_lod(lod);
+    {
+        let lod = web::lod_preference().unwrap_or(models.lod);
+        let draco = web::draco_preference().unwrap_or(models.draco);
+        *models = MarkerModelSet::for_variant(lod, draco);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

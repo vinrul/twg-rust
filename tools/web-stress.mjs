@@ -39,6 +39,7 @@ const sampleSecs = args.sample ?? "10";
 const zoom = args.zoom ?? "19";
 const layer = args.layer ?? "osm";
 const lod = args.lod ?? "1";
+const draco = args.draco ?? "0";
 const proxyMode = args.proxy ?? (args["proxy-test"] ? "same" : null);
 const proxyUrl =
   proxyMode && proxyMode !== "same"
@@ -480,6 +481,32 @@ async function runLodToggleTest(cdp, baseUrl) {
   };
 }
 
+async function runDracoToggleTest(cdp, baseUrl) {
+  await cdp.send("Page.navigate", {
+    url: `${baseUrl}?stress=static&count=1000&zoom=19&lod=1&draco=0`,
+  });
+  const before = await waitForTitle(
+    cdp,
+    (title) => title.includes("ready=1000/1000") && title.includes("draco=0"),
+    60_000,
+  );
+  if (!before.includes("ready=1000/1000") || !before.includes("draco=0")) {
+    return { status: "FAIL: plain scene did not become ready", before };
+  }
+
+  await pressKey(cdp, "d", "KeyD", 68);
+  const after = await waitForTitle(
+    cdp,
+    (title) => title.includes("draco=1") && title.includes("ready=1000/1000"),
+    120_000,
+  );
+  return {
+    status: after.includes("draco=1") && after.includes("ready=1000/1000") ? "PASS" : "FAIL",
+    before,
+    after,
+  };
+}
+
 async function runSelectTest(cdp, baseUrl, screenshotDir, tagPrefix) {
   await cdp.send("Page.navigate", {
     url: `${baseUrl}?stress=static&count=1000&zoom=19&lod=1`,
@@ -874,6 +901,7 @@ async function main() {
           zoom: String(zoom),
           layer: String(layer),
           lod: String(lod),
+          draco: String(draco),
         });
         const url = `${baseUrl}?${params.toString()}`;
         log(`running ${mode.label} x${count}`);
@@ -915,6 +943,7 @@ async function main() {
       args["wheel-test"] ||
       args["pan-test"] ||
       args["lod-toggle-test"] ||
+      args["draco-toggle-test"] ||
       args["select-test"] ||
       args["memory-test"] ||
       args["proxy-test"] ||
@@ -935,6 +964,11 @@ async function main() {
         log("running runtime LOD toggle test");
         inputDiagnostics.lodToggle = await runLodToggleTest(cdp, baseUrl);
         log(`lod toggle test: ${JSON.stringify(inputDiagnostics.lodToggle)}`);
+      }
+      if (args["draco-toggle-test"]) {
+        log("running runtime Draco toggle test");
+        inputDiagnostics.dracoToggle = await runDracoToggleTest(cdp, baseUrl);
+        log(`draco toggle test: ${JSON.stringify(inputDiagnostics.dracoToggle)}`);
       }
       if (args["select-test"]) {
         log("running marker selection test");
@@ -1001,6 +1035,7 @@ async function main() {
           zoom: Number(zoom),
           layer,
           lod: Number(lod) === 1,
+          draco: Number(draco) === 1,
           diagnostics,
           inputDiagnostics,
           switchedDiagnostics: switchDiagnostics,
@@ -1015,7 +1050,7 @@ async function main() {
       join(docsDir, `web-stress-results${suffix}.md`),
       `# Hasil stress test web — Gate G1\n\n` +
         `Renderer: ${renderer} (${webglVersion})\n\n` +
-        `Warmup ${warmupSecs}s, sample ${sampleSecs}s, zoom ${zoom}, layer ${layer}, LOD ${lod}.\n\n` +
+        `Warmup ${warmupSecs}s, sample ${sampleSecs}s, zoom ${zoom}, layer ${layer}, LOD ${lod}, Draco ${draco}.\n\n` +
         `${table}\n\n` +
         `Tile requests: ${diagnostics.tileRequests}; request zooms: ${diagnostics.requestZooms.join(", ") || "—"}; Cache Storage entries: ${diagnostics.cacheEntries}.\n`,
     );

@@ -56,7 +56,7 @@ pub fn reload_marker_models(
     }
 
     info!(
-        "marker models reloaded: {} (lod={}), waiting for assets and bake",
-        models.animated, models.lod
+        "marker models reloaded: {} (lod={}, draco={}), waiting for assets and bake",
+        models.animated, models.lod, models.draco
     );
 }

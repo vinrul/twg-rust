@@ -126,6 +126,7 @@ impl CliArgs {
         let mut probe_draco = false;
         let mut memory_probe = false;
         let mut lod = cfg!(target_arch = "wasm32");
+        let mut draco = false;
         let mut zoom = DEFAULT_STRESS_ZOOM;
         let mut warmup_secs = 3.0f32;
         let mut sample_secs = 8.0f32;
@@ -201,6 +202,8 @@ impl CliArgs {
                 "--memory-probe" => memory_probe = true,
                 "--stress-lod" | "--lod" => lod = true,
                 "--stress-full" | "--full" => lod = false,
+                "--draco" => draco = true,
+                "--no-draco" => draco = false,
                 _ => {}
             }
             index += 1;
@@ -233,7 +236,7 @@ impl CliArgs {
 
         Self {
             stress,
-            models: MarkerModelSet::for_lod(lod),
+            models: MarkerModelSet::for_variant(lod, draco),
             probe_draco,
             memory_probe,
             zoom: view_zoom,

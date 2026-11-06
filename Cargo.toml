@@ -60,6 +60,7 @@ twg-auth = { path = "crates/twg-auth" }
 twg-client = { path = "crates/twg-client" }
 twg-contracts = { path = "crates/twg-contracts" }
 twg-domain = { path = "crates/twg-domain" }
+twg-gltf-draco = { path = "crates/twg-gltf-draco" }
 twg-map = { path = "crates/twg-map" }
 twg-render = { path = "crates/twg-render" }
 twg-server = { path = "crates/twg-server" }

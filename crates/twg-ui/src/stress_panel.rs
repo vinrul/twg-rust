@@ -58,6 +58,8 @@ pub fn draw_stress_panel_ctx(
     let mut spawn_benchmark = None;
     let mut spawn_interactive = false;
     let mut clear = false;
+    let lod = models.lod;
+    let draco = models.draco;
 
     egui::Window::new("G1 Marker Stress")
         .default_pos(egui::pos2(16.0, 380.0))
@@ -89,17 +91,26 @@ pub fn draw_stress_panel_ctx(
 
             ui.label("Marker mesh");
             ui.horizontal(|ui| {
-                if ui.selectable_label(!models.lod, "Full 9.6k").clicked() && models.lod {
-                    reload.request(models, state, false);
+                if ui.selectable_label(!lod, "Full 9.6k").clicked() && lod {
+                    reload.request(models, state, false, draco);
                 }
-                if ui.selectable_label(models.lod, "LOD 2.4k").clicked() && !models.lod {
-                    reload.request(models, state, true);
+                if ui.selectable_label(lod, "LOD 2.4k").clicked() && !lod {
+                    reload.request(models, state, true, draco);
                 }
             });
-            if models.lod && !cfg!(target_arch = "wasm32") {
+            ui.label("Compression");
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!draco, "Plain").clicked() && draco {
+                    reload.request(models, state, lod, false);
+                }
+                if ui.selectable_label(draco, "Draco").clicked() && !draco {
+                    reload.request(models, state, lod, true);
+                }
+            });
+            if lod && !cfg!(target_arch = "wasm32") {
                 ui.small("LOD aktif — cocok untuk grup marker besar");
             }
-            ui.small("M: toggle full/LOD  ·  C: clear markers");
+            ui.small("M: full/LOD  ·  D: plain/Draco  ·  C: clear");
 
             ui.separator();
             ui.horizontal(|ui| {
@@ -115,12 +126,13 @@ pub fn draw_stress_panel_ctx(
             });
             ui.separator();
             ui.monospace(format!(
-                "mesh    {}",
-                if models.lod {
+                "mesh    {} · {}",
+                if lod {
                     "LOD 2.4k tris"
                 } else {
                     "full 9.6k tris"
-                }
+                },
+                if draco { "draco" } else { "plain" }
             ));
             ui.monospace(format!(
                 "markers {}/{}   fps {:.1}",

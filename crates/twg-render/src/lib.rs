@@ -10,10 +10,11 @@ pub use map::{
     UiPointerState,
 };
 pub use stress::{
-    ANIMATED_MODEL, ANIMATED_MODEL_LOD, BenchPhase, BenchResult, DEFAULT_STRESS_ZOOM, DracoProbe,
-    MarkerModelReload, MarkerModelSet, MemoryProbe, MemoryProbePhase, MemoryStats, STATIC_MODEL,
-    STATIC_MODEL_LOD, STRESS_COUNTS, SelectionState, StressBenchmark, StressMode, StressPlugin,
-    StressRequest, StressRun, StressState,
+    ANIMATED_MODEL, ANIMATED_MODEL_DRACO, ANIMATED_MODEL_LOD, ANIMATED_MODEL_LOD_DRACO, BenchPhase,
+    BenchResult, DEFAULT_STRESS_ZOOM, DracoProbe, MarkerModelReload, MarkerModelSet, MemoryProbe,
+    MemoryProbePhase, MemoryStats, STATIC_MODEL, STATIC_MODEL_DRACO, STATIC_MODEL_LOD,
+    STATIC_MODEL_LOD_DRACO, STRESS_COUNTS, SelectionState, StressBenchmark, StressMode,
+    StressPlugin, StressRequest, StressRun, StressState,
 };
 pub use twg_map::{CameraFlight, MapCameraState};
 
@@ -24,6 +25,7 @@ impl Plugin for TacticalRenderPlugin {
         app.insert_resource(ClearColor(Color::srgb(0.025, 0.045, 0.075)))
             .add_plugins((
                 FrameTimeDiagnosticsPlugin::default(),
+                twg_gltf_draco::GltfDracoDecoderPlugin,
                 MapRenderPlugin,
                 StressPlugin,
             ));
