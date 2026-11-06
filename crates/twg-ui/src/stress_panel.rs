@@ -25,7 +25,36 @@ pub fn draw_stress_panel(
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|diagnostic| diagnostic.smoothed())
         .unwrap_or_default();
+    draw_stress_panel_ctx(
+        context,
+        &mut request,
+        &state,
+        &benchmark,
+        &mut models,
+        &mut reload,
+        &memory,
+        &selection,
+        fps,
+        &mut count_index,
+        &mut mode,
+    );
+    Ok(())
+}
 
+#[allow(clippy::too_many_arguments)]
+pub fn draw_stress_panel_ctx(
+    context: &egui::Context,
+    request: &mut StressRequest,
+    state: &StressState,
+    benchmark: &StressBenchmark,
+    models: &mut MarkerModelSet,
+    reload: &mut MarkerModelReload,
+    memory: &MemoryStats,
+    selection: &SelectionState,
+    fps: f64,
+    count_index: &mut usize,
+    mode: &mut StressMode,
+) {
     let mut spawn_benchmark = None;
     let mut spawn_interactive = false;
     let mut clear = false;
@@ -61,10 +90,10 @@ pub fn draw_stress_panel(
             ui.label("Marker mesh");
             ui.horizontal(|ui| {
                 if ui.selectable_label(!models.lod, "Full 9.6k").clicked() && models.lod {
-                    reload.request(&mut models, &state, false);
+                    reload.request(models, state, false);
                 }
                 if ui.selectable_label(models.lod, "LOD 2.4k").clicked() && !models.lod {
-                    reload.request(&mut models, &state, true);
+                    reload.request(models, state, true);
                 }
             });
             if models.lod && !cfg!(target_arch = "wasm32") {
@@ -142,6 +171,4 @@ pub fn draw_stress_panel(
             bearing_degrees: None,
         });
     }
-
-    Ok(())
 }

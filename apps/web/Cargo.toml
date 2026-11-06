@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 bevy.workspace = true
 console_error_panic_hook.workspace = true
+twg-client.workspace = true
 twg-render.workspace = true
 twg-ui.workspace = true
 wasm-bindgen.workspace = true

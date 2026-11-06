@@ -8,6 +8,15 @@ pub fn draw_compass(
     mut flight: ResMut<CameraFlightState>,
 ) -> Result {
     let context = contexts.ctx_mut()?;
+    draw_compass_ctx(context, &mut camera, &mut flight);
+    Ok(())
+}
+
+pub fn draw_compass_ctx(
+    context: &egui::Context,
+    camera: &mut MapCameraResource,
+    flight: &mut CameraFlightState,
+) {
     egui::Window::new("Compass")
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
         .resizable(false)
@@ -93,6 +102,4 @@ pub fn draw_compass(
                 camera.0.bearing_degrees, camera.0.zoom
             ));
         });
-
-    Ok(())
 }

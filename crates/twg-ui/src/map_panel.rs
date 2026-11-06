@@ -12,12 +12,23 @@ pub fn draw_map_panel(
     diagnostics: Res<DiagnosticsStore>,
 ) -> Result {
     let context = contexts.ctx_mut()?;
-    let camera = camera.0;
-    let cursor = cursor.0;
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|diagnostic| diagnostic.smoothed())
         .unwrap_or_default();
+    draw_map_panel_ctx(context, &mut layer, &camera, &cursor, fps);
+    Ok(())
+}
+
+pub fn draw_map_panel_ctx(
+    context: &egui::Context,
+    layer: &mut BaseLayerResource,
+    camera: &MapCameraResource,
+    cursor: &MapCursorResource,
+    fps: f64,
+) {
+    let camera = camera.0;
+    let cursor = cursor.0;
 
     egui::Window::new("Tactical Map · Gate G1")
         .default_pos(egui::pos2(16.0, 16.0))
@@ -72,6 +83,4 @@ pub fn draw_map_panel(
             ui.label("WASD/arrows: pan  ·  Q/E: rotate  ·  R/F: pitch  ·  N: north  ·  H: reset");
             ui.label("L: switch base layer  ·  +/-: zoom step");
         });
-
-    Ok(())
 }

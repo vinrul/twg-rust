@@ -46,14 +46,14 @@ fn percent_decode(input: &str) -> String {
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) =
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
                 (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-            {
-                output.push(high * 16 + low);
-                index += 3;
-                continue;
-            }
+        {
+            output.push(high * 16 + low);
+            index += 3;
+            continue;
         }
         if bytes[index] == b'+' {
             output.push(b' ');
@@ -164,6 +164,7 @@ pub fn read_web_stress_config(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn publish_web_status(
     time: Res<Time>,
     state: Res<StressState>,
@@ -225,9 +226,9 @@ pub fn publish_web_status(
         )
     };
 
-    if let Some(window) = web_sys::window() {
-        if let Some(document) = window.document() {
-            document.set_title(&format!("TWG G1 | {status}"));
-        }
+    if let Some(window) = web_sys::window()
+        && let Some(document) = window.document()
+    {
+        document.set_title(&format!("TWG G1 | {status}"));
     }
 }

@@ -49,6 +49,35 @@ different proxy origin directly.
 
 Set `CHROME_PATH` if Chrome/Edge is not in a standard location.
 
+## `client-smoke.mjs`
+
+Smoke test for the Fase 8 client shell. It logs in through the API, seeds
+`localStorage` with the resulting session, serves `apps/web/dist`, boots the
+app in headless Chrome/Edge, and verifies that identify, dashboard requests,
+the WebSocket ticket, and the WebSocket connection all succeed. It also checks
+for JavaScript exceptions and writes screenshots for review.
+
+```bash
+cd apps/web
+trunk build
+cd ../..
+node tools/client-smoke.mjs --username=baselinemonitor
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--api=<url>` | `http://127.0.0.1:8010` | Rust API origin |
+| `--username=<name>` | `baselineadmin` | Baseline account; use `baselinemonitor` when the admin device is already logged in |
+| `--password=<pass>` | `Baseline#2026` | Baseline password |
+| `--zoom=<z>` | — | Initial camera zoom passed to the page |
+| `--map-wait=<ms>` | `15000` | Wait before the map screenshot |
+| `--preview=false` | on | Skip the Peta click and WebSocket checks |
+| `--headless=false` | headless | Show the browser window |
+| `--timeout=<ms>` | `120000` | Total wait for identify/dashboard responses |
+
+Screenshots are written to `docs/assets/phase8-client.png` and
+`docs/assets/phase8-client-map.png`.
+
 ## `phase4-smoke.mjs`
 
 Auth smoke test against a running server and PostgreSQL. It checks login,

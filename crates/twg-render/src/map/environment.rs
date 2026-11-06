@@ -36,7 +36,7 @@ pub fn spawn_environment(
     commands.spawn((
         Mesh3d(ground),
         MeshMaterial3d(material),
-        Transform::from_xyz(0.0, -0.05, 0.0),
+        Transform::from_xyz(0.0, -50.0, 0.0),
         GroundPlane,
         Name::new("Map fallback ground"),
     ));
@@ -51,7 +51,10 @@ pub fn update_ground(
         .0
         .distance_for_viewport(window.physical_height() as f32, CAMERA_FOV_Y);
     let scale = (distance * 20.0).max(1_000.0);
+    // Keep the fallback well below the tile plane. A fixed offset z-fights once
+    // the camera is far away (low zoom), so scale it with the view distance.
+    let offset = -(distance * 0.002).max(1.0);
     for mut transform in &mut grounds {
-        *transform = Transform::from_xyz(0.0, -0.05, 0.0).with_scale(Vec3::splat(scale));
+        *transform = Transform::from_xyz(0.0, offset, 0.0).with_scale(Vec3::splat(scale));
     }
 }

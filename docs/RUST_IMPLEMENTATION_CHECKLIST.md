@@ -721,54 +721,54 @@ Jika gagal:
 
 ### 11.1 Fondasi client
 
-- [ ] Struktur plugin Bevy.
-- [ ] State `Boot`, `Login`, `Workspace`, `MapEditor`, `Preview`.
-- [ ] Tema design token dari Tailwind lama.
-- [ ] Font, spacing, warna, radius, shadow, dan icon set.
-- [ ] Widget: button, input, textarea, select, checkbox, radio, switch.
-- [ ] Widget: dialog, sheet, tooltip, popover, tabs, table.
-- [ ] Toast/notifikasi.
-- [ ] Drag-and-drop daftar/layer.
-- [ ] Date/time picker.
-- [ ] Loading, empty, error state.
-- [ ] Keyboard shortcut dan focus.
-- [ ] Layout sidebar/navbar/responsive.
+- [x] Struktur plugin Bevy.
+- [x] State `Boot`, `Login`, `Workspace`, `MapEditor`, `Preview`.
+- [x] Tema design token dari Tailwind lama.
+- [x] Font, spacing, warna, radius, shadow, dan icon set.
+- [x] Widget: button, input, textarea, select, checkbox, radio, switch.
+- [x] Widget: dialog, sheet, tooltip, popover, tabs, table.
+- [x] Toast/notifikasi.
+- [x] Drag-and-drop daftar/layer.
+- [x] Date/time picker.
+- [x] Loading, empty, error state.
+- [x] Keyboard shortcut dan focus.
+- [x] Layout sidebar/navbar/responsive.
 
 ### 11.2 API dan auth client
 
-- [ ] HTTP client typed.
-- [ ] Base URL dan environment.
-- [ ] Attach access token dan `X-Device-ID`.
-- [ ] Refresh single-flight saat 401.
-- [ ] Redirect/bersihkan session saat 403 tertentu.
-- [ ] Penyimpanan token desktop via keyring.
-- [ ] Penyimpanan token web sesuai keputusan keamanan.
-- [ ] Query cache, invalidation, retry, dan cancellation.
-- [ ] Mapping error ke pesan UI.
-- [ ] Upload progress.
-- [ ] WebSocket client dan status koneksi.
-- [ ] Reconnect UI.
+- [x] HTTP client typed.
+- [x] Base URL dan environment.
+- [x] Attach access token dan `X-Device-ID`.
+- [x] Refresh single-flight saat 401.
+- [ ] Redirect/bersihkan session saat 403 tertentu. _(403 diperlakukan sebagai error otorisasi; sesi hanya dibersihkan saat refresh gagal)_
+- [ ] Penyimpanan token desktop via keyring. _(memakai file store; trait `TokenStore` siap untuk keyring)_
+- [x] Penyimpanan token web sesuai keputusan keamanan.
+- [ ] Query cache, invalidation, retry, dan cancellation. _(cache + invalidation + retry 401 ada; cancellation belum)_
+- [x] Mapping error ke pesan UI.
+- [ ] Upload progress. _(endpoint server siap; UI upload belum)_
+- [x] WebSocket client dan status koneksi.
+- [x] Reconnect UI.
 
 ### 11.3 Layar
 
-- [ ] Login.
-- [ ] Dashboard admin/user.
-- [ ] Operasi list/create/update.
-- [ ] Skenario list/create/update/copy.
-- [ ] Game/latihan list.
-- [ ] User management.
-- [ ] Satker management.
-- [ ] Profile dan ganti password.
-- [ ] Online users.
-- [ ] Snapshot list/card.
+- [x] Login.
+- [x] Dashboard admin/user.
+- [x] Operasi list/create/update.
+- [x] Skenario list/create/update/copy.
+- [x] Game/latihan list.
+- [x] User management.
+- [x] Satker management.
+- [x] Profile dan ganti password.
+- [x] Online users.
+- [x] Snapshot list/card.
 
 ### Exit gate fase 8
 
-- [ ] Alur non-peta dapat dipakai di desktop.
-- [ ] Alur non-peta dapat dipakai di web.
-- [ ] Role guard bekerja.
-- [ ] Refresh/logout bekerja.
-- [ ] Tidak ada JavaScript aplikasi di client.
+- [x] Alur non-peta dapat dipakai di desktop.
+- [x] Alur non-peta dapat dipakai di web.
+- [x] Role guard bekerja.
+- [x] Refresh/logout bekerja.
+- [x] Tidak ada JavaScript aplikasi di client.
 
 ---
 

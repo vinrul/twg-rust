@@ -2,12 +2,18 @@ use bevy::asset::{AssetMetaCheck, AssetPlugin};
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowPlugin};
 use bevy::winit::WinitSettings;
+use std::sync::Arc;
+use twg_client::ApiClient;
+use twg_client::TokenStore;
+use twg_client::native::{
+    FileTokenStore, TungsteniteTransport, UreqTransport, persisted_device_id,
+};
 use twg_map::{BaseLayer, MapCameraState};
 use twg_render::{
     BaseLayerResource, DEFAULT_STRESS_ZOOM, DracoProbe, MapCameraResource, MarkerModelSet,
     MemoryProbe, StressMode, StressRun, TacticalRenderPlugin, TileProxyConfig,
 };
-use twg_ui::TacticalUiPlugin;
+use twg_ui::{ClientBackend, TacticalUiPlugin};
 
 fn main() {
     let asset_path = std::env::var("TWG_ASSET_PATH").unwrap_or_else(|_| "../../assets".to_owned());
@@ -49,7 +55,16 @@ fn main() {
     }
     app.insert_resource(cli.models);
 
-    app.add_plugins((TacticalRenderPlugin, TacticalUiPlugin));
+    let demo = cli.stress.is_some()
+        || cli.probe_draco
+        || cli.memory_probe
+        || std::env::var_os("TWG_DEMO").is_some();
+    let ui = if demo {
+        TacticalUiPlugin::map_demo()
+    } else {
+        TacticalUiPlugin::new(client_backend())
+    };
+    app.add_plugins((TacticalRenderPlugin, ui));
 
     if cli.zoom.is_some() || cli.pitch.is_some() || cli.bearing.is_some() {
         let mut camera = MapCameraState::default();
@@ -69,6 +84,25 @@ fn main() {
     }
 
     app.run();
+}
+
+fn client_backend() -> ClientBackend {
+    let base_url = std::env::var("TWG_API_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8010".to_owned())
+        .trim_end_matches('/')
+        .to_owned();
+    let store = Arc::new(FileTokenStore::default()) as Arc<dyn TokenStore>;
+    let api = ApiClient::new(
+        base_url.clone(),
+        persisted_device_id(),
+        Arc::new(UreqTransport::new()),
+        store,
+    );
+    ClientBackend {
+        api,
+        ws_transport: Arc::new(TungsteniteTransport),
+        base_url,
+    }
 }
 
 struct CliArgs {

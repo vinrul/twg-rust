@@ -63,6 +63,13 @@ fallback, dan dual-publish Centrifugo opsional. Smoke test end-to-end PASS
 Spesifikasi ada di [protokol realtime](docs/REALTIME_PROTOCOL.md), laporan di
 [laporan Fase 7](docs/PHASE7_REPORT.md).
 
+Fase 8: client shell Bevy + egui — state layar, tema dan widget, HTTP client
+typed dengan refresh single-flight, transport native (`ureq`/`tungstenite`) dan
+web (`fetch`/`WebSocket`), penyimpanan sesi, serta layar Login, Dashboard,
+Operasi, Skenario, Latihan, Pengguna, Satker, Online, Snapshot, Profil, dan
+Preview. Alur non-peta diverifikasi di desktop dan Chrome headless; detail dan
+deviasi ada di [laporan Fase 8](docs/PHASE8_REPORT.md).
+
 `cargo check`/`build` WebAssembly dan `trunk build --cargo-profile
 wasm-release` sudah berhasil. Bundle WASM release 46 MB; optimasi
 `wasm-opt`/Brotli dikerjakan pada fase packaging.
@@ -71,7 +78,7 @@ Belum diimplementasikan pada fase ini:
 
 - Editor peta dan authoring line/polygon/floor plan.
 - Animasi runtime penuh.
-- UI editor.
+- Upload gambar/video dari client shell.
 - Feature parity dengan React/Go.
 
 ## Struktur
@@ -94,6 +101,7 @@ apps/
   web/                  library WASM + Trunk
 tools/
   web-stress.mjs       harness stress browser (Chrome DevTools Protocol)
+  client-smoke.mjs     smoke client shell web (sesi, API, WebSocket, screenshot)
   phase4-smoke.mjs     smoke test auth terhadap server + PostgreSQL
   paseto-parity.mjs    parity token Rust vs server Go lama
   read-parity.mjs      differential endpoint read-only Rust vs server Go lama
@@ -134,8 +142,10 @@ Desktop:
 cargo run -p twg-desktop
 ```
 
-Desktop mencari aset di `../../assets` relatif terhadap direktori kerja.
-Override dengan `TWG_ASSET_PATH` bila perlu.
+Desktop membuka client shell dan memakai `TWG_API_URL` (default
+`http://127.0.0.1:8010`). Gunakan `--stress ...` atau `TWG_DEMO=1` untuk
+menjalankan map demo tanpa shell. Desktop mencari aset di `../../assets`
+relatif terhadap direktori kerja; override dengan `TWG_ASSET_PATH`.
 
 Web:
 
@@ -145,6 +155,10 @@ cd apps/web
 trunk build
 trunk serve
 ```
+
+Web memakai origin halaman sebagai API default; tambahkan `?api=<origin>` untuk
+API lain. Parameter `?stress=`, `?benchmark=`, atau `?memory=` tetap menjalankan
+map demo untuk harness Gate G1.
 
 Stress test web otomatis memakai Chrome DevTools Protocol tanpa dependency npm:
 
@@ -189,6 +203,7 @@ Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
 - [Laporan Fase 5](docs/PHASE5_REPORT.md)
 - [Laporan Fase 6](docs/PHASE6_REPORT.md)
 - [Laporan Fase 7](docs/PHASE7_REPORT.md)
+- [Laporan Fase 8](docs/PHASE8_REPORT.md)
 - [Protokol realtime](docs/REALTIME_PROTOCOL.md)
 - [Baseline Fase 0](baseline/phase0-report.md)
 - [Golden HTTP](baseline/golden/verification.generated.md)

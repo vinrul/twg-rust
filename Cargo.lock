@@ -7087,8 +7087,11 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.21",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -7121,10 +7124,18 @@ dependencies = [
 name = "twg-client"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "js-sys",
  "serde",
+ "serde_json",
+ "tungstenite",
  "twg-contracts",
  "twg-domain",
+ "ureq",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -7144,6 +7155,7 @@ name = "twg-desktop"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "twg-client",
  "twg-map",
  "twg-render",
  "twg-ui",
@@ -7243,8 +7255,14 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "chrono",
+ "serde_json",
+ "twg-client",
+ "twg-contracts",
+ "twg-domain",
  "twg-map",
  "twg-render",
+ "uuid",
 ]
 
 [[package]]
@@ -7253,6 +7271,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "console_error_panic_hook",
+ "twg-client",
  "twg-render",
  "twg-ui",
  "wasm-bindgen",
@@ -7384,7 +7403,7 @@ dependencies = [
  "serde_json",
  "ureq-proto",
  "utf8-zero",
- "webpki-roots",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -7791,6 +7810,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
