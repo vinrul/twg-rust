@@ -644,40 +644,66 @@ Jika gagal:
 
 ## 10. Fase 7 — WebSocket dan real-time
 
+> **Status 6 November 2026:** protokol `twg.ws.v1`, tiket sekali pakai, upgrade
+> Axum, channel per skenario dengan otorisasi satker, sequence, idempotency,
+> ack/error, presence, heartbeat, resume, snapshot fallback, dan dual-publish
+> Centrifugo selesai. Smoke test end-to-end PASS (45 test server + 15 kontrak).
+> Spesifikasi ada di `docs/REALTIME_PROTOCOL.md`; laporan di
+> `docs/PHASE7_REPORT.md`.
+>
+> | Area | Status |
+> |---|---|
+> | Protokol WS v1 | Selesai — JSON terketik |
+> | Tiket pendek sekali pakai | Selesai — 30 detik |
+> | Upgrade + validasi session | Selesai |
+> | Channel per skenario + satker | Selesai |
+> | Sequence + history | Selesai |
+> | Idempotency + ack/error | Selesai |
+> | Presence + heartbeat | Selesai |
+> | Resume + resync snapshot | Selesai |
+> | Slow consumer | Selesai — diputus |
+> | Dual-publish Centrifugo | Selesai — kode siap, belum diuji live |
+
 ### 10.1 Protokol
 
-- [ ] Finalkan protokol WS v1.
-- [ ] Implementasikan ticket WS berumur pendek.
-- [ ] Implementasikan upgrade WebSocket di Axum.
-- [ ] Validasi access token dan device/session.
-- [ ] Implementasikan channel per satker/operasi/skenario.
-- [ ] Implementasikan subscribe/join.
-- [ ] Implementasikan presence dan heartbeat.
-- [ ] Implementasikan publish command.
-- [ ] Implementasikan persist command bila `is_save`.
-- [ ] Implementasikan sequence per skenario.
-- [ ] Implementasikan idempotency key.
-- [ ] Implementasikan ack, error, dan retry semantics.
-- [ ] Implementasikan reconnect dan resume from last sequence.
-- [ ] Implementasikan fallback jika snapshot tidak tersedia.
+- [x] Finalkan protokol WS v1. `docs/REALTIME_PROTOCOL.md`.
+- [x] Implementasikan ticket WS berumur pendek. 30 detik, sekali pakai.
+- [x] Implementasikan upgrade WebSocket di Axum. `GET /ws?ticket=...`.
+- [x] Validasi access token dan device/session. Session divalidasi ulang saat
+  upgrade.
+- [x] Implementasikan channel per satker/operasi/skenario. Subscription per
+  skenario; otorisasi memakai satker skenario dan operasi harus cocok.
+- [x] Implementasikan subscribe/join.
+- [x] Implementasikan presence dan heartbeat. Presence per skenario; Ping 25
+  detik dan idle timeout 75 detik.
+- [x] Implementasikan publish command.
+- [x] Implementasikan persist command bila `is_save`.
+- [x] Implementasikan sequence per skenario.
+- [x] Implementasikan idempotency key.
+- [x] Implementasikan ack, error, dan retry semantics.
+- [x] Implementasikan reconnect dan resume from last sequence.
+- [x] Implementasikan fallback jika snapshot tidak tersedia.
 
 ### 10.2 Keamanan dan beban
 
-- [ ] Tolak publish lintas satker.
-- [ ] Tolak subscribe lintas satker.
-- [ ] Uji user tanpa satker.
-- [ ] Uji admin/monitor.
-- [ ] Uji reconnect storm.
-- [ ] Uji duplicate command.
-- [ ] Uji slow consumer.
-- [ ] Uji banyak klien per skenario.
-- [ ] Uji message ordering.
-- [ ] Pastikan token tidak muncul di URL/log.
+- [x] Tolak publish lintas satker.
+- [x] Tolak subscribe lintas satker.
+- [x] Uji user tanpa satker.
+- [x] Uji admin/monitor.
+- [x] Uji reconnect storm. 12 koneksi cepat pada smoke test.
+- [x] Uji duplicate command.
+- [x] Uji slow consumer. Unit test memenuhi antrean lalu memastikan koneksi
+  diputus dan subscription dibersihkan.
+- [x] Uji banyak klien per skenario. Fan-out 8 klien dengan sequence sama.
+- [x] Uji message ordering.
+- [x] Pastikan token tidak muncul di URL/log. Hanya tiket sekali pakai di URL;
+  access token tidak pernah dikirim ke WebSocket.
 
 ### 10.3 Transisi Centrifugo
 
-- [ ] Dokumentasikan pemetaan channel lama ke channel baru.
-- [ ] Sediakan mode dual-publish bila diperlukan.
+- [x] Dokumentasikan pemetaan channel lama ke channel baru.
+- [x] Sediakan mode dual-publish bila diperlukan. `CENTRIFUGO_DUAL_PUBLISH`
+  meneruskan event ke channel lama; belum diuji terhadap Centrifugo live.
 - [ ] Pastikan client lama tetap berfungsi selama transisi.
 - [ ] Tentukan kriteria kapan Centrifugo dimatikan.
 

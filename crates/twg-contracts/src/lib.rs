@@ -9,6 +9,7 @@ pub mod last_positions;
 pub mod map;
 pub mod operations;
 pub mod paths;
+pub mod realtime;
 pub mod satkers;
 pub mod scenarios;
 pub mod snapshots;

@@ -7,6 +7,7 @@ use twg_storage::{ReadStore, WriteStore};
 
 use crate::config::{RateLimitConfig, ServerConfig};
 use crate::rate_limit::RateLimiter;
+use crate::realtime::Realtime;
 use crate::uploads::{LocalUploadStorage, UploadStorage};
 
 #[derive(Clone)]
@@ -15,6 +16,7 @@ pub struct AppState {
     pub pool: Option<PgPool>,
     pub read_store: Option<Arc<ReadStore>>,
     pub write_store: Option<Arc<WriteStore>>,
+    pub realtime: Arc<Realtime>,
     pub rate_limiter: Arc<RateLimiter>,
     pub uploads_dir: PathBuf,
     pub uploads: Arc<dyn UploadStorage>,
@@ -35,6 +37,11 @@ impl AppState {
             pool,
             read_store,
             write_store,
+            realtime: Arc::new(Realtime::new(
+                config.ws_ticket_ttl,
+                config.ws_history_limit,
+                config.centrifugo.clone(),
+            )),
             rate_limiter: Arc::new(RateLimiter::new(&config.rate_limit)),
             uploads_dir: config.uploads_dir.clone(),
             uploads: Arc::new(LocalUploadStorage::new(config.uploads_dir.clone())),
@@ -49,6 +56,7 @@ impl AppState {
             pool: None,
             read_store: None,
             write_store: None,
+            realtime: Arc::new(Realtime::new(std::time::Duration::from_secs(30), 64, None)),
             rate_limiter: Arc::new(RateLimiter::new(&rate_limit)),
             uploads_dir: PathBuf::from("uploads"),
             uploads: Arc::new(LocalUploadStorage::new(

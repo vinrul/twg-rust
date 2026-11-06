@@ -126,3 +126,24 @@ node tools/write-parity.mjs
 | `DB_NAME` | `twg_baseline` | Database name |
 | `SEED_PATH` | `baseline/fixtures/seed.sql` | Seed file |
 | `TWG_PASSWORD` | `Baseline#2026` | Password for baseline accounts |
+
+## `ws-smoke.mjs`
+
+End-to-end smoke test for the `twg.ws.v1` WebSocket protocol. It resets the
+database, logs in four roles, requests tickets, and exercises subscribe,
+presence, publish, persistence, idempotency, resume, resync with and without a
+snapshot, cross-satker rejection, fan-out, and a reconnect storm. Requires
+Node 22+ (global `WebSocket`) and Docker for the database reset.
+
+```bash
+BASE_URL=http://127.0.0.1:8012 DB_CONTAINER=twg-phase7-db \
+node tools/ws-smoke.mjs
+```
+
+| Env | Default | Meaning |
+|---|---|---|
+| `BASE_URL` | `http://127.0.0.1:8012` | Rust server |
+| `DB_CONTAINER` | `twg-phase7-db` | Docker container used for `psql` reset |
+| `DB_NAME` | `twg_baseline` | Database name |
+| `SEED_PATH` | `baseline/fixtures/seed.sql` | Seed file |
+| `TWG_PASSWORD` | `Baseline#2026` | Password for baseline accounts |

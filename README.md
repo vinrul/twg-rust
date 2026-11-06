@@ -55,13 +55,20 @@ menyajikan `/uploads` dengan header aman. Differential write terhadap server Go
 lama: **89 check PASS** plus 8 safety check. Detail ada di
 [laporan Fase 6](docs/PHASE6_REPORT.md).
 
+Fase 7: realtime `twg.ws.v1` — tiket WebSocket sekali pakai 30 detik, upgrade
+`/ws`, channel per skenario dengan otorisasi satker, sequence, idempotency,
+ack/error, presence, heartbeat, resume dari history, resync dengan snapshot
+fallback, dan dual-publish Centrifugo opsional. Smoke test end-to-end PASS
+(termasuk cross-satker, duplicate command, fan-out 8 klien, dan reconnect storm).
+Spesifikasi ada di [protokol realtime](docs/REALTIME_PROTOCOL.md), laporan di
+[laporan Fase 7](docs/PHASE7_REPORT.md).
+
 `cargo check`/`build` WebAssembly dan `trunk build --cargo-profile
 wasm-release` sudah berhasil. Bundle WASM release 46 MB; optimasi
 `wasm-opt`/Brotli dikerjakan pada fase packaging.
 
 Belum diimplementasikan pada fase ini:
 
-- WebSocket server dan fan-out real-time (Fase 7).
 - Editor peta dan authoring line/polygon/floor plan.
 - Animasi runtime penuh.
 - UI editor.
@@ -91,6 +98,7 @@ tools/
   paseto-parity.mjs    parity token Rust vs server Go lama
   read-parity.mjs      differential endpoint read-only Rust vs server Go lama
   write-parity.mjs     differential endpoint write + safety check Rust vs Go
+  ws-smoke.mjs         smoke test WebSocket twg.ws.v1 end-to-end
 ```
 
 Aturan dependency:
@@ -155,6 +163,13 @@ web memakai route yang sama lewat `?proxy=<origin>`; desktop memakai
 `TWG_TILE_PROXY=<origin>`. Bila tidak diset, client mengambil tile langsung
 dari provider.
 
+Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
+`WS_TICKET_TTL_SECONDS` mengatur umur tiket (default 30 detik) dan
+`WS_HISTORY_LIMIT` mengatur jumlah event yang disimpan untuk resume (default
+256). Dual-publish ke channel Centrifugo lama diaktifkan dengan
+`CENTRIFUGO_DUAL_PUBLISH=true` beserta `CENTRIFUGO_ADDR`, `CENTRIFUGO_KEY`, dan
+`CHANNEL`. Detail protokol ada di [protokol realtime](docs/REALTIME_PROTOCOL.md).
+
 ## Dependency policy
 
 - Versi dependency di-pin melalui `Cargo.lock`.
@@ -173,6 +188,8 @@ dari provider.
 - [Laporan Fase 4](docs/PHASE4_REPORT.md)
 - [Laporan Fase 5](docs/PHASE5_REPORT.md)
 - [Laporan Fase 6](docs/PHASE6_REPORT.md)
+- [Laporan Fase 7](docs/PHASE7_REPORT.md)
+- [Protokol realtime](docs/REALTIME_PROTOCOL.md)
 - [Baseline Fase 0](baseline/phase0-report.md)
 - [Golden HTTP](baseline/golden/verification.generated.md)
 - [WebSocket baseline](baseline/golden/websocket-capture.generated.md)

@@ -438,6 +438,13 @@ impl ReadStore {
         Ok(row.map(UserRow::into_contract))
     }
 
+    pub async fn marker_scenario_id(&self, id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar("SELECT skenario_id FROM markers WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
     pub async fn get_category(&self, id: Uuid) -> Result<Option<Category>, sqlx::Error> {
         let row = sqlx::query_as::<_, CategoryRow>(
             "SELECT id, name, icon, created_at, updated_at

@@ -3,6 +3,7 @@ pub mod error;
 pub mod handlers;
 pub mod middleware;
 pub mod rate_limit;
+pub mod realtime;
 pub mod state;
 pub mod tiles;
 pub mod uploads;
@@ -29,6 +30,7 @@ pub fn router(state: AppState) -> Router {
     let public = Router::new()
         .route("/healthz", get(handlers::health::healthz))
         .route("/readyz", get(handlers::health::readyz))
+        .route("/ws", get(handlers::realtime::ws_upgrade))
         .route("/auth/login", post(handlers::auth::login))
         .route("/auth/refresh", post(handlers::auth::refresh))
         .route(
@@ -98,6 +100,7 @@ pub fn router(state: AppState) -> Router {
 
     let private = Router::new()
         .route("/private/identify", get(handlers::auth::identify))
+        .route("/private/ws-ticket", post(handlers::realtime::ws_ticket))
         .route(
             "/private/profile/password",
             put(handlers::auth::change_password),
@@ -424,7 +427,15 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(axum::middleware::from_fn(middleware::client_ip))
         .layer(axum::middleware::from_fn(middleware::request_id))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!(
+                    "http",
+                    method = %request.method(),
+                    path = %request.uri().path()
+                )
+            },
+        ))
         .layer(cors)
         .with_state(state)
 }

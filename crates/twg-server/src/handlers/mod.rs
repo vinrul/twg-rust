@@ -7,6 +7,7 @@ pub mod manage;
 pub mod markers;
 pub mod private;
 pub mod public;
+pub mod realtime;
 pub mod sessions;
 pub mod uploads;
 
