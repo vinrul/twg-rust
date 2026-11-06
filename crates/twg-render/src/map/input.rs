@@ -4,6 +4,7 @@ use bevy::window::PrimaryWindow;
 use twg_map::{CameraFlight, MapCameraState};
 
 use super::{BaseLayerResource, CameraFlightState, MapCameraResource};
+use crate::editor::EditorMode;
 
 const KEYBOARD_PAN_SPEED: f64 = 1.1;
 
@@ -17,6 +18,7 @@ pub fn map_input(
     mut mouse_wheel: MessageReader<MouseWheel>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
+    editor: Option<Res<EditorMode>>,
     mut camera: ResMut<MapCameraResource>,
 ) {
     let Ok(window) = windows.single() else {
@@ -28,6 +30,7 @@ pub fn map_input(
         return;
     }
     let mouse_inside = window.cursor_position().is_some();
+    let editor_active = editor.is_some_and(|editor| editor.active);
     let camera = &mut camera.0;
 
     let mut cancel_flight = false;
@@ -37,7 +40,8 @@ pub fn map_input(
     }
 
     if mouse_inside
-        && (mouse_buttons.pressed(MouseButton::Left) || mouse_buttons.pressed(MouseButton::Middle))
+        && ((!editor_active && mouse_buttons.pressed(MouseButton::Left))
+            || mouse_buttons.pressed(MouseButton::Middle))
     {
         if delta != Vec2::ZERO {
             cancel_flight = true;
@@ -76,43 +80,45 @@ pub fn map_input(
     }
 
     let dt = f64::from(time.delta_secs());
-    let mut east = 0.0;
-    let mut north = 0.0;
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        north += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
-        north -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        east += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        east -= 1.0;
-    }
-    if east != 0.0 || north != 0.0 {
-        cancel_flight = true;
-        camera.pan_by_screen_tiles(
-            east * KEYBOARD_PAN_SPEED * dt,
-            north * KEYBOARD_PAN_SPEED * dt,
-        );
-    }
+    if !editor_active {
+        let mut east = 0.0;
+        let mut north = 0.0;
+        if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+            north += 1.0;
+        }
+        if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+            north -= 1.0;
+        }
+        if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+            east += 1.0;
+        }
+        if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+            east -= 1.0;
+        }
+        if east != 0.0 || north != 0.0 {
+            cancel_flight = true;
+            camera.pan_by_screen_tiles(
+                east * KEYBOARD_PAN_SPEED * dt,
+                north * KEYBOARD_PAN_SPEED * dt,
+            );
+        }
 
-    if keys.pressed(KeyCode::KeyQ) {
-        cancel_flight = true;
-        camera.rotate_by(-45.0 * dt as f32);
-    }
-    if keys.pressed(KeyCode::KeyE) {
-        cancel_flight = true;
-        camera.rotate_by(45.0 * dt as f32);
-    }
-    if keys.pressed(KeyCode::KeyR) {
-        cancel_flight = true;
-        camera.pitch_by(30.0 * dt as f32);
-    }
-    if keys.pressed(KeyCode::KeyF) {
-        cancel_flight = true;
-        camera.pitch_by(-30.0 * dt as f32);
+        if keys.pressed(KeyCode::KeyQ) {
+            cancel_flight = true;
+            camera.rotate_by(-45.0 * dt as f32);
+        }
+        if keys.pressed(KeyCode::KeyE) {
+            cancel_flight = true;
+            camera.rotate_by(45.0 * dt as f32);
+        }
+        if keys.pressed(KeyCode::KeyR) {
+            cancel_flight = true;
+            camera.pitch_by(30.0 * dt as f32);
+        }
+        if keys.pressed(KeyCode::KeyF) {
+            cancel_flight = true;
+            camera.pitch_by(-30.0 * dt as f32);
+        }
     }
 
     if keys.just_pressed(KeyCode::KeyH) {

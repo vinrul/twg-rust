@@ -33,6 +33,8 @@ const shotName = args.shot ?? "phase8-client.png";
 const previewShot = args["preview-shot"] ?? "phase8-client-map.png";
 const testPreview = args.preview !== "false";
 const viewZoom = args.zoom ?? null;
+const editorScenario = args.scenario ?? null;
+const editorTest = args["editor-test"] === "true";
 const mapWaitMs = Number(args["map-wait"] ?? 15000);
 
 const MIME = new Map([
@@ -67,7 +69,58 @@ function log(...values) {
 }
 
 function sleep(ms) {
-  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+    return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function clickAt(cdp, x, y) {
+    for (const type of ["mousePressed", "mouseReleased"]) {
+        await cdp.send("Input.dispatchMouseEvent", {
+            type,
+            x,
+            y,
+            button: "left",
+            clickCount: 1,
+        });
+    }
+}
+
+async function pressKey(cdp, key, code, vk, modifiers = 0) {
+    await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key,
+        code,
+        text: modifiers === 0 && key.length === 1 ? key : undefined,
+        windowsVirtualKeyCode: vk,
+        nativeVirtualKeyCode: vk,
+        modifiers,
+    });
+    await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key,
+        code,
+        windowsVirtualKeyCode: vk,
+        nativeVirtualKeyCode: vk,
+        modifiers,
+    });
+}
+
+async function pressCtrl(cdp, key, code, vk) {
+    await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Control",
+        code: "ControlLeft",
+        windowsVirtualKeyCode: 17,
+        nativeVirtualKeyCode: 17,
+        modifiers: 2,
+    });
+    await pressKey(cdp, key, code, vk, 2);
+    await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Control",
+        code: "ControlLeft",
+        windowsVirtualKeyCode: 17,
+        nativeVirtualKeyCode: 17,
+    });
 }
 
 function findChrome() {
@@ -196,6 +249,50 @@ class Cdp {
   }
 }
 
+const editorHeaders = (token) => ({
+    authorization: `Bearer ${token}`,
+    "x-device-id": "client-smoke-web",
+  });
+
+async function countPath(token, path) {
+    if (!editorScenario) return -1;
+    const response = await fetch(
+      `${apiBase}/public/${path}/list/${encodeURIComponent(editorScenario)}`,
+      { headers: editorHeaders(token) },
+    );
+    if (!response.ok) return -1;
+    const body = await response.json();
+    return Array.isArray(body.data) ? body.data.length : -1;
+}
+
+async function countMarkers(token) {
+    return countPath(token, "markers");
+}
+
+async function listItems(token, path) {
+    if (!editorScenario) return [];
+    const response = await fetch(
+      `${apiBase}/public/${path}/list/${encodeURIComponent(editorScenario)}`,
+      { headers: editorHeaders(token) },
+    );
+    if (!response.ok) return [];
+    const body = await response.json();
+    return body.data ?? [];
+}
+
+async function deleteNewIds(token, path, baselineIds) {
+    let deleted = 0;
+    for (const item of await listItems(token, path)) {
+      if (baselineIds.has(item.id)) continue;
+      const result = await fetch(`${apiBase}/private/${path}/${item.id}`, {
+        method: "DELETE",
+        headers: editorHeaders(token),
+      });
+      if (result.ok) deleted += 1;
+    }
+    return deleted;
+}
+
 async function login() {
   const response = await fetch(`${apiBase}/auth/login`, {
     method: "POST",
@@ -234,7 +331,7 @@ async function main() {
   const port = server.address().port;
   const pageUrl = `http://127.0.0.1:${port}/?api=${encodeURIComponent(apiBase)}${
     viewZoom ? `&zoom=${encodeURIComponent(viewZoom)}` : ""
-  }`;
+  }${editorScenario ? `&scenario=${encodeURIComponent(editorScenario)}` : ""}`;
   const debugPort = 9334;
   const userDataDir = join(tmpdir(), `twg-client-smoke-${Date.now()}`);
   const chrome = findChrome();
@@ -375,6 +472,189 @@ async function main() {
       );
     }
 
+    let editorFailures = [];
+    if (editorTest) {
+      await sleep(4000);
+      const baselineMarkers = await countMarkers(session.access_token);
+      const baselineLines = await countPath(session.access_token, "lines");
+      const baselineBuildings = await countPath(session.access_token, "buildings");
+      const baselineTexts = await countPath(session.access_token, "text-markers");
+      const baselineIds = {
+        markers: new Set(
+          (await listItems(session.access_token, "markers")).map((item) => item.id),
+        ),
+        lines: new Set(
+          (await listItems(session.access_token, "lines")).map((item) => item.id),
+        ),
+        buildings: new Set(
+          (await listItems(session.access_token, "buildings")).map((item) => item.id),
+        ),
+        texts: new Set(
+          (await listItems(session.access_token, "text-markers")).map((item) => item.id),
+        ),
+      };
+      // Scene row "Unit Alpha 1" in the editor hierarchy at 1280x720.
+      await clickAt(cdp, 120, 432);
+      await sleep(900);
+      await pressKey(cdp, "w", "KeyW", 87);
+      await sleep(1500);
+      const selectShot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      await writeFile(
+        join(shotDir, "phase9-editor-select.png"),
+        Buffer.from(selectShot.data, "base64"),
+      );
+
+      // Toolbar: P Marker, then click the viewport, then Simpan.
+      await clickAt(cdp, 398, 53);
+      await sleep(1200);
+      await clickAt(cdp, 600, 300);
+      await sleep(1500);
+
+      // Line: two points, then a quick double-click to finish.
+      await clickAt(cdp, 483, 53);
+      await sleep(1800);
+      await clickAt(cdp, 470, 330);
+      await sleep(1800);
+      await clickAt(cdp, 560, 340);
+      await sleep(1800);
+      await pressKey(cdp, "Enter", "Enter", 13);
+      await sleep(1800);
+
+      // Polygon/building: three points and a double-click.
+      await clickAt(cdp, 573, 53);
+      await sleep(1800);
+      await clickAt(cdp, 700, 320);
+      await sleep(1800);
+      await clickAt(cdp, 760, 330);
+      await sleep(1800);
+      await clickAt(cdp, 730, 390);
+      await sleep(1800);
+      await pressKey(cdp, "Enter", "Enter", 13);
+      await sleep(1800);
+
+      // Text marker.
+      await clickAt(cdp, 663, 53);
+      await sleep(1800);
+      await clickAt(cdp, 620, 380);
+      await sleep(1800);
+
+      await clickAt(cdp, 1082, 53);
+      await sleep(7000);
+      const createShot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      await writeFile(
+        join(shotDir, "phase9-editor-create.png"),
+        Buffer.from(createShot.data, "base64"),
+      );
+      const created = responses.some(
+        (item) => item.url.endsWith("/private/markers") && item.status === 201,
+      );
+      if (!created) editorFailures.push("editor did not POST /private/markers");
+
+      const baseline = Number.isInteger(baselineMarkers) ? baselineMarkers : 0;
+      const countAfterCreate = await countMarkers(session.access_token);
+      if (countAfterCreate !== baseline + 1) {
+        editorFailures.push(
+          `expected ${baseline + 1} markers after save, got ${countAfterCreate}`,
+        );
+      }
+      const linesAfterCreate = await countPath(session.access_token, "lines");
+      if (linesAfterCreate !== baselineLines + 1) {
+        editorFailures.push(
+          `expected ${baselineLines + 1} lines after save, got ${linesAfterCreate}`,
+        );
+      }
+      const buildingsAfterCreate = await countPath(session.access_token, "buildings");
+      if (buildingsAfterCreate !== baselineBuildings + 1) {
+        editorFailures.push(
+          `expected ${baselineBuildings + 1} buildings after save, got ${buildingsAfterCreate}`,
+        );
+      }
+      const textsAfterCreate = await countPath(session.access_token, "text-markers");
+      if (textsAfterCreate !== baselineTexts + 1) {
+        editorFailures.push(
+          `expected ${baselineTexts + 1} texts after save, got ${textsAfterCreate}`,
+        );
+      }
+
+      await cdp.send("Page.reload");
+      await sleep(16000);
+      const reloadShot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      await writeFile(
+        join(shotDir, "phase9-editor-reload.png"),
+        Buffer.from(reloadShot.data, "base64"),
+      );
+      const countAfterReload = await countMarkers(session.access_token);
+      if (countAfterReload !== baseline + 1) {
+        editorFailures.push(
+          `expected ${baseline + 1} markers after reload, got ${countAfterReload}`,
+        );
+      }
+      const linesAfterReload = await countPath(session.access_token, "lines");
+      const buildingsAfterReload = await countPath(session.access_token, "buildings");
+      const textsAfterReload = await countPath(session.access_token, "text-markers");
+      if (
+        linesAfterReload !== baselineLines + 1 ||
+        buildingsAfterReload !== baselineBuildings + 1 ||
+        textsAfterReload !== baselineTexts + 1
+      ) {
+        editorFailures.push(
+          `reload counts lines=${linesAfterReload} buildings=${buildingsAfterReload} texts=${textsAfterReload}`,
+        );
+      }
+      const removedMarkers = await deleteNewIds(
+        session.access_token,
+        "markers",
+        baselineIds.markers,
+      );
+      const removedLines = await deleteNewIds(
+        session.access_token,
+        "lines",
+        baselineIds.lines,
+      );
+      const removedBuildings = await deleteNewIds(
+        session.access_token,
+        "buildings",
+        baselineIds.buildings,
+      );
+      const removedTexts = await deleteNewIds(
+        session.access_token,
+        "text-markers",
+        baselineIds.texts,
+      );
+      if (removedLines !== 1 || removedBuildings !== 1 || removedTexts !== 1) {
+        editorFailures.push(
+          `cleanup removed lines=${removedLines} buildings=${removedBuildings} texts=${removedTexts}`,
+        );
+      }
+      const finalMarkers = await countMarkers(session.access_token);
+      if (removedMarkers > 0) {
+        log(`cleanup removed ${removedMarkers} leftover marker(s)`);
+      }
+      if (finalMarkers !== baseline) {
+        editorFailures.push(`expected ${baseline} markers after cleanup, got ${finalMarkers}`);
+      }
+
+      // Select the newly created marker and delete it through the inspector.
+      // The API orders markers by created_at DESC, so the new one is first.
+      await clickAt(cdp, 120, 432);
+      await sleep(1500);
+      await clickAt(cdp, 1220, 141);
+      await sleep(1200);
+      await clickAt(cdp, 1082, 53);
+      await sleep(6000);
+      const countAfterDelete = await countMarkers(session.access_token);
+      if (countAfterDelete !== baseline) {
+        editorFailures.push(
+          `expected ${baseline} markers after delete, got ${countAfterDelete}`,
+        );
+      }
+      const deleted = responses.some(
+        (item) =>
+          item.url.includes("/private/markers/") && item.status === 200,
+      );
+      if (!deleted) editorFailures.push("editor did not DELETE /private/markers/{id}");
+    }
+
     const title = await cdp.send("Runtime.evaluate", {
       expression: "document.title",
       returnByValue: true,
@@ -396,6 +676,7 @@ async function main() {
       if (!wsTicket) failures.push("missing 200 /private/ws-ticket");
       if (webSockets.length === 0) failures.push("no WebSocket connection");
     }
+    failures.push(...editorFailures);
     log(`title: ${title.result?.value}`);
     log(`API calls: ${responses.filter((item) => item.url.includes("/auth/") || item.url.includes("/private/") || item.url.includes("/public/")).length}`);
     if (testPreview) log(`websockets: ${webSockets.join(", ")}`);

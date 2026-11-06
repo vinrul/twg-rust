@@ -1,13 +1,18 @@
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
+mod editor;
 mod map;
 mod stress;
 
+pub use editor::{
+    EditorGizmo, EditorGizmoAxis, EditorGrid, EditorMode, EditorRenderPlugin, EditorScene,
+    EditorSceneKind, EditorSceneObject,
+};
 pub use map::{
     BaseLayerResource, CAMERA_FOV_Y, CameraFlightState, DemoMarker, GeoAnchor, MapCamera,
-    MapCameraResource, MapCursorResource, MapRenderPlugin, Tile, TileProxyConfig, TileWorld,
-    UiPointerState,
+    MapCameraResource, MapCursorResource, MapRenderPlugin, MapUpdateSet, Tile, TileProxyConfig,
+    TileWorld, UiPointerState,
 };
 pub use stress::{
     ANIMATED_MODEL, ANIMATED_MODEL_DRACO, ANIMATED_MODEL_LOD, ANIMATED_MODEL_LOD_DRACO, BenchPhase,
@@ -27,6 +32,7 @@ impl Plugin for TacticalRenderPlugin {
                 FrameTimeDiagnosticsPlugin::default(),
                 twg_gltf_draco::GltfDracoDecoderPlugin,
                 MapRenderPlugin,
+                EditorRenderPlugin,
                 StressPlugin,
             ));
     }

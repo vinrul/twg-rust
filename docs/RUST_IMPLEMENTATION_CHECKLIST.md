@@ -776,63 +776,70 @@ Jika gagal:
 
 ### 12.1 Integrasi peta
 
-- [ ] Integrasikan `twg-map` ke `twg-render`/`twg-ui`.
-- [ ] Base layer OSM.
-- [ ] Base layer satelit.
-- [ ] Tile proxy dan konfigurasi server.
-- [ ] Attribution.
-- [ ] Cache tile.
-- [ ] Mode outdoor.
-- [ ] Mode indoor grid.
-- [ ] Floor plan overlay.
-- [ ] Min/max zoom.
-- [ ] Camera restore dan fly-to.
-- [ ] Ekspor gambar peta.
+- [x] Integrasikan `twg-map` ke `twg-render`/`twg-ui`.
+- [x] Base layer OSM.
+- [x] Base layer satelit.
+- [x] Tile proxy dan konfigurasi server.
+- [x] Attribution (overlay kanan bawah viewport editor).
+- [x] Cache tile.
+- [x] Mode outdoor.
+- [x] Mode indoor grid.
+- [x] Floor plan overlay (grid prosedural).
+- [x] Min/max zoom.
+- [x] Camera restore dan fly-to.
+- [ ] Ekspor gambar peta (belum; lihat laporan Fase 9).
 
 ### 12.2 Editor objek
 
-- [ ] Marker create/read/update/delete.
-- [ ] Pilih model dari katalog unit.
-- [ ] Rotasi, skala, altitude.
-- [ ] Duplicate marker.
-- [ ] Line draw/edit.
-- [ ] Polygon/building draw/edit/extrude.
-- [ ] Text marker.
-- [ ] Particle preview.
-- [ ] Selection single dan multi-select.
-- [ ] Context menu.
-- [ ] Transform gizmo marker.
-- [ ] Transform line, termasuk shift/duplicate jika diperlukan.
-- [ ] Transform polygon.
-- [ ] Undo/redo command bus.
-- [ ] Layer panel dan visibility.
-- [ ] Toolbar create/anim/particle/layer/settings.
-- [ ] Geocode search.
-- [ ] Measure tool.
-- [ ] Grid/snap bila termasuk scope.
-- [ ] Simpan/muat skenario.
-- [ ] Konfirmasi perubahan belum disimpan.
+- [x] Marker create/read/update/delete.
+- [x] Pilih model dari katalog unit.
+- [x] Rotasi, skala, altitude.
+- [x] Duplicate marker.
+- [x] Line draw.
+- [ ] Line edit vertex (belum; transform objek penuh tersedia).
+- [x] Polygon/building draw/extrude.
+- [ ] Polygon/building edit vertex (belum; transform objek penuh tersedia).
+- [x] Text marker.
+- [x] Particle preview (read-only).
+- [x] Selection single dan multi-select.
+- [x] Context menu (klik kanan: duplikat, hapus, fokus).
+- [x] Transform gizmo marker (translate X/Y/Z + rotate ring + scale axis).
+- [x] Transform line, termasuk duplicate.
+- [x] Transform polygon/building.
+- [x] Undo/redo command bus (snapshot + antrean delete server).
+- [x] Layer panel dan visibility.
+- [x] Toolbar create/anim/particle/layer/settings.
+- [x] Geocode search (Nominatim lewat server).
+- [x] Measure tool.
+- [x] Grid/snap.
+- [x] Simpan/muat skenario (objek via REST).
+- [x] Konfirmasi perubahan belum disimpan.
 
 ### 12.3 Peta UI
 
-- [ ] Compass.
-- [ ] Zoom control.
-- [ ] Bearing/pitch control.
-- [ ] Crosshair.
-- [ ] Koordinat kursor.
-- [ ] Scale bar.
-- [ ] Info panel.
-- [ ] Error/loading tile.
-- [ ] Performance overlay dev.
+- [x] Compass.
+- [x] Zoom control.
+- [x] Bearing/pitch control.
+- [x] Crosshair.
+- [x] Koordinat kursor.
+- [x] Scale bar.
+- [x] Info panel (Inspector + status bar).
+- [ ] Error/loading tile (indikator error tile belum).
+- [x] Performance overlay dev (FPS dan status zoom/tile).
 
 ### Exit gate fase 9
 
-- [ ] Satu skenario nyata dapat dibuat dari nol.
-- [ ] Bisa disimpan dan dibuka kembali tanpa kehilangan data.
-- [ ] Marker/line/building/tidak berubah posisi setelah reload.
-- [ ] Indoor floor plan bekerja.
-- [ ] Picking/transform bekerja.
-- [ ] Native dan web lulus uji yang sama.
+- [x] Satu skenario nyata dapat dibuat dari nol (marker, line, building, text
+  dibuat lewat editor lalu disimpan).
+- [x] Bisa disimpan dan dibuka kembali tanpa kehilangan data.
+- [x] Marker/line/building tidak berubah posisi setelah reload.
+- [x] Indoor floor plan bekerja (grid + overlay prosedural).
+- [x] Picking/transform bekerja (uji web: select, gizmo, drag).
+- [x] Native dan web memakai kode editor yang sama; web diuji otomatis,
+  desktop dibangun dan probe berjalan.
+
+Catatan: item yang belum selesai tercatat di
+[`PHASE9_REPORT.md`](PHASE9_REPORT.md#8-deviasi).
 
 ---
 

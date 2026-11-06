@@ -19,6 +19,7 @@ use twg_contracts::users::{OnlineUser, User};
 use twg_domain::Role;
 use uuid::Uuid;
 
+use crate::editor::model::EditorState;
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,10 +212,13 @@ pub struct ClientUi {
     pub selected_layer: &'static str,
     pub boot_checked: bool,
     pub last_screen: Screen,
+    pub editor: EditorState,
+    pending_editor_scenario: Option<Uuid>,
 }
 
 impl ClientUi {
     pub fn new(api: ApiClient, ws_transport: Arc<dyn WsTransport>, base_url: String) -> Self {
+        let pending_editor_scenario = initial_editor_scenario();
         let mut state = ClientState::default();
         let session = api.restore();
         if session.is_some() {
@@ -250,6 +254,8 @@ impl ClientUi {
             selected_layer: "OpenStreetMap",
             boot_checked: false,
             last_screen: Screen::Boot,
+            editor: EditorState::new(),
+            pending_editor_scenario,
         }
     }
 
@@ -424,6 +430,7 @@ impl ClientUi {
         }
         self.tick_toasts();
         self.tick_ws();
+        self.tick_editor_jobs();
     }
 
     fn handle_job(&mut self, kind: JobKind, result: Result<ApiResponse, ApiError>) {
@@ -676,6 +683,9 @@ impl ClientUi {
         self.state.login(session);
         self.sync_profile_fields();
         self.refresh_all();
+        if let Some(scenario) = self.pending_editor_scenario.take() {
+            self.open_editor(Some(scenario));
+        }
     }
 
     fn tick_toasts(&mut self) {
@@ -833,7 +843,9 @@ impl ClientUi {
 
     pub fn go(&mut self, item: NavItem) {
         self.state.navigate(item);
-        if item == NavItem::Dashboard {
+        if item == NavItem::Preview {
+            self.open_editor(self.selected_scenario);
+        } else if item == NavItem::Dashboard {
             self.refresh_all();
         } else if item == NavItem::Operations {
             self.refresh_operations();
@@ -874,7 +886,7 @@ impl ClientUi {
                 self.refresh_scenarios();
             }
             NavItem::Profile => self.sync_profile_fields(),
-            NavItem::Preview => {}
+            NavItem::Preview => self.reload_editor(),
         }
     }
 
@@ -1199,6 +1211,62 @@ impl ClientUi {
             Some(json!({ "snapshot_enabled": enabled })),
         );
         self.track(JobKind::SnapshotToggle, handle);
+    }
+}
+
+/// Reads `?scenario=<uuid>` so the web client can deep-link straight into the
+/// editor. Desktop builds ignore it.
+#[cfg(target_arch = "wasm32")]
+fn initial_editor_scenario() -> Option<Uuid> {
+    let window = web_sys::window()?;
+    let search = window.location().search().ok()?;
+    for pair in search.trim_start_matches('?').split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if parts.next() != Some("scenario") {
+            continue;
+        }
+        return Uuid::parse_str(&percent_decode(parts.next().unwrap_or_default())).ok();
+    }
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn initial_editor_scenario() -> Option<Uuid> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            output.push(high * 16 + low);
+            index += 3;
+            continue;
+        }
+        output.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
+        index += 1;
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 

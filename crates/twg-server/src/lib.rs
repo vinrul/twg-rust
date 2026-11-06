@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
             get(handlers::public::home_operation_detail),
         )
         .route("/public/users/online", get(handlers::public::online_users))
+        .route("/public/geocode", get(handlers::public::geocode))
         .route(
             "/public/users/{id}/kick-session",
             post(handlers::manage::kick_user_sessions),

@@ -102,8 +102,17 @@ pub fn sync_tiles(
     state: Res<MapCameraResource>,
     layer: Res<BaseLayerResource>,
     proxy: Res<TileProxyConfig>,
+    editor: Option<Res<crate::editor::EditorScene>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
+    if editor.as_ref().is_some_and(|editor| editor.indoor) {
+        for entity in world.tiles.values() {
+            commands.entity(*entity).despawn();
+        }
+        world.tiles.clear();
+        return;
+    }
+
     if world.layer != layer.0 || world.proxy != proxy.0 {
         for entity in world.tiles.values() {
             commands.entity(*entity).despawn();

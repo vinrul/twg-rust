@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use twg_client::{ApiClient, WsTransport};
-use twg_render::UiPointerState;
+use twg_render::{MapUpdateSet, UiPointerState};
 
 mod compass_panel;
+pub mod editor;
 mod map_panel;
 mod screens;
 pub mod state;
@@ -49,6 +49,7 @@ impl Default for TacticalUiPlugin {
 impl Plugin for TacticalUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default());
+        app.init_resource::<editor::input::EditorInputFocus>();
         if let Some(backend) = &self.backend {
             app.insert_resource(ClientUi::new(
                 backend.api.clone(),
@@ -56,14 +57,14 @@ impl Plugin for TacticalUiPlugin {
                 backend.base_url.clone(),
             ));
             app.add_systems(
+                Update,
+                (editor::input::sync_editor_mode, editor::input::editor_input)
+                    .chain()
+                    .after(MapUpdateSet),
+            );
+            app.add_systems(
                 EguiPrimaryContextPass,
-                (
-                    apply_theme,
-                    track_ui_pointer,
-                    draw_client_shell,
-                    draw_map_panels.run_if(map_screen_active),
-                )
-                    .chain(),
+                (apply_theme, draw_client_shell, track_ui_pointer).chain(),
             );
         } else {
             app.add_systems(
@@ -90,9 +91,14 @@ fn apply_theme(mut contexts: EguiContexts, mut applied: Local<bool>) -> Result {
     Ok(())
 }
 
-fn track_ui_pointer(mut contexts: EguiContexts, mut state: ResMut<UiPointerState>) -> Result {
+fn track_ui_pointer(
+    mut contexts: EguiContexts,
+    mut state: ResMut<UiPointerState>,
+    mut focus: ResMut<editor::input::EditorInputFocus>,
+) -> Result {
     let context = contexts.ctx_mut()?;
     state.over_ui = context.egui_wants_pointer_input() || context.egui_is_using_pointer();
+    focus.keyboard = context.text_edit_focused();
     Ok(())
 }
 
@@ -100,57 +106,5 @@ fn draw_client_shell(mut contexts: EguiContexts, mut client: ResMut<ClientUi>) -
     let context = contexts.ctx_mut()?;
     client.poll();
     screens::draw(context, &mut client);
-    Ok(())
-}
-
-fn map_screen_active(client: Option<Res<ClientUi>>) -> bool {
-    client
-        .map(|client| {
-            matches!(
-                client.state.screen,
-                twg_client::session::Screen::Preview | twg_client::session::Screen::MapEditor
-            )
-        })
-        .unwrap_or(false)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_map_panels(
-    mut contexts: EguiContexts,
-    mut layer: ResMut<twg_render::BaseLayerResource>,
-    mut camera: ResMut<twg_render::MapCameraResource>,
-    mut flight: ResMut<twg_render::CameraFlightState>,
-    cursor: Res<twg_render::MapCursorResource>,
-    mut stress: ResMut<twg_render::StressRequest>,
-    stress_state: Res<twg_render::StressState>,
-    benchmark: Res<twg_render::StressBenchmark>,
-    mut models: ResMut<twg_render::MarkerModelSet>,
-    mut reload: ResMut<twg_render::MarkerModelReload>,
-    memory: Res<twg_render::MemoryStats>,
-    selection: Res<twg_render::SelectionState>,
-    diagnostics: Res<DiagnosticsStore>,
-    mut count_index: Local<usize>,
-    mut stress_mode: Local<twg_render::StressMode>,
-) -> Result {
-    let context = contexts.ctx_mut()?;
-    let fps = diagnostics
-        .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|diagnostic| diagnostic.smoothed())
-        .unwrap_or_default();
-    compass_panel::draw_compass_ctx(context, &mut camera, &mut flight);
-    map_panel::draw_map_panel_ctx(context, &mut layer, &camera, &cursor, fps);
-    stress_panel::draw_stress_panel_ctx(
-        context,
-        &mut stress,
-        &stress_state,
-        &benchmark,
-        &mut models,
-        &mut reload,
-        &memory,
-        &selection,
-        fps,
-        &mut count_index,
-        &mut stress_mode,
-    );
     Ok(())
 }

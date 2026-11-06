@@ -7438,6 +7438,7 @@ dependencies = [
  "twg-map",
  "twg-render",
  "uuid",
+ "web-sys",
 ]
 
 [[package]]

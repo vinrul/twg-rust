@@ -107,10 +107,14 @@ fn auto_start_from_run(run: Option<Res<StressRun>>, mut request: ResMut<StressRe
 /// Keyboard equivalent of the LOD button: `M` switches full <-> LOD.
 fn keyboard_toggle_lod(
     keys: Res<ButtonInput<KeyCode>>,
+    editor: Option<Res<crate::editor::EditorMode>>,
     mut models: ResMut<MarkerModelSet>,
     mut reload: ResMut<MarkerModelReload>,
     state: Res<StressState>,
 ) {
+    if editor.is_some_and(|editor| editor.active) {
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyM) {
         let lod = !models.lod;
         let draco = models.draco;
@@ -121,10 +125,14 @@ fn keyboard_toggle_lod(
 /// Keyboard equivalent of the Draco button: `D` switches plain <-> Draco.
 fn keyboard_toggle_draco(
     keys: Res<ButtonInput<KeyCode>>,
+    editor: Option<Res<crate::editor::EditorMode>>,
     mut models: ResMut<MarkerModelSet>,
     mut reload: ResMut<MarkerModelReload>,
     state: Res<StressState>,
 ) {
+    if editor.is_some_and(|editor| editor.active) {
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyD) {
         let lod = models.lod;
         let draco = !models.draco;
@@ -132,7 +140,14 @@ fn keyboard_toggle_draco(
     }
 }
 
-fn keyboard_clear(keys: Res<ButtonInput<KeyCode>>, mut request: ResMut<StressRequest>) {
+fn keyboard_clear(
+    keys: Res<ButtonInput<KeyCode>>,
+    editor: Option<Res<crate::editor::EditorMode>>,
+    mut request: ResMut<StressRequest>,
+) {
+    if editor.is_some_and(|editor| editor.active) {
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyC) {
         request.0 = Some(StressRun {
             count: 0,

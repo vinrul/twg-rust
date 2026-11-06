@@ -75,7 +75,7 @@ impl NavItem {
 
     pub const fn screen(self) -> Screen {
         match self {
-            Self::Preview => Screen::Preview,
+            Self::Preview => Screen::MapEditor,
             _ => Screen::Workspace,
         }
     }
@@ -196,7 +196,7 @@ mod tests {
         let mut state = ClientState::default();
         state.login(session(Role::User));
         state.navigate(NavItem::Preview);
-        assert_eq!(state.screen, Screen::Preview);
+        assert_eq!(state.screen, Screen::MapEditor);
     }
 
     #[test]

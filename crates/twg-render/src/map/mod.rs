@@ -16,6 +16,12 @@ pub use camera::{CAMERA_FOV_Y, MapCamera};
 pub use marker::DemoMarker;
 pub use tiles::{Tile, TileWorld};
 
+/// Update systems that move the camera and re-anchor map objects. Editor
+/// systems run before this set to spawn anchors and after it to pick with the
+/// current camera transform.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MapUpdateSet;
+
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct MapCameraResource(pub MapCameraState);
 
@@ -70,9 +76,25 @@ impl Plugin for MapRenderPlugin {
                     tiles::update_error_tiles,
                     tiles::update_tile_transforms,
                     environment::update_ground,
+                    hide_demo_content_when_editing,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(MapUpdateSet),
             );
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn hide_demo_content_when_editing(
+    mut commands: Commands,
+    editor: Option<Res<crate::editor::EditorMode>>,
+    demos: Query<Entity, Or<(With<DemoMarker>, With<overlay::DemoOverlay>)>>,
+) {
+    if editor.is_none_or(|editor| !editor.active) {
+        return;
+    }
+    for entity in &demos {
+        commands.entity(entity).despawn();
     }
 }
 

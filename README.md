@@ -194,6 +194,15 @@ penuh dan `--draco` untuk varian terkompresi (lihat
 [laporan Draco](docs/DRACO_REPORT.md)). Di web, padanan query-nya adalah
 `?lod=1` dan `?draco=1`. Toggle runtime: `M` untuk LOD, `D` untuk Draco.
 
+### Editor peta
+
+Menu **Peta** membuka editor bergaya Godot/Unity: menu bar, toolbar, dock
+Scene/Layers, viewport, Inspector, Assets/Console, dan status bar. `Q/W/E/R`
+memilih Select/Move/Rotate/Scale, `1..5` membuat Marker/Line/Polygon/Text/
+Measure, `Ctrl+S` menyimpan, `Ctrl+Z` undo, dan `Ctrl+D` menduplikasi objek.
+Mode **Play** menyembunyikan dock. Di web, `?scenario=<uuid>` membuka skenario
+tersebut langsung di editor. Detail ada di [laporan Fase 9](docs/PHASE9_REPORT.md).
+
 Web:
 
 ```bash
@@ -214,6 +223,14 @@ cd apps/web
 trunk build --cargo-profile wasm-release
 cd ../..
 node tools/web-stress.mjs --sample=10
+```
+
+Smoke editor web (membuat marker/line/building/text, menyimpan, reload,
+menghapus, lalu membersihkan data uji):
+
+```bash
+node tools/client-smoke.mjs --username=baselinemonitor \
+  --scenario=44444444-4444-4444-8444-444444444441 --editor-test=true
 ```
 
 `HTTP_SERVER_ADDRESS` dapat dioverride; default `127.0.0.1:8010`.
@@ -252,6 +269,7 @@ Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
 - [Laporan Fase 6](docs/PHASE6_REPORT.md)
 - [Laporan Fase 7](docs/PHASE7_REPORT.md)
 - [Laporan Fase 8](docs/PHASE8_REPORT.md)
+- [Laporan Fase 9](docs/PHASE9_REPORT.md)
 - [Protokol realtime](docs/REALTIME_PROTOCOL.md)
 - [Baseline Fase 0](baseline/phase0-report.md)
 - [Golden HTTP](baseline/golden/verification.generated.md)

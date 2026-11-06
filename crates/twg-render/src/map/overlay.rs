@@ -7,6 +7,9 @@ use twg_map::MapCameraState;
 
 use super::GeoAnchor;
 
+#[derive(Component)]
+pub struct DemoOverlay;
+
 pub fn spawn_overlays(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -39,6 +42,7 @@ pub fn spawn_overlays(
         MeshMaterial3d(line_material),
         Transform::from_xyz(0.0, 0.25, 0.0),
         center_anchor,
+        DemoOverlay,
         Name::new("Demo route line"),
     ));
 
@@ -63,6 +67,7 @@ pub fn spawn_overlays(
             MeshMaterial3d(building_material),
             Transform::default(),
             anchor,
+            DemoOverlay,
             Name::new("Demo building extrusion"),
         ));
     }
@@ -82,6 +87,7 @@ pub fn spawn_overlays(
             MeshMaterial3d(floor_material),
             Transform::from_rotation(Quat::from_rotation_y(0.35)),
             anchor,
+            DemoOverlay,
             Name::new("Demo floor plan"),
         ));
     }

@@ -23,7 +23,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
     match client.state.screen {
         Screen::Boot => draw_boot(context, client),
         Screen::Login => draw_login(context, client),
-        Screen::Preview | Screen::MapEditor => draw_map_screen(context, client),
+        Screen::Preview | Screen::MapEditor => crate::editor::panels::draw(context, client),
         Screen::Workspace => draw_shell(context, client),
     }
     draw_modal(context, client);
@@ -953,53 +953,6 @@ fn screen_profile(ui: &mut egui::Ui, client: &mut ClientUi) {
             });
         }
     });
-}
-
-fn draw_map_screen(context: &egui::Context, client: &mut ClientUi) {
-    client.ensure_ws();
-    egui::Window::new("Realtime")
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 245.0))
-        .resizable(false)
-        .show(context, |ui| {
-            ui.label(theme::title("Koneksi realtime"));
-            let status = client.ws.state.status.clone();
-            widgets::badge(
-                ui,
-                &status.label(),
-                if status.is_connected() {
-                    DARK.success
-                } else {
-                    DARK.warning
-                },
-            );
-            ui.label(theme::muted(&format!(
-                "Event diterima: {}",
-                client.ws.state.events_received
-            )));
-            if let Some(scenario) = client.ws.scenario {
-                ui.label(theme::muted(&format!("Skenario {}", short_id(scenario))));
-            }
-            ui.horizontal(|ui| {
-                if widgets::secondary_button(ui, "Sambung ulang").clicked() {
-                    client.reconnect_ws_now();
-                }
-                if widgets::secondary_button(ui, "Subscribe").clicked() {
-                    client.subscribe_ws();
-                }
-                if widgets::ghost_button(ui, "Kembali").clicked() {
-                    client.go(NavItem::Scenarios);
-                }
-            });
-        });
-    egui::Window::new("Layer")
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 460.0))
-        .resizable(false)
-        .show(context, |ui| {
-            ui.label(theme::title("Urutan layer"));
-            ui.label(theme::muted("Tarik untuk mengubah prioritas tampilan."));
-            ui.add_space(SPACE_2);
-            widgets::reorderable_layers(ui, &mut client.layer_order, &mut client.selected_layer);
-        });
 }
 
 // ---------------------------------------------------------------- modals
