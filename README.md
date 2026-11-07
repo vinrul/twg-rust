@@ -120,6 +120,63 @@ Aturan dependency:
 - `twg-server` tidak boleh mengimpor Bevy.
 - App client tidak boleh mengimpor crate server.
 
+## Prasyarat build native
+
+Build native (desktop/server) memerlukan CMake karena `draco_decoder`
+mengompilasi Draco dari source, memakai `cc`/`cxx` dan C++ toolchain host:
+
+- CMake 3.16+ — `brew install cmake` (macOS) atau `sudo apt install cmake` (Debian/Ubuntu).
+- Header standard library C++ yang lengkap.
+
+Build WASM tidak memerlukan keduanya: untuk `wasm32` `draco_decoder` tidak
+menarik `cxx`/`cc` dan `build.rs`-nya langsung berhenti.
+
+### macOS
+
+Dua kondisi berikut membuat `cargo run -p twg-desktop` gagal sebelum satu baris
+kode repo ikut dikompilasi:
+
+1. **Deployment target lebih baru dari macOS host.** `rustc` default ke `minos 11.0`
+   untuk `aarch64-apple-darwin`, sedangkan `cc` memakai `xcrun --show-sdk-version`
+   bila `MACOSX_DEPLOYMENT_TARGET` kosong. Di mesin dengan SDK 27 tapi macOS 26,
+   objek C++ dibangun dengan `-mmacosx-version-min=27.0` dan linker memberi warning
+   `object file was built for newer macOS version`. Set eksplisit:
+
+   ```sh
+   export MACOSX_DEPLOYMENT_TARGET=26.0   # sesuaikan dengan `sw_vers -productVersion`
+   ```
+
+2. **Header libc++ tidak lengkap.** Gejalanya
+   `fatal error: 'algorithm' file not found` saat kompilasi `cxx` atau
+   `draco_decoder`, padahal error-nya bukan dari kode proyek. Cek dengan:
+
+   ```sh
+   echo '#include <algorithm>' | c++ -x c++ -fsyntax-only - && echo OK
+   ls /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/algorithm
+   ```
+
+   Bila perintah pertama gagal sementara file di SDK ada, penyebabnya folder sisa
+   instalasi lama yang tidak lengkap, misalnya
+   `/Library/Developer/CommandLineTools/usr/include/c++/v1` yang hanya berisi
+   `__bit`/`cxxabi.h`. Karena folder itu ada, clang memakainya dan tidak menambah
+   path SDK. Perbaikan tuntas — install ulang Command Line Tools:
+
+   ```sh
+   sudo rm -rf /Library/Developer/CommandLineTools
+   sudo xcode-select --install
+   ```
+
+   Workaround cepat tanpa install ulang: pindahkan folder sisa tersebut
+   (`sudo mv .../usr/include/c++ .../usr/include/c++-stale.bak`), atau set
+   `CPLUS_INCLUDE_PATH` ke path libc++ milik SDK.
+
+Setelah memperbaiki header atau memasang CMake, ulangi build dari crate native
+agar build script yang sebelumnya gagal/ter-cache dijalankan ulang:
+
+```sh
+cargo clean -p cxx -p draco_decoder
+```
+
 ## Perintah
 
 ```bash
