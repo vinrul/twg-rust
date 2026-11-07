@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use twg_contracts::auth::{LoginResponse, UserIdentity};
 use twg_contracts::{Timestamp, Unit};
-use twg_domain::SessionSubject;
+use twg_domain::{Role, SessionSubject};
 
 use crate::password::{hash_password, verify_password};
 use crate::store::{AuthStore, AuthStoreError, AuthUser, RotateOutcome, SessionRecord};
@@ -171,6 +171,40 @@ impl AuthService {
                 .await?;
         }
 
+        LoginResult::from_tokens(user, tokens)
+    }
+
+    /// Login for the `twg-online-admin` operations tool.
+    ///
+    /// Admin accounts are normally single-device, which would prevent the tool
+    /// from being used while the admin is signed in on their desktop. This
+    /// entry point always creates an independent multi-device session and is
+    /// restricted to the `admin` role.
+    pub async fn login_admin_tool(
+        &self,
+        username: &str,
+        password: &str,
+        device_id: &str,
+    ) -> Result<LoginResult, AuthError> {
+        let username = username.trim();
+        let user = self
+            .store
+            .find_user_by_username(username)
+            .await?
+            .ok_or(AuthError::UserNotFound)?;
+        if !verify_password(password, &user.password_hash) {
+            return Err(AuthError::InvalidPassword);
+        }
+        if user.role != Role::Admin {
+            return Err(AuthError::ForbiddenRole);
+        }
+        let device_id = normalize_device_id(device_id)?;
+        let now = Utc::now();
+        let tokens = self.issue_tokens(&user, now)?;
+        let refresh_hash = refresh_token_hash(&tokens.refresh_token, &self.config);
+        self.store
+            .upsert_multi_device_session(user.id, device_id, &refresh_hash, now)
+            .await?;
         LoginResult::from_tokens(user, tokens)
     }
 
@@ -526,6 +560,45 @@ mod tests {
                 .await
                 .unwrap_err(),
             AuthError::AlreadyLoggedIn
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_tool_login_ignores_single_device() {
+        let service = service(seeded_store());
+        service
+            .login("baselineadmin", "Baseline#2026", "device-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .login("baselineadmin", "Baseline#2026", "device-2")
+                .await
+                .unwrap_err(),
+            AuthError::AlreadyLoggedIn
+        );
+
+        let tool = service
+            .login_admin_tool("baselineadmin", "Baseline#2026", "device-2")
+            .await
+            .unwrap();
+        assert_eq!(tool.response.user.username, "baselineadmin");
+
+        // The admin tool route stays admin-only.
+        assert_eq!(
+            service
+                .login_admin_tool("baselineadminsatker", "Baseline#2026", "device-3")
+                .await
+                .unwrap_err(),
+            AuthError::ForbiddenRole
+        );
+        // Wrong credentials still fail.
+        assert_eq!(
+            service
+                .login_admin_tool("baselineadmin", "wrong", "device-2")
+                .await
+                .unwrap_err(),
+            AuthError::InvalidPassword
         );
     }
 

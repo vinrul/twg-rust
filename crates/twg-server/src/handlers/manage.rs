@@ -12,7 +12,9 @@ use twg_contracts::scenarios::{
     CopyScenarioRequest, Scenario, ScenarioCreateRequest, ScenarioNameUpdateRequest,
     ScenarioUpdateRequest,
 };
-use twg_contracts::users::{UpdateProfileRequest, User, UserCreateRequest, UserUpdateRequest};
+use twg_contracts::users::{
+    KickUserResponse, UpdateProfileRequest, User, UserCreateRequest, UserUpdateRequest,
+};
 use twg_domain::{BaseLayer, MapMode, Role};
 use twg_storage::{NewScenario, ScenarioUpdate};
 use uuid::Uuid;
@@ -426,10 +428,28 @@ pub async fn update_profile(
 
 pub async fn kick_user_sessions(
     State(state): State<AppState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<MessageResponse>, ApiError> {
-    write_store(&state)?.revoke_user_sessions(id).await?;
-    Ok(success())
+) -> Result<Json<SingleResponse<KickUserResponse>>, ApiError> {
+    let user = read_store(&state)?
+        .get_user(id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("user not found"))?;
+    let revoked = write_store(&state)?.revoke_user_sessions(id).await?;
+    tracing::info!(
+        actor = %context.subject.user_id,
+        actor_role = %context.subject.role,
+        target_user = %user.id,
+        target_username = %user.username,
+        revoked,
+        "user sessions revoked"
+    );
+    Ok(Json(SingleResponse::success(KickUserResponse {
+        user_id: user.id,
+        username: user.username,
+        revoked_sessions: revoked,
+    })))
 }
 
 // ---------------------------------------------------------------- satkers

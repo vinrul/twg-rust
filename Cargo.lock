@@ -7370,6 +7370,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "twg-online-admin"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "chrono",
+ "twg-client",
+ "twg-contracts",
+ "twg-domain",
+ "uuid",
+]
+
+[[package]]
 name = "twg-render"
 version = "0.1.0"
 dependencies = [

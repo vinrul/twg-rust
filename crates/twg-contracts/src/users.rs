@@ -67,6 +67,14 @@ pub struct Session {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KickUserResponse {
+    pub user_id: Uuid,
+    pub username: String,
+    /// Number of active sessions that were revoked by this call.
+    pub revoked_sessions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OnlineUser {
     pub id: String,
     pub name: String,

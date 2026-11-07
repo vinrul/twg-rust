@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(handlers::health::readyz))
         .route("/ws", get(handlers::realtime::ws_upgrade))
         .route("/auth/login", post(handlers::auth::login))
+        .route("/auth/login/admin", post(handlers::auth::login_admin))
         .route("/auth/refresh", post(handlers::auth::refresh))
         .route(
             "/public/skenarios/{operasi_id}",
@@ -85,10 +86,6 @@ pub fn router(state: AppState) -> Router {
         .route("/public/users/online", get(handlers::public::online_users))
         .route("/public/geocode", get(handlers::public::geocode))
         .route(
-            "/public/users/{id}/kick-session",
-            post(handlers::manage::kick_user_sessions),
-        )
-        .route(
             "/public/game-sessions/snapshot/{skenario_id}",
             get(handlers::public::snapshot),
         );
@@ -118,6 +115,7 @@ pub fn router(state: AppState) -> Router {
             get(handlers::private::home_operations),
         )
         .route("/private/users", get(handlers::private::users))
+        .route("/private/users/online", get(handlers::public::online_users))
         .route("/private/satkers", get(handlers::private::satkers))
         .route("/private/assets", get(handlers::assets::list))
         .route("/private/assets/manifest", get(handlers::assets::manifest))
@@ -400,9 +398,8 @@ pub fn router(state: AppState) -> Router {
             middleware::require_session,
         ));
 
-    // Asset writes are restricted to the `admin` role; reads stay available to
-    // every authenticated session so the desktop can sync before play.
-    let assets_admin = Router::new()
+    // Writes restricted to the `admin` role (assets and session revocation).
+    let admin_only = Router::new()
         .route("/admin/assets", post(handlers::assets::upload))
         .route(
             "/admin/assets/{id}",
@@ -411,6 +408,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/admin/assets/{id}/convert",
             post(handlers::assets::convert),
+        )
+        .route(
+            "/admin/users/{id}/kick-session",
+            post(handlers::manage::kick_user_sessions),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             middleware::RoleGuard(vec![twg_domain::Role::Admin]),
@@ -453,7 +454,7 @@ pub fn router(state: AppState) -> Router {
         .merge(private)
         .merge(private_snapshot_writes)
         .merge(admin)
-        .merge(assets_admin)
+        .merge(admin_only)
         .merge(uploads_router)
         .merge(asset_files_router)
         .merge(tiles::router::<AppState>())
@@ -1061,6 +1062,104 @@ mod tests {
 
         let (status, _, _) = send(app, Method::POST, "/admin/assets", None, &[]).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_tool_login_is_admin_only_and_multi_device() {
+        let app = router(test_state(100));
+        login(app.clone(), "baselineadmin", "device-1").await;
+
+        // The regular route still enforces single-device for admins.
+        let (status, _, _) = send(
+            app.clone(),
+            Method::POST,
+            "/auth/login",
+            Some(login_body("baselineadmin", "device-2")),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // The admin tool route keeps an independent session.
+        let (status, _, body) = send(
+            app.clone(),
+            Method::POST,
+            "/auth/login/admin",
+            Some(login_body("baselineadmin", "device-2")),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["data"]["user"]["username"], "baselineadmin");
+
+        // It cannot be used by other roles.
+        for username in ["baselinemonitor", "baselineadminsatker", "baselineuser"] {
+            let (status, _, body) = send(
+                app.clone(),
+                Method::POST,
+                "/auth/login/admin",
+                Some(login_body(username, "device-9")),
+                &[],
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{username}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn kick_endpoint_is_admin_only_and_public_route_is_gone() {
+        let app = router(test_state(100));
+        let target = Uuid::from_u128(99);
+        // The legacy unauthenticated route must no longer exist.
+        let (status, _, _) = send(
+            app.clone(),
+            Method::POST,
+            &format!("/public/users/{target}/kick-session"),
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        for (username, expected) in [
+            ("baselineuser", StatusCode::FORBIDDEN),
+            ("baselinemonitor", StatusCode::FORBIDDEN),
+            ("baselineadminsatker", StatusCode::FORBIDDEN),
+            ("baselineadmin", StatusCode::SERVICE_UNAVAILABLE),
+        ] {
+            let session = login(app.clone(), username, "device-1").await;
+            let (status, _, body) = send(
+                app.clone(),
+                Method::POST,
+                &format!("/admin/users/{target}/kick-session"),
+                None,
+                &[
+                    ("authorization", bearer(&session).as_str()),
+                    ("x-device-id", "device-1"),
+                ],
+            )
+            .await;
+            assert_eq!(status, expected, "{username}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn online_users_are_available_to_authenticated_sessions() {
+        let app = router(test_state(100));
+        let session = login(app.clone(), "baselineuser", "device-1").await;
+        let (status, _, body) = send(
+            app,
+            Method::GET,
+            "/private/users/online",
+            None,
+            &[
+                ("authorization", bearer(&session).as_str()),
+                ("x-device-id", "device-1"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["message"], "database is not available");
     }
 
     #[tokio::test]

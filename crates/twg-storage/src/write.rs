@@ -743,15 +743,15 @@ impl WriteStore {
         Ok(())
     }
 
-    pub async fn revoke_user_sessions(&self, user_id: Uuid) -> Result<(), WriteError> {
-        sqlx::query(
+    pub async fn revoke_user_sessions(&self, user_id: Uuid) -> Result<u64, WriteError> {
+        let result = sqlx::query(
             "UPDATE user_sessions SET revoked_at = NOW()
              WHERE user_id = $1 AND revoked_at IS NULL",
         )
         .bind(user_id)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected())
     }
 
     // ---------------------------------------------------------------- satkers

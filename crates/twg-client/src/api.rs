@@ -365,6 +365,24 @@ impl ApiClient {
         })
     }
 
+    /// Login used by the online-admin tool: admin-only and independent of the
+    /// single-device rule enforced by [`ApiClient::login`].
+    pub fn login_admin_tool(&self, username: &str, password: &str) -> ApiHandle {
+        let device_id = self.device_id();
+        self.submit(RequestSpec {
+            method: HttpMethod::Post,
+            path: "/auth/login/admin".to_owned(),
+            body: Some(json!(LoginRequest {
+                username: username.to_owned(),
+                password: password.to_owned(),
+                device_id,
+            })),
+            body_bytes: None,
+            content_type: None,
+            kind: RequestKind::Login,
+        })
+    }
+
     pub fn logout(&self) -> ApiHandle {
         let device_id = self.device_id();
         self.submit(RequestSpec {

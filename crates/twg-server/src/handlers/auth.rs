@@ -32,6 +32,36 @@ pub async fn login(
     ))
 }
 
+/// Login used by `twg-online-admin`. Admins are single-device on the normal
+/// route; this one creates an independent multi-device session and is limited
+/// to the `admin` role. Rate limiting is shared with `/auth/login`.
+pub async fn login_admin(
+    State(state): State<AppState>,
+    Extension(client): Extension<ClientIp>,
+    headers: HeaderMap,
+    body: Result<Json<LoginRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<SingleResponse<LoginResponse>>), ApiError> {
+    state
+        .rate_limiter
+        .check(&client_key("login", &client.0))
+        .map_err(ApiError::too_many_requests)?;
+    let Json(body) = body?;
+    let device_id = device_id(&headers, &body.device_id);
+    let result = state
+        .auth
+        .login_admin_tool(&body.username, &body.password, &device_id)
+        .await?;
+    tracing::info!(
+        username = %body.username,
+        device_id = %device_id,
+        "admin tool login"
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(SingleResponse::success(result.response)),
+    ))
+}
+
 pub async fn refresh(
     State(state): State<AppState>,
     Extension(client): Extension<ClientIp>,

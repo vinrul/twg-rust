@@ -1,5 +1,8 @@
 pub mod auth {
     pub const LOGIN: &str = "/auth/login";
+    /// Dedicated login for `twg-online-admin`; admin-only and never enforces
+    /// the single-device rule.
+    pub const LOGIN_ADMIN: &str = "/auth/login/admin";
     pub const REFRESH: &str = "/auth/refresh";
     pub const LOGOUT: &str = "/auth/logout";
     pub const IDENTIFY: &str = "/private/identify";
@@ -306,7 +309,7 @@ pub mod users {
     pub const ONLINE: &str = "/public/users/online";
 
     pub fn kick_session(id: &str) -> String {
-        format!("/public/users/{id}/kick-session")
+        format!("/admin/users/{id}/kick-session")
     }
 }
 

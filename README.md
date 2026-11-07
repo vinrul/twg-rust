@@ -99,6 +99,7 @@ apps/
   server/              binary server
   desktop/              binary native Bevy
   web/                  library WASM + Trunk
+  online-admin/         app desktop admin: user online + kick sesi
 docker/
   centrifugo/          config Centrifugo untuk testing lokal
 compose.yaml           PostgreSQL + Centrifugo
@@ -106,6 +107,8 @@ compose.yaml           PostgreSQL + Centrifugo
 tools/
   web-stress.mjs       harness stress browser (Chrome DevTools Protocol)
   client-smoke.mjs     smoke client shell web (sesi, API, WebSocket, screenshot)
+  assets-smoke.sh      smoke upload/konversi/manifest asset library
+  kick-smoke.sh        smoke daftar online + kick sesi (admin)
   phase4-smoke.mjs     smoke test auth terhadap server + PostgreSQL
   paseto-parity.mjs    parity token Rust vs server Go lama
   read-parity.mjs      differential endpoint read-only Rust vs server Go lama
@@ -349,6 +352,33 @@ Sinkronisasi offline:
 - Tombol **Lepas** menghapus pilihan dan mengembalikan model bawaan.
 - Editor peta tetap memakai katalog unit bawaan (`assets/models/...`, sudah
   lokal); model aset terpilih dipakai oleh renderer marker/simulasi.
+
+### Online admin (desktop)
+
+App terpisah untuk memantau user yang sedang login dan mencabut sesinya supaya
+bisa login lagi (server memakai sesi single-device untuk `admin`/`admin_satker`).
+
+```bash
+cargo run -p twg-online-admin
+```
+
+- Login memakai `POST /auth/login/admin`: khusus role `admin`, membuat sesi
+  multi-device sehingga **tidak** terkena aturan single-device, dan berbagi rate
+  limit dengan `/auth/login`. Daftar online diambil dari
+  `GET /private/users/online` dan diperbarui otomatis tiap 5 detik (bisa
+  dimatikan).
+- Tombol **Kick** meminta konfirmasi lalu memanggil
+  `POST /admin/users/{id}/kick-session`; semua sesi aktif user tersebut dicabut
+  dan user dapat login lagi. Setiap kick dicatat di log server (actor, target,
+  jumlah sesi).
+- Route lama `POST /public/users/{id}/kick-session` (tanpa autentikasi, temuan
+  S1 di `baseline/security/findings.md`) sudah dihapus.
+- Konfigurasi: `TWG_API_URL` (default `http://127.0.0.1:8010`),
+  `TWG_ADMIN_DEVICE_ID` (opsional, device id tetap), dan
+  `TWG_ADMIN_SESSION_FILE` untuk lokasi file sesi (default
+  `online-admin-session.json`, terpisah dari sesi `twg-desktop`).
+- Route login biasa (`POST /auth/login`) tetap menolak admin yang sudah aktif di
+  device lain; hanya route admin-tool yang membuat sesi tambahan.
 
 ### Editor peta
 
