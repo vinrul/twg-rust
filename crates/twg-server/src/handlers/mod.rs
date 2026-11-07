@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod anims;
+pub mod assets;
 pub mod auth;
 pub mod geometry;
 pub mod health;
@@ -26,6 +27,13 @@ pub fn read_store(state: &AppState) -> Result<&twg_storage::ReadStore, ApiError>
 pub fn write_store(state: &AppState) -> Result<&twg_storage::WriteStore, ApiError> {
     state
         .write_store
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable("database is not available"))
+}
+
+pub fn asset_store(state: &AppState) -> Result<&twg_storage::AssetStore, ApiError> {
+    state
+        .asset_store
         .as_deref()
         .ok_or_else(|| ApiError::service_unavailable("database is not available"))
 }

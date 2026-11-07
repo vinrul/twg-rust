@@ -1,4 +1,6 @@
 pub mod api;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod asset_cache;
 pub mod design;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;

@@ -26,6 +26,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         Screen::Preview | Screen::MapEditor => crate::editor::panels::draw(context, client),
         Screen::Workspace => draw_shell(context, client),
     }
+    crate::assets_screen::draw_sync_overlay(context, client);
     draw_modal(context, client);
     draw_toasts(context, client);
 }
@@ -255,6 +256,7 @@ fn draw_screen(ui: &mut egui::Ui, client: &mut ClientUi) {
         NavItem::Dashboard => screen_dashboard(ui, client),
         NavItem::Operations => screen_operations(ui, client),
         NavItem::Scenarios => screen_scenarios(ui, client),
+        NavItem::Assets => crate::assets_screen::draw(ui, client),
         NavItem::Games => screen_games(ui, client),
         NavItem::Users => screen_users(ui, client),
         NavItem::Satkers => screen_satkers(ui, client),

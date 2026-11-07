@@ -16,10 +16,11 @@ pub use map::{
 };
 pub use stress::{
     ANIMATED_MODEL, ANIMATED_MODEL_DRACO, ANIMATED_MODEL_LOD, ANIMATED_MODEL_LOD_DRACO, BenchPhase,
-    BenchResult, DEFAULT_STRESS_ZOOM, DracoProbe, MarkerModelReload, MarkerModelSet, MemoryProbe,
-    MemoryProbePhase, MemoryStats, STATIC_MODEL, STATIC_MODEL_DRACO, STATIC_MODEL_LOD,
-    STATIC_MODEL_LOD_DRACO, STRESS_COUNTS, SelectionState, StressBenchmark, StressMode,
-    StressPlugin, StressRequest, StressRun, StressState,
+    BenchResult, CACHE_ASSET_SOURCE, DEFAULT_STRESS_ZOOM, DracoProbe, MarkerModelOverride,
+    MarkerModelPath, MarkerModelReload, MarkerModelSet, MemoryProbe, MemoryProbePhase, MemoryStats,
+    STATIC_MODEL, STATIC_MODEL_DRACO, STATIC_MODEL_LOD, STATIC_MODEL_LOD_DRACO, STRESS_COUNTS,
+    SelectionState, StressBenchmark, StressMode, StressPlugin, StressRequest, StressRun,
+    StressState, cache_asset_path,
 };
 pub use twg_map::{CameraFlight, MapCameraState};
 

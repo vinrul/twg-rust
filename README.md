@@ -251,6 +251,105 @@ penuh dan `--draco` untuk varian terkompresi (lihat
 [laporan Draco](docs/DRACO_REPORT.md)). Di web, padanan query-nya adalah
 `?lod=1` dan `?draco=1`. Toggle runtime: `M` untuk LOD, `D` untuk Draco.
 
+### Asset library
+
+Setiap asset punya `name`, satu `category`, source file, dan daftar varian hasil
+konversi. Kategori menentukan tipe file yang diterima dan konversi yang
+tersedia:
+
+| Category | Upload | Konversi | Varian |
+|---|---|---|---|
+| `model`, `model_kind=static` | 1 file `.glb`/`.gltf` (field `file`) | Draco, LOD2, Draco+LOD2 | `draco.glb`, `lod2.glb`, `draco_lod2.glb` |
+| `model`, `model_kind=animated` | 2 file: `idle` + `animated` (field `idle` dan `animated`) | Draco, LOD2, Draco+LOD2 per slot | sama, satu set per slot |
+| `texture` | `.png`, `.jpg`, `.jpeg`, `.webp` (field `file`) | resize | `resize_512.*`, `resize_256.*`, `resize_128.*` |
+| `icon` | `.png`, `.jpg`, `.jpeg`, `.webp` (field `file`) | resize | sama dengan texture |
+
+Model animasi wajib mengirim dua file: `idle` dan file `animated` yang benar-
+benar punya array `animations` (upload ditolak bila kosong). Konversi pada model
+animasi dijalankan per slot, misalnya `{"target":"draco","slot":"animated"}`.
+
+Layout file: `<ASSETS_DIR>/<asset-id>/<slot>/<file>`, misalnya
+`<id>/idle/original.glb`, `<id>/idle/draco.glb`, `<id>/animated/draco_lod2.glb`.
+
+Deteksi saat upload (per source):
+
+- **Draco** dari `extensionsUsed: KHR_draco_mesh_compression` (atau penanda
+  `extras.twg.draco` yang ditulis server).
+- **LOD** dari `extras.twg.lod` atau penanda nama file (`..._lod2.glb`,
+  `...-lod.glb`). Nama file tanpa angka dianggap LOD1.
+
+Bila file unggahan sudah memenuhi target, konversi tidak dijalankan dan varian
+menunjuk ke source file (`reused: true`) — misalnya upload yang sudah Draco+LOD2
+lalu menekan convert Draco+LOD2. Setiap perubahan metadata atau varian menaikkan
+`version`, sehingga client bisa mendeteksi asset yang perlu disinkronkan.
+
+Endpoint (unggah/ubah/hapus hanya role `admin`; baca untuk semua sesi login):
+
+| Method | Path | Keterangan |
+|---|---|---|
+| POST | `/admin/assets` | multipart `name`, `category`; model juga `model_kind` (`static`/`animated`), lalu `file` atau `idle`+`animated` |
+| PUT | `/admin/assets/{id}` | `{"name", "category"}` (kategori hanya bisa berpindah antara texture/icon) |
+| DELETE | `/admin/assets/{id}` | hapus baris + file |
+| POST | `/admin/assets/{id}/convert` | `{"target":"draco"}`, `{"target":"lod2"}`, `{"target":"draco_lod2"}`, `{"target":"resize","size":512}`; tambahkan `"slot"` untuk model animasi dan `force: true` untuk konversi ulang |
+| GET | `/private/assets` | daftar, filter `?category=` dan `?search=` |
+| GET | `/private/assets/manifest` | manifest ringkas untuk sinkronisasi |
+| GET | `/private/assets/{id}` | detail satu asset |
+| GET | `/assets/{id}/{slot}/{file}` | source/varian file |
+
+Konversi glTF memakai `gltf-transform` (`npm i -g @gltf-transform/cli`) dan
+membutuhkan CMake untuk build `draco_decoder` (lihat
+[prasyarat build native](#prasyarat-build-native)). `ASSET_LOD2_RATIO` dan
+`ASSET_LOD2_ERROR` mengatur simplifikasi; resize gambar dikerjakan di server
+memakai crate `image`. File disimpan di `ASSETS_DIR` (default `asset-store`)
+dengan satu direktori per id asset.
+
+### Aset di desktop (offline)
+
+Menu **Aset** tersedia di `twg-desktop` untuk semua role; unggah, konversi, dan
+hapus hanya muncul untuk role `admin`.
+
+- **Upload**: tarik & lepas file ke jendela aplikasi. Pilih kategori (Model /
+  Texture / Icon) dan, untuk model, `Static` (1 file) atau `Animasi` (2 file:
+  `idle` + file animasi). Nama terisi otomatis dari nama file.
+- **Preview**: texture/icon menampilkan gambar dari cache offline; model
+  menampilkan source, varian, ukuran, serta status Draco/LOD.
+- **Konversi**: tombol Draco / LOD2 / Draco+LOD2 per slot (model) dan
+  Resize 512/256/128 (gambar). Target yang sudah terpenuhi ditandai `✓` dan
+  tidak dikonversi ulang.
+- **Gunakan**: menyimpan pilihan ke resource `ActiveAsset` dengan path file dari
+  cache offline — varian `draco_lod2 → lod2 → draco` bila opsi "Gunakan hasil
+  convert" aktif, kalau tidak file asli. Model animasi memakai pasangan
+  `idle` + `animated`.
+
+Sinkronisasi offline:
+
+- Setelah login dan setiap kali akan membuka **Peta**, desktop memanggil
+  `/private/assets/manifest` lebih dulu (overlay "Sinkronisasi aset").
+- Hanya file yang `version`-nya berubah atau belum ada yang diunduh; setiap file
+  diverifikasi dengan `sha256`, ditulis atomik, dan `manifest.json` baru ditulis
+  setelah semua file sukses.
+- Bila server tidak terjangkau: aplikasi memakai snapshot cache terakhir dan
+  menampilkan peringatan mode offline. Bila cache masih kosong, navigasi ke peta
+  dibatalkan agar tidak memakai aset yang belum pasti.
+- Lokasi cache: `TWG_ASSET_CACHE` (default `~/Library/Caches/twg/assets` di macOS,
+  `%LOCALAPPDATA%\twg\assets` di Windows, `$XDG_CACHE_HOME/twg/assets` di Linux).
+- Build web tidak memiliki cache offline; melihat katalog tetap bisa, sedangkan
+  tombol **Gunakan** menampilkan info bahwa cache hanya tersedia di desktop.
+
+**Pemakaian di runtime**
+
+- Desktop mendaftarkan folder cache sebagai asset source Bevy `twg-cache://`
+  sebelum `DefaultPlugins`, sehingga file offline dimuat tanpa menyentuh server.
+- Saat **Gunakan** ditekan, `ActiveAsset` dipetakan ke `MarkerModelOverride`:
+  slot `static`/`idle` menjadi model `still`, slot `animated` menjadi model
+  animasi, dengan flag Draco per file (validasi glTF dimatikan untuk file
+  Draco). Marker dan frame animasi langsung dimuat ulang dari file tersebut.
+- `TWG_ACTIVE_ASSET=<uuid>` menjalankan aplikasi dengan aset tertentu yang
+  sudah ada di cache (berguna untuk memulai simulasi tanpa memilih manual).
+- Tombol **Lepas** menghapus pilihan dan mengembalikan model bawaan.
+- Editor peta tetap memakai katalog unit bawaan (`assets/models/...`, sudah
+  lokal); model aset terpilih dipakai oleh renderer marker/simulasi.
+
 ### Editor peta
 
 Menu **Peta** membuka editor bergaya Godot/Unity: menu bar, toolbar, dock

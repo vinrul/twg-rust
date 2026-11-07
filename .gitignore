@@ -14,3 +14,4 @@ coverage/
 /.web-asset-cache/
 /.tile-cache/
 /uploads/
+/asset-store/

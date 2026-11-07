@@ -4154,12 +4154,23 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
  "tiff",
  "zune-core",
  "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]
@@ -7285,9 +7296,11 @@ name = "twg-client"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hex",
  "js-sys",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tungstenite",
  "twg-contracts",
  "twg-domain",
@@ -7305,6 +7318,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "strum",
  "thiserror 2.0.21",
  "twg-domain",
  "uuid",
@@ -7375,10 +7389,13 @@ dependencies = [
  "chrono",
  "dotenvy",
  "futures-util",
+ "hex",
  "http-body-util",
+ "image",
  "infer",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
@@ -7431,6 +7448,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "chrono",
+ "image",
  "serde_json",
  "twg-client",
  "twg-contracts",

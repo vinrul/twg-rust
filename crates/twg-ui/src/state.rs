@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
@@ -8,8 +9,14 @@ use chrono::NaiveDate;
 use serde_json::{Value, json};
 use twg_client::ApiClient;
 use twg_client::api::{ApiError, ApiHandle, ApiResponse, HttpMethod};
+#[cfg(not(target_arch = "wasm32"))]
+use twg_client::asset_cache::AssetCache;
 use twg_client::realtime::{RealtimeState, RealtimeStatus, WsConnection, WsTransport};
 use twg_client::session::{ClientSession, ClientState, NavItem, Screen};
+use twg_contracts::assets::{
+    Asset, AssetCategory, AssetManifest, AssetModelKind, AssetSourceSlot, AssetVariantKind,
+    ConvertRequest, ConvertResult, ConvertTarget, SyncProgress,
+};
 use twg_contracts::categories::Category;
 use twg_contracts::operations::{HomeOperation, Operation};
 use twg_contracts::satkers::Satker;
@@ -62,6 +69,11 @@ pub enum JobKind {
     SnapshotToggle,
     SnapshotDelete,
     WsTicket,
+    Assets,
+    AssetManifest,
+    AssetUpload,
+    AssetConvert,
+    AssetDelete,
 }
 
 pub struct UiJob {
@@ -122,6 +134,7 @@ pub enum ConfirmAction {
     DeleteUser(Uuid),
     DeleteSatker(Uuid),
     DeleteSnapshot(Uuid),
+    DeleteAsset(Uuid),
     Logout,
 }
 
@@ -129,6 +142,105 @@ pub struct ConfirmDialog {
     pub title: String,
     pub message: String,
     pub action: ConfirmAction,
+}
+
+// ---------------------------------------------------------------- assets
+
+/// Upload form for the admin asset screen. Files come from window drag & drop
+/// and are assigned to source slots in order.
+pub struct AssetUploadDraft {
+    pub category: AssetCategory,
+    pub model_kind: AssetModelKind,
+    pub name: String,
+    pub files: Vec<PathBuf>,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+impl Default for AssetUploadDraft {
+    fn default() -> Self {
+        Self {
+            category: AssetCategory::Model,
+            model_kind: AssetModelKind::Static,
+            name: String::new(),
+            files: Vec::new(),
+            busy: false,
+            error: None,
+        }
+    }
+}
+
+impl AssetUploadDraft {
+    pub fn required_files(&self) -> &'static [AssetSourceSlot] {
+        if self.category.is_model() {
+            self.model_kind.slots()
+        } else {
+            &[AssetSourceSlot::Static]
+        }
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsedAssetFile {
+    pub slot: AssetSourceSlot,
+    pub path: PathBuf,
+    pub variant: Option<AssetVariantKind>,
+}
+
+/// Asset explicitly selected with the **Gunakan** button. Files are resolved
+/// from the offline cache at selection time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsedAsset {
+    pub asset_id: Uuid,
+    pub name: String,
+    pub model_kind: Option<AssetModelKind>,
+    pub files: Vec<UsedAssetFile>,
+    pub prefer_variants: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AssetSyncState {
+    #[default]
+    Idle,
+    Checking,
+    Syncing,
+    Ready,
+    /// Server unreachable; the previous offline snapshot is used.
+    Offline(String),
+}
+
+impl AssetSyncState {
+    pub fn is_busy(&self) -> bool {
+        matches!(self, Self::Checking | Self::Syncing)
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Idle => "Belum dicek",
+            Self::Checking => "Memeriksa server",
+            Self::Syncing => "Menyinkronkan",
+            Self::Ready => "Sinkron",
+            Self::Offline(_) => "Mode offline",
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct AssetSyncUi {
+    pub state: AssetSyncState,
+    pub progress: Option<Arc<Mutex<SyncProgress>>>,
+    pub last_sync: Option<String>,
+}
+
+pub struct AssetPreview {
+    pub asset_id: Uuid,
+    pub texture: Option<egui::TextureHandle>,
+    pub dimensions: Option<(u32, u32)>,
+    pub error: Option<String>,
 }
 
 pub enum Modal {
@@ -213,6 +325,19 @@ pub struct ClientUi {
     pub boot_checked: bool,
     pub last_screen: Screen,
     pub editor: EditorState,
+    pub assets: Vec<Asset>,
+    pub asset_filter: Option<AssetCategory>,
+    pub asset_search: String,
+    pub selected_asset: Option<Uuid>,
+    pub asset_upload: AssetUploadDraft,
+    pub asset_sync: AssetSyncUi,
+    pub asset_preview: Option<AssetPreview>,
+    pub used_asset: Option<UsedAsset>,
+    pub pending_asset_nav: Option<NavItem>,
+    pub dropped_files: Vec<PathBuf>,
+    pub asset_prefer_variants: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub asset_cache: Option<Arc<Mutex<AssetCache>>>,
     pending_editor_scenario: Option<Uuid>,
 }
 
@@ -226,6 +351,14 @@ impl ClientUi {
         } else {
             state.screen = Screen::Login;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let asset_cache = Some(Arc::new(Mutex::new(AssetCache::new())));
+        // `TWG_ACTIVE_ASSET=<uuid>` starts the app with an asset already picked
+        // from the offline cache (useful for launching a simulation).
+        #[cfg(not(target_arch = "wasm32"))]
+        let used_asset = asset_cache.as_ref().and_then(env_selected_asset);
+        #[cfg(target_arch = "wasm32")]
+        let used_asset = None;
         Self {
             state,
             api,
@@ -255,6 +388,19 @@ impl ClientUi {
             boot_checked: false,
             last_screen: Screen::Boot,
             editor: EditorState::new(),
+            assets: Vec::new(),
+            asset_filter: None,
+            asset_search: String::new(),
+            selected_asset: None,
+            asset_upload: AssetUploadDraft::default(),
+            asset_sync: AssetSyncUi::default(),
+            asset_preview: None,
+            used_asset,
+            pending_asset_nav: None,
+            dropped_files: Vec::new(),
+            asset_prefer_variants: true,
+            #[cfg(not(target_arch = "wasm32"))]
+            asset_cache,
             pending_editor_scenario,
         }
     }
@@ -326,6 +472,13 @@ impl ClientUi {
         self.state.logout();
         self.data = ClientData::default();
         self.close_ws();
+        self.assets.clear();
+        self.selected_asset = None;
+        self.asset_preview = None;
+        self.asset_upload.reset();
+        self.asset_sync = AssetSyncUi::default();
+        self.pending_asset_nav = None;
+        self.used_asset = None;
         self.toast("Logout berhasil.", ToastKind::Info);
     }
 
@@ -430,7 +583,21 @@ impl ClientUi {
         }
         self.tick_toasts();
         self.tick_ws();
+        self.tick_asset_sync();
         self.tick_editor_jobs();
+    }
+
+    fn enter_session(&mut self, session: ClientSession) {
+        self.state.login(session);
+        self.sync_profile_fields();
+        self.refresh_all();
+        self.refresh_assets();
+        // Warm the offline cache in the background; failures stay silent here
+        // and are reported when the user opens the map.
+        self.request_asset_check(None);
+        if let Some(scenario) = self.pending_editor_scenario.take() {
+            self.open_editor(Some(scenario));
+        }
     }
 
     fn handle_job(&mut self, kind: JobKind, result: Result<ApiResponse, ApiError>) {
@@ -676,15 +843,560 @@ impl ClientUi {
                     self.schedule_ws_retry();
                 }
             },
+            JobKind::Assets => {
+                self.data.set_loading("assets", false);
+                match result
+                    .and_then(|response| response.list::<Asset>().map(|(assets, _total)| assets))
+                {
+                    Ok(assets) => {
+                        if let Some(selected) = self.selected_asset
+                            && !assets.iter().any(|asset| asset.id == selected)
+                        {
+                            self.selected_asset = None;
+                            self.asset_preview = None;
+                        }
+                        self.assets = assets;
+                    }
+                    Err(error) => self.error(&error),
+                }
+            }
+            JobKind::AssetManifest => {
+                match result.and_then(|response| response.data::<AssetManifest>()) {
+                    Ok(manifest) => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let current = self.asset_cache.as_ref().is_some_and(|cache| {
+                                cache
+                                    .lock()
+                                    .expect("asset cache poisoned")
+                                    .is_current(&manifest)
+                            });
+                            if current {
+                                self.asset_sync.state = AssetSyncState::Ready;
+                                self.asset_sync.last_sync =
+                                    Some(chrono::Utc::now().format("%H:%M:%S").to_string());
+                                if let Some(nav) = self.pending_asset_nav.take() {
+                                    self.enter_nav(nav);
+                                }
+                            } else {
+                                self.spawn_asset_sync(manifest);
+                            }
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            let _ = manifest;
+                        }
+                    }
+                    Err(error) => self.finish_asset_check(Some(error.message)),
+                }
+            }
+            JobKind::AssetUpload => {
+                self.asset_upload.busy = false;
+                match result.and_then(|response| response.data::<Asset>()) {
+                    Ok(asset) => {
+                        self.toast(
+                            format!("Aset '{}' berhasil diunggah.", asset.name),
+                            ToastKind::Success,
+                        );
+                        let selected = asset.id;
+                        self.asset_upload.reset();
+                        self.assets.insert(0, asset);
+                        self.selected_asset = Some(selected);
+                        self.asset_preview = None;
+                        self.request_asset_check(None);
+                    }
+                    Err(error) => {
+                        self.asset_upload.error = Some(error.message.clone());
+                        self.error(&error);
+                    }
+                }
+            }
+            JobKind::AssetConvert => {
+                match result.and_then(|response| response.data::<ConvertResult>()) {
+                    Ok(converted) => {
+                        let kind = if converted.converted {
+                            ToastKind::Success
+                        } else {
+                            ToastKind::Info
+                        };
+                        self.toast(converted.message, kind);
+                        self.refresh_assets();
+                        self.request_asset_check(None);
+                    }
+                    Err(error) => self.error(&error),
+                }
+            }
+            JobKind::AssetDelete => match result {
+                Ok(_) => {
+                    self.toast("Aset dihapus.", ToastKind::Success);
+                    self.selected_asset = None;
+                    self.asset_preview = None;
+                    self.refresh_assets();
+                    self.request_asset_check(None);
+                }
+                Err(error) => self.error(&error),
+            },
         }
     }
 
-    fn enter_session(&mut self, session: ClientSession) {
-        self.state.login(session);
-        self.sync_profile_fields();
-        self.refresh_all();
-        if let Some(scenario) = self.pending_editor_scenario.take() {
-            self.open_editor(Some(scenario));
+    // ---------------------------------------------------------------- assets
+
+    pub fn refresh_assets(&mut self) {
+        self.data.set_loading("assets", true);
+        let handle = self.api.request(HttpMethod::Get, "/private/assets", None);
+        self.track(JobKind::Assets, handle);
+    }
+
+    /// Asks the server for the asset manifest and syncs the offline cache when
+    /// something changed. When `nav` is set the navigation happens after the
+    /// check (or after a failed check with a usable cache).
+    pub fn request_asset_check(&mut self, nav: Option<NavItem>) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = nav;
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.asset_cache.is_none() {
+                return;
+            }
+            if self.asset_sync.state.is_busy() {
+                if nav.is_some() {
+                    self.pending_asset_nav = nav;
+                }
+                return;
+            }
+            self.pending_asset_nav = nav;
+            self.asset_sync.state = AssetSyncState::Checking;
+            let handle = self
+                .api
+                .request(HttpMethod::Get, "/private/assets/manifest", None);
+            self.track(JobKind::AssetManifest, handle);
+        }
+    }
+
+    pub fn sync_assets_now(&mut self) {
+        self.request_asset_check(None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_asset_sync(&mut self, manifest: AssetManifest) {
+        let Some(shared) = self.asset_cache.clone() else {
+            self.finish_asset_check(Some("cache aset tidak tersedia".to_owned()));
+            return;
+        };
+        let base_url = self.base_url.clone();
+        let progress = Arc::new(Mutex::new(SyncProgress::default()));
+        self.asset_sync.progress = Some(progress.clone());
+        self.asset_sync.state = AssetSyncState::Syncing;
+        // Work on a clone so the UI keeps reading the previous consistent
+        // snapshot while files download, then swap it in atomically.
+        let mut worker = shared.lock().expect("asset cache poisoned").clone();
+        std::thread::spawn(move || {
+            let result = worker.sync(&manifest, &base_url, &progress);
+            *shared.lock().expect("asset cache poisoned") = worker;
+            let mut guard = progress.lock().expect("sync progress poisoned");
+            guard.finished = true;
+            guard.error = result.err();
+        });
+    }
+
+    fn tick_asset_sync(&mut self) {
+        let Some(progress) = self.asset_sync.progress.clone() else {
+            return;
+        };
+        let finished = {
+            let guard = progress.lock().expect("sync progress poisoned");
+            guard.finished.then(|| guard.error.clone())
+        };
+        let Some(error) = finished else {
+            return;
+        };
+        self.asset_sync.progress = None;
+        self.asset_sync.last_sync = Some(chrono::Utc::now().format("%H:%M:%S").to_string());
+        self.finish_asset_check(error);
+    }
+
+    fn finish_asset_check(&mut self, error: Option<String>) {
+        self.asset_sync.state = match &error {
+            Some(message) => AssetSyncState::Offline(message.clone()),
+            None => AssetSyncState::Ready,
+        };
+        let pending = self.pending_asset_nav.take();
+        if let Some(message) = &error {
+            let offline_available = self.has_offline_manifest();
+            if offline_available {
+                self.toast(
+                    format!("Server aset tidak bisa dicek ({message}); memakai cache offline."),
+                    ToastKind::Info,
+                );
+            } else {
+                self.toast(
+                    format!("Sinkronisasi aset gagal: {message}"),
+                    ToastKind::Error,
+                );
+            }
+        } else if pending.is_some() {
+            self.toast("Aset tersinkron ke cache offline.", ToastKind::Success);
+        }
+        if let Some(nav) = pending {
+            self.enter_nav(nav);
+        }
+    }
+
+    fn has_offline_manifest(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.asset_cache.as_ref().is_some_and(|cache| {
+                cache
+                    .lock()
+                    .expect("asset cache poisoned")
+                    .manifest()
+                    .is_some()
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+    }
+
+    fn enter_nav(&mut self, item: NavItem) {
+        self.state.navigate(item);
+        if item == NavItem::Preview {
+            self.open_editor(self.selected_scenario);
+        }
+        if item == NavItem::Assets {
+            self.refresh_assets();
+        }
+    }
+
+    pub fn select_asset(&mut self, asset_id: Uuid) {
+        if self.selected_asset == Some(asset_id) {
+            return;
+        }
+        self.selected_asset = Some(asset_id);
+        self.asset_preview = None;
+    }
+
+    /// True when this asset (and all its files) is already mirrored offline.
+    pub fn asset_is_cached(&self, asset: &Asset) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(cache) = self.asset_cache.as_ref() else {
+                return false;
+            };
+            let cache = cache.lock().expect("asset cache poisoned");
+            let Some(manifest) = cache.manifest() else {
+                return false;
+            };
+            let same_version = manifest
+                .assets
+                .iter()
+                .any(|remote| remote.id == asset.id && remote.version == asset.version);
+            same_version
+                && asset
+                    .sources
+                    .iter()
+                    .all(|source| cache.resolve(asset, source.slot, true).is_some())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = asset;
+            false
+        }
+    }
+
+    pub fn asset_cache_root(&self) -> Option<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.asset_cache.as_ref().map(|cache| {
+                cache
+                    .lock()
+                    .expect("asset cache poisoned")
+                    .root()
+                    .display()
+                    .to_string()
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    }
+
+    pub fn cached_asset_count(&self) -> usize {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.asset_cache.as_ref().map_or(0, |cache| {
+                cache
+                    .lock()
+                    .expect("asset cache poisoned")
+                    .manifest()
+                    .map(|manifest| manifest.assets.len())
+                    .unwrap_or(0)
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            0
+        }
+    }
+
+    pub fn push_dropped_file(&mut self, path: PathBuf) {
+        self.dropped_files.push(path.clone());
+        if self.state.nav != NavItem::Assets {
+            self.toast("Buka menu Aset untuk mengunggah file.", ToastKind::Info);
+            return;
+        }
+        let draft = &mut self.asset_upload;
+        let required = draft.required_files().len();
+        if draft.files.len() >= required {
+            draft.files.clear();
+            draft.name.clear();
+        }
+        if draft.name.trim().is_empty() {
+            draft.name = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("aset")
+                .to_owned();
+        }
+        draft.files.push(path);
+        draft.error = None;
+    }
+
+    pub fn clear_asset_upload(&mut self) {
+        self.asset_upload.files.clear();
+        self.asset_upload.name.clear();
+        self.asset_upload.error = None;
+    }
+
+    pub fn begin_asset_upload(&mut self) {
+        self.asset_upload.error = None;
+        if self.role() != Role::Admin {
+            self.asset_upload.error = Some("Hanya admin yang bisa mengunggah aset.".to_owned());
+            return;
+        }
+        let name = self.asset_upload.name.trim().to_owned();
+        if name.is_empty() {
+            self.asset_upload.error = Some("Nama aset wajib diisi.".to_owned());
+            return;
+        }
+        let required = self.asset_upload.required_files().len();
+        if self.asset_upload.files.len() != required {
+            self.asset_upload.error = Some(format!(
+                "Butuh {required} file untuk kategori ini ({} terisi).",
+                self.asset_upload.files.len()
+            ));
+            return;
+        }
+        let model_kind = self
+            .asset_upload
+            .category
+            .is_model()
+            .then_some(self.asset_upload.model_kind);
+        let (content_type, body) = match multipart_asset_body(
+            &name,
+            self.asset_upload.category,
+            model_kind,
+            &self.asset_upload.files,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.asset_upload.error = Some(error);
+                return;
+            }
+        };
+        self.asset_upload.busy = true;
+        let handle = self.api.upload("/admin/assets", content_type, body);
+        self.track(JobKind::AssetUpload, handle);
+    }
+
+    pub fn begin_asset_convert(
+        &mut self,
+        asset_id: Uuid,
+        slot: AssetSourceSlot,
+        target: ConvertTarget,
+        size: Option<u32>,
+    ) {
+        let request = ConvertRequest {
+            target,
+            slot: Some(slot),
+            size,
+            force: false,
+        };
+        let handle = self.api.request(
+            HttpMethod::Post,
+            format!("/admin/assets/{asset_id}/convert"),
+            Some(json!(request)),
+        );
+        self.track(JobKind::AssetConvert, handle);
+    }
+
+    pub fn begin_asset_delete(&mut self, asset_id: Uuid) {
+        let handle = self.api.request(
+            HttpMethod::Delete,
+            format!("/admin/assets/{asset_id}"),
+            None,
+        );
+        self.track(JobKind::AssetDelete, handle);
+    }
+
+    /// Marks an asset as the one used by the editor/game, resolving files from
+    /// the offline cache (converted variant first, original as fallback).
+    pub fn use_asset(&mut self, asset_id: Uuid, prefer_variants: bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(asset) = self
+                .assets
+                .iter()
+                .find(|asset| asset.id == asset_id)
+                .cloned()
+            else {
+                return;
+            };
+            let Some(cache) = self.asset_cache.clone() else {
+                self.toast("Cache aset tidak tersedia.", ToastKind::Error);
+                return;
+            };
+            let mut files = Vec::new();
+            {
+                let cache = cache.lock().expect("asset cache poisoned");
+                for source in &asset.sources {
+                    match cache.resolve(&asset, source.slot, prefer_variants) {
+                        Some((variant, path)) => files.push(UsedAssetFile {
+                            slot: source.slot,
+                            path,
+                            variant,
+                        }),
+                        None => {
+                            drop(cache);
+                            self.toast(
+                                format!(
+                                    "File {} belum ada di cache. Jalankan sinkronisasi aset dulu.",
+                                    source.slot
+                                ),
+                                ToastKind::Error,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            self.used_asset = Some(UsedAsset {
+                asset_id,
+                name: asset.name.clone(),
+                model_kind: asset.model_kind,
+                files,
+                prefer_variants,
+            });
+            self.toast(
+                format!("Aset '{}' dipakai dari cache offline.", asset.name),
+                ToastKind::Success,
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (asset_id, prefer_variants);
+            self.toast("Cache offline hanya tersedia di desktop.", ToastKind::Info);
+        }
+    }
+
+    pub fn clear_used_asset(&mut self) {
+        if self.used_asset.take().is_some() {
+            self.toast(
+                "Pilihan aset dilepas; kembali ke model bawaan.",
+                ToastKind::Info,
+            );
+        }
+    }
+
+    /// Loads the image preview of the selected texture/icon from the cache.
+    pub fn ensure_asset_preview(&mut self, context: &egui::Context) {
+        let Some(asset_id) = self.selected_asset else {
+            self.asset_preview = None;
+            return;
+        };
+        if self
+            .asset_preview
+            .as_ref()
+            .is_some_and(|preview| preview.asset_id == asset_id)
+        {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(asset) = self
+                .assets
+                .iter()
+                .find(|asset| asset.id == asset_id)
+                .cloned()
+            else {
+                return;
+            };
+            if !asset.category.is_image() {
+                self.asset_preview = Some(AssetPreview {
+                    asset_id,
+                    texture: None,
+                    dimensions: None,
+                    error: None,
+                });
+                return;
+            }
+            let path = self.asset_cache.as_ref().and_then(|cache| {
+                let cache = cache.lock().expect("asset cache poisoned");
+                cache
+                    .resolve(&asset, AssetSourceSlot::Static, false)
+                    .map(|(_, path)| path)
+            });
+            let Some(path) = path else {
+                self.asset_preview = Some(AssetPreview {
+                    asset_id,
+                    texture: None,
+                    dimensions: None,
+                    error: Some("belum ada di cache offline".to_owned()),
+                });
+                return;
+            };
+            match std::fs::read(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    image::load_from_memory(&bytes).map_err(|error| error.to_string())
+                }) {
+                Ok(image) => {
+                    let dimensions = (image.width(), image.height());
+                    let rgba = image.to_rgba8();
+                    let color = egui::ColorImage::from_rgba_unmultiplied(
+                        [dimensions.0 as usize, dimensions.1 as usize],
+                        rgba.as_raw(),
+                    );
+                    let texture = context.load_texture(
+                        format!("asset-{asset_id}"),
+                        color,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.asset_preview = Some(AssetPreview {
+                        asset_id,
+                        texture: Some(texture),
+                        dimensions: Some(dimensions),
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    self.asset_preview = Some(AssetPreview {
+                        asset_id,
+                        texture: None,
+                        dimensions: None,
+                        error: Some(error),
+                    });
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = context;
         }
     }
 
@@ -842,16 +1554,25 @@ impl ClientUi {
     }
 
     pub fn go(&mut self, item: NavItem) {
-        self.state.navigate(item);
         if item == NavItem::Preview {
-            self.open_editor(self.selected_scenario);
-        } else if item == NavItem::Dashboard {
+            // Never open the map with a stale offline cache: check the server
+            // first, sync if needed, then continue.
+            self.request_asset_check(Some(item));
+            if !self.asset_sync.state.is_busy() {
+                self.enter_nav(item);
+            }
+            return;
+        }
+        self.state.navigate(item);
+        if item == NavItem::Dashboard {
             self.refresh_all();
         } else if item == NavItem::Operations {
             self.refresh_operations();
         } else if item == NavItem::Scenarios {
             self.refresh_operations();
             self.refresh_scenarios();
+        } else if item == NavItem::Assets {
+            self.refresh_assets();
         } else if item == NavItem::Games {
             self.refresh_home();
         } else if item == NavItem::Users {
@@ -878,6 +1599,7 @@ impl ClientUi {
                 self.refresh_scenarios();
             }
             NavItem::Games => self.refresh_home(),
+            NavItem::Assets => self.refresh_assets(),
             NavItem::Users => self.refresh_users(),
             NavItem::Satkers => self.refresh_satkers(),
             NavItem::Online => self.refresh_online(),
@@ -1195,6 +1917,9 @@ impl ClientUi {
                 );
                 self.track(JobKind::SnapshotDelete, handle);
             }
+            ConfirmAction::DeleteAsset(id) => {
+                self.begin_asset_delete(id);
+            }
             ConfirmAction::Logout => self.logout(),
         }
         self.modal.close();
@@ -1235,6 +1960,31 @@ fn initial_editor_scenario() -> Option<Uuid> {
     None
 }
 
+/// Reads `TWG_ACTIVE_ASSET=<uuid>` and resolves it from the local manifest.
+#[cfg(not(target_arch = "wasm32"))]
+fn env_selected_asset(cache: &Arc<Mutex<AssetCache>>) -> Option<UsedAsset> {
+    let value = std::env::var("TWG_ACTIVE_ASSET").ok()?;
+    let asset_id = Uuid::parse_str(value.trim()).ok()?;
+    let cache = cache.lock().ok()?;
+    let asset = cache.asset(asset_id)?.clone();
+    let mut files = Vec::new();
+    for source in &asset.sources {
+        let (variant, path) = cache.resolve(&asset, source.slot, true)?;
+        files.push(UsedAssetFile {
+            slot: source.slot,
+            path,
+            variant,
+        });
+    }
+    Some(UsedAsset {
+        asset_id,
+        name: asset.name.clone(),
+        model_kind: asset.model_kind,
+        files,
+        prefer_variants: true,
+    })
+}
+
 #[cfg(target_arch = "wasm32")]
 fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
@@ -1271,3 +2021,145 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 // Keep this import used even when no screens reference it directly yet.
+
+// ---------------------------------------------------------------- multipart
+
+/// Builds a `multipart/form-data` body for `POST /admin/assets`.
+fn multipart_asset_body(
+    name: &str,
+    category: AssetCategory,
+    model_kind: Option<AssetModelKind>,
+    files: &[PathBuf],
+) -> Result<(String, Vec<u8>), String> {
+    let boundary = format!("----twg{}", Uuid::new_v4().simple());
+    let mut body = Vec::new();
+    push_form_field(&mut body, &boundary, "name", name);
+    push_form_field(&mut body, &boundary, "category", &category.to_string());
+    if let Some(kind) = model_kind {
+        push_form_field(&mut body, &boundary, "model_kind", &kind.to_string());
+    }
+    let kind = model_kind.unwrap_or(AssetModelKind::Static);
+    let slots = if category.is_model() {
+        kind.slots().to_vec()
+    } else {
+        vec![AssetSourceSlot::Static]
+    };
+    for (index, path) in files.iter().enumerate() {
+        let slot = slots.get(index).copied().unwrap_or(AssetSourceSlot::Static);
+        let field = kind.upload_field(slot);
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("asset");
+        let mime = mime_for_path(path);
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(
+            &std::fs::read(path).map_err(|error| format!("gagal membaca {path:?}: {error}"))?,
+        );
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Ok((format!("multipart/form-data; boundary={boundary}"), body))
+}
+
+fn push_form_field(body: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+        .as_bytes(),
+    );
+}
+
+fn mime_for_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("glb") => "model/gltf-binary",
+        Some("gltf") => "model/gltf+json",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod asset_selection_tests {
+    use super::{UsedAsset, env_selected_asset};
+    use std::sync::{Arc, Mutex};
+    use twg_client::asset_cache::AssetCache;
+
+    #[test]
+    fn env_selection_resolves_from_the_cache_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "twg-ui-env-asset-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let asset_dir = root
+            .join("00000000-0000-4000-8000-000000000001")
+            .join("static");
+        std::fs::create_dir_all(&asset_dir).unwrap();
+        std::fs::write(asset_dir.join("original.glb"), b"glb").unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::json!({
+                "saved_at": "now",
+                "manifest": {
+                    "generated_at": "2026-01-01T00:00:00+08:00",
+                    "assets": [{
+                        "id": "00000000-0000-4000-8000-000000000001",
+                        "name": "cached model",
+                        "category": "model",
+                        "model_kind": "static",
+                        "sources": [{
+                            "slot": "static",
+                            "file": {
+                                "filename": "original.glb",
+                                "url": "/assets/00000000-0000-4000-8000-000000000001/static/original.glb",
+                                "mime": "model/gltf-binary",
+                                "size_bytes": 3,
+                                "sha256": ""
+                            },
+                            "has_draco": false,
+                            "variants": []
+                        }],
+                        "version": 1,
+                        "created_at": "2026-01-01T00:00:00+08:00",
+                        "updated_at": "2026-01-01T00:00:00+08:00"
+                    }]
+                }
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+
+        // SAFETY: single-threaded test setup before reading the variable.
+        unsafe {
+            std::env::set_var("TWG_ACTIVE_ASSET", "00000000-0000-4000-8000-000000000001");
+        }
+        let cache = Arc::new(Mutex::new(AssetCache::with_root(root.clone())));
+        let selected: Option<UsedAsset> = env_selected_asset(&cache);
+        unsafe {
+            std::env::remove_var("TWG_ACTIVE_ASSET");
+        }
+        let selected = selected.expect("asset selected from cache");
+        assert_eq!(selected.name, "cached model");
+        assert_eq!(selected.files.len(), 1);
+        assert!(selected.files[0].path.ends_with("original.glb"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

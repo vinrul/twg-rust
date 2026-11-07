@@ -1,10 +1,12 @@
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use thiserror::Error;
 
+mod assets;
 mod read;
 mod store;
 mod write;
 
+pub use assets::{AssetStore, NewAsset, NewAssetSource, NewAssetVariant, asset_file_url};
 pub use read::{ReadStore, SatkerScope, UserListScope};
 pub use store::PgAuthStore;
 pub use write::{

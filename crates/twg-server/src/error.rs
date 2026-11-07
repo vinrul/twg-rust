@@ -60,6 +60,14 @@ impl ApiError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
     }
 
+    /// Conversion failures are surfaced to the admin UI because they usually
+    /// mean a missing tool or an unsupported source file.
+    pub fn conversion_failed(message: impl Into<String>) -> Self {
+        let message = message.into();
+        tracing::error!(error = %message, "asset conversion failed");
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+    }
+
     pub fn status(&self) -> StatusCode {
         self.status
     }

@@ -5,7 +5,7 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 
-use super::config::{BakeTemplate, MarkerModelSet};
+use super::config::{BakeTemplate, MarkerModelOverride, MarkerModelSet};
 use super::gltf::load_gltf;
 use super::{BAKED_FRAMES, StressAnimations};
 
@@ -30,12 +30,14 @@ pub fn begin_bake(
     asset_server: &AssetServer,
     graphs: &mut Assets<AnimationGraph>,
     models: &MarkerModelSet,
+    models_override: &MarkerModelOverride,
 ) -> (StressAnimations, BakedAnimation) {
+    let (animated_path, animated_draco) = models_override.resolve(models, true);
     let clip = load_gltf(
         asset_server,
         GltfAssetLabel::Animation(0),
-        models.animated,
-        models.draco,
+        animated_path.clone(),
+        animated_draco,
     );
     let (graph, index) = AnimationGraph::from_clip(clip.clone());
     let animations = StressAnimations {
@@ -61,8 +63,8 @@ pub fn begin_bake(
         WorldAssetRoot(load_gltf(
             asset_server,
             GltfAssetLabel::Scene(0),
-            models.animated,
-            models.draco,
+            animated_path,
+            animated_draco,
         )),
         Transform::default(),
         Visibility::Hidden,
@@ -77,9 +79,16 @@ pub fn setup_bake(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     models: Res<MarkerModelSet>,
+    models_override: Res<MarkerModelOverride>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    let (animations, bake) = begin_bake(&mut commands, &asset_server, &mut graphs, &models);
+    let (animations, bake) = begin_bake(
+        &mut commands,
+        &asset_server,
+        &mut graphs,
+        &models,
+        &models_override,
+    );
     commands.insert_resource(animations);
     commands.insert_resource(bake);
 }

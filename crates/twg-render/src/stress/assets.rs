@@ -2,7 +2,7 @@ use bevy::asset::LoadState;
 use bevy::gltf::{GltfAssetLabel, GltfMaterial};
 use bevy::prelude::*;
 
-use super::config::MarkerModelSet;
+use super::config::{MarkerModelOverride, MarkerModelSet};
 use super::gltf::load_gltf;
 
 #[derive(Resource, Default)]
@@ -18,15 +18,21 @@ pub struct MarkerAssets {
 }
 
 impl MarkerAssets {
-    pub fn load(asset_server: &AssetServer, models: &MarkerModelSet) -> Self {
+    pub fn load(
+        asset_server: &AssetServer,
+        models: &MarkerModelSet,
+        models_override: &MarkerModelOverride,
+    ) -> Self {
+        let (still_path, still_draco) = models_override.resolve(models, false);
+        let (animated_path, animated_draco) = models_override.resolve(models, true);
         let static_mesh = load_gltf(
             asset_server,
             GltfAssetLabel::Primitive {
                 mesh: 0,
                 primitive: 0,
             },
-            models.still,
-            models.draco,
+            still_path.clone(),
+            still_draco,
         );
         let animated_material_source = load_gltf(
             asset_server,
@@ -34,8 +40,8 @@ impl MarkerAssets {
                 index: 0,
                 is_scale_inverted: false,
             },
-            models.animated,
-            models.draco,
+            animated_path,
+            animated_draco,
         );
         let static_material_source = load_gltf(
             asset_server,
@@ -43,8 +49,8 @@ impl MarkerAssets {
                 index: 0,
                 is_scale_inverted: false,
             },
-            models.still,
-            models.draco,
+            still_path,
+            still_draco,
         );
 
         Self {
@@ -64,12 +70,17 @@ pub fn load_marker_assets(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     models: Res<MarkerModelSet>,
+    models_override: Res<MarkerModelOverride>,
 ) {
+    let (animated_path, _) = models_override.resolve(&models, true);
+    let (still_path, _) = models_override.resolve(&models, false);
     info!(
-        "stress marker models: {} (animated), {} (static), lod={}, draco={}",
-        models.animated, models.still, models.lod, models.draco
+        "stress marker models: {animated_path} (animated), {still_path} (static), lod={}, draco={}, offline_override={}",
+        models.lod,
+        models.draco,
+        models_override.is_set()
     );
-    commands.insert_resource(MarkerAssets::load(&asset_server, &models));
+    commands.insert_resource(MarkerAssets::load(&asset_server, &models, &models_override));
 }
 
 pub fn finalize_marker_assets(

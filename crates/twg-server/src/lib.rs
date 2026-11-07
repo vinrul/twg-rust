@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod config;
 pub mod error;
 pub mod handlers;
@@ -118,6 +119,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/private/users", get(handlers::private::users))
         .route("/private/satkers", get(handlers::private::satkers))
+        .route("/private/assets", get(handlers::assets::list))
+        .route("/private/assets/manifest", get(handlers::assets::manifest))
+        .route("/private/assets/{id}", get(handlers::assets::detail))
         .route(
             "/private/categories/all",
             get(handlers::private::categories),
@@ -396,10 +400,44 @@ pub fn router(state: AppState) -> Router {
             middleware::require_session,
         ));
 
+    // Asset writes are restricted to the `admin` role; reads stay available to
+    // every authenticated session so the desktop can sync before play.
+    let assets_admin = Router::new()
+        .route("/admin/assets", post(handlers::assets::upload))
+        .route(
+            "/admin/assets/{id}",
+            put(handlers::assets::update).delete(handlers::assets::delete),
+        )
+        .route(
+            "/admin/assets/{id}/convert",
+            post(handlers::assets::convert),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            middleware::RoleGuard(vec![twg_domain::Role::Admin]),
+            middleware::require_roles,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::require_session,
+        ));
+
     let uploads_service =
         ServeDir::new(state.uploads_dir.clone()).append_index_html_on_directories(false);
     let uploads_router = Router::<AppState>::new()
         .nest_service("/uploads", uploads_service)
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'none'; sandbox"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("cross-origin-resource-policy"),
+            HeaderValue::from_static("same-site"),
+        ));
+
+    let asset_files_service =
+        ServeDir::new(state.assets_dir.clone()).append_index_html_on_directories(false);
+    let asset_files_router = Router::<AppState>::new()
+        .nest_service("/assets", asset_files_service)
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("content-security-policy"),
             HeaderValue::from_static("default-src 'none'; sandbox"),
@@ -415,7 +453,9 @@ pub fn router(state: AppState) -> Router {
         .merge(private)
         .merge(private_snapshot_writes)
         .merge(admin)
+        .merge(assets_admin)
         .merge(uploads_router)
+        .merge(asset_files_router)
         .merge(tiles::router::<AppState>())
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .layer(SetResponseHeaderLayer::overriding(
@@ -1010,6 +1050,56 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn asset_routes_require_authentication() {
+        let app = router(test_state(100));
+        let (status, _, body) = send(app.clone(), Method::GET, "/private/assets", None, &[]).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], 401);
+
+        let (status, _, _) = send(app, Method::POST, "/admin/assets", None, &[]).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn asset_writes_are_admin_only() {
+        let app = router(test_state(100));
+        for username in ["baselineuser", "baselinemonitor", "baselineadminsatker"] {
+            let session = login(app.clone(), username, "device-1").await;
+            let (status, _, body) = send(
+                app.clone(),
+                Method::POST,
+                "/admin/assets",
+                None,
+                &[
+                    ("authorization", bearer(&session).as_str()),
+                    ("x-device-id", "device-1"),
+                ],
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{username}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn asset_reads_need_a_database() {
+        let app = router(test_state(100));
+        let session = login(app.clone(), "baselineuser", "device-1").await;
+        let (status, _, body) = send(
+            app,
+            Method::GET,
+            "/private/assets/manifest",
+            None,
+            &[
+                ("authorization", bearer(&session).as_str()),
+                ("x-device-id", "device-1"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["message"], "database is not available");
     }
 
     #[tokio::test]

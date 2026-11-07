@@ -18,9 +18,10 @@ use bevy::transform::TransformSystems;
 pub use benchmark::{BenchPhase, BenchResult, StressBenchmark};
 pub use config::{
     ANIMATED_MODEL, ANIMATED_MODEL_DRACO, ANIMATED_MODEL_LOD, ANIMATED_MODEL_LOD_DRACO,
-    DEFAULT_STRESS_ZOOM, MarkerModelReload, MarkerModelSet, STATIC_MODEL, STATIC_MODEL_DRACO,
-    STATIC_MODEL_LOD, STATIC_MODEL_LOD_DRACO, STRESS_COUNTS, StressMode, StressRequest, StressRun,
-    StressState,
+    CACHE_ASSET_SOURCE, DEFAULT_STRESS_ZOOM, MarkerModelOverride, MarkerModelPath,
+    MarkerModelReload, MarkerModelSet, STATIC_MODEL, STATIC_MODEL_DRACO, STATIC_MODEL_LOD,
+    STATIC_MODEL_LOD_DRACO, STRESS_COUNTS, StressMode, StressRequest, StressRun, StressState,
+    cache_asset_path,
 };
 pub use memory::{MemoryProbe, MemoryProbePhase, MemoryStats};
 pub use probe::DracoProbe;
@@ -42,6 +43,7 @@ impl Plugin for StressPlugin {
             .init_resource::<StressState>()
             .init_resource::<StressBenchmark>()
             .init_resource::<MarkerModelSet>()
+            .init_resource::<MarkerModelOverride>()
             .init_resource::<MarkerModelReload>()
             .init_resource::<MemoryStats>()
             .init_resource::<SelectionState>()

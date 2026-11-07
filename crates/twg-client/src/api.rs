@@ -40,6 +40,8 @@ pub struct HttpRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    /// Raw request body (multipart uploads). Takes precedence over `body`.
+    pub body_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +245,9 @@ struct RequestSpec {
     method: HttpMethod,
     path: String,
     body: Option<Value>,
+    /// Raw body for multipart uploads.
+    body_bytes: Option<Vec<u8>>,
+    content_type: Option<String>,
     kind: RequestKind,
 }
 
@@ -354,6 +359,8 @@ impl ApiClient {
                 password: password.to_owned(),
                 device_id,
             })),
+            body_bytes: None,
+            content_type: None,
             kind: RequestKind::Login,
         })
     }
@@ -364,6 +371,8 @@ impl ApiClient {
             method: HttpMethod::Post,
             path: "/auth/logout".to_owned(),
             body: Some(json!({ "device_id": device_id })),
+            body_bytes: None,
+            content_type: None,
             kind: RequestKind::Logout,
         })
     }
@@ -382,6 +391,26 @@ impl ApiClient {
             method,
             path: path.into(),
             body,
+            body_bytes: None,
+            content_type: None,
+            kind: RequestKind::Normal,
+        })
+    }
+
+    /// Sends a raw body (multipart/form-data) instead of JSON. Used by the
+    /// admin asset upload, which cannot be represented as a JSON document.
+    pub fn upload(
+        &self,
+        path: impl Into<String>,
+        content_type: impl Into<String>,
+        body: Vec<u8>,
+    ) -> ApiHandle {
+        self.submit(RequestSpec {
+            method: HttpMethod::Post,
+            path: path.into(),
+            body: None,
+            body_bytes: Some(body),
+            content_type: Some(content_type.into()),
             kind: RequestKind::Normal,
         })
     }
@@ -507,6 +536,8 @@ impl ApiInner {
                 refresh_token: tokens.refresh_token.clone(),
                 device_id: self.device_id.clone(),
             })),
+            body_bytes: None,
+            content_type: None,
             kind: RequestKind::Refresh,
         };
         self.refresh = Some(transport.execute(self.build_http(&spec)));
@@ -519,6 +550,9 @@ impl ApiInner {
         ];
         if spec.body.is_some() {
             headers.push(("content-type".to_owned(), "application/json".to_owned()));
+        }
+        if let Some(content_type) = &spec.content_type {
+            headers.push(("content-type".to_owned(), content_type.clone()));
         }
         if matches!(spec.kind, RequestKind::Normal | RequestKind::Logout)
             && let Some(tokens) = &self.tokens
@@ -533,6 +567,7 @@ impl ApiInner {
             url: format!("{}{}", self.base_url, spec.path),
             headers,
             body: spec.body.as_ref().map(ToString::to_string),
+            body_bytes: spec.body_bytes.clone(),
         }
     }
 

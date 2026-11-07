@@ -4,7 +4,10 @@ use super::StressAnimations;
 use super::assets::MarkerAssets;
 use super::bake::{self, BakedAnimation};
 use super::benchmark::{BenchPhase, StressBenchmark};
-use super::config::{MarkerModelReload, MarkerModelSet, StressMarker, StressRequest, StressState};
+use super::config::{
+    MarkerModelOverride, MarkerModelReload, MarkerModelSet, StressMarker, StressRequest,
+    StressState,
+};
 
 /// Rebuilds marker assets and animation frames after a runtime LOD switch.
 #[allow(clippy::too_many_arguments)]
@@ -12,6 +15,7 @@ pub fn reload_marker_models(
     mut commands: Commands,
     mut reload: ResMut<MarkerModelReload>,
     models: Res<MarkerModelSet>,
+    models_override: Res<MarkerModelOverride>,
     asset_server: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut assets: ResMut<MarkerAssets>,
@@ -34,9 +38,14 @@ pub fn reload_marker_models(
         commands.entity(template).despawn();
     }
 
-    *assets = MarkerAssets::load(&asset_server, &models);
-    let (new_animations, new_bake) =
-        bake::begin_bake(&mut commands, &asset_server, &mut graphs, &models);
+    *assets = MarkerAssets::load(&asset_server, &models, &models_override);
+    let (new_animations, new_bake) = bake::begin_bake(
+        &mut commands,
+        &asset_server,
+        &mut graphs,
+        &models,
+        &models_override,
+    );
     *animations = new_animations;
     *bake = new_bake;
 
@@ -55,8 +64,12 @@ pub fn reload_marker_models(
         request.0 = None;
     }
 
+    let (animated_path, _) = models_override.resolve(&models, true);
+    let (still_path, _) = models_override.resolve(&models, false);
     info!(
-        "marker models reloaded: {} (lod={}, draco={}), waiting for assets and bake",
-        models.animated, models.lod, models.draco
+        "marker models reloaded: {animated_path} (animated), {still_path} (static), lod={}, draco={}, offline_override={}, waiting for assets and bake",
+        models.lod,
+        models.draco,
+        models_override.is_set()
     );
 }

@@ -1,5 +1,6 @@
 pub mod alurs;
 pub mod animations;
+pub mod assets;
 pub mod auth;
 pub mod categories;
 pub mod envelope;

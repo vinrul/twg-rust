@@ -37,7 +37,10 @@ async fn run(request: HttpRequest) -> Result<HttpResponse, TransportError> {
             .map_err(|error| js_error("header", error))?;
     }
     init.set_headers(headers.as_ref());
-    if let Some(body) = &request.body {
+    if let Some(body) = &request.body_bytes {
+        let bytes = js_sys::Uint8Array::from(body.as_slice());
+        init.set_body(bytes.as_ref());
+    } else if let Some(body) = &request.body {
         init.set_body(&JsValue::from_str(body));
     }
     let request = web_sys::Request::new_with_str_and_init(&request.url, &init)

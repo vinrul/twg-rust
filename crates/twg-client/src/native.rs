@@ -48,24 +48,45 @@ impl Transport for UreqTransport {
 }
 
 fn run_request(agent: &ureq::Agent, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+    let HttpRequest {
+        method,
+        url,
+        headers,
+        body,
+        body_bytes,
+    } = request;
     macro_rules! prepare {
         ($builder:expr) => {{
             let mut builder = $builder;
-            for (name, value) in &request.headers {
+            for (name, value) in &headers {
                 builder = builder.header(name, value);
             }
             builder
         }};
     }
-    let result = match request.method {
-        HttpMethod::Get => prepare!(agent.get(&request.url)).call(),
-        HttpMethod::Delete => prepare!(agent.delete(&request.url)).call(),
+    let result = match method {
+        HttpMethod::Get => prepare!(agent.get(&url)).call(),
+        HttpMethod::Delete => prepare!(agent.delete(&url)).call(),
         HttpMethod::Post => {
-            prepare!(agent.post(&request.url)).send(request.body.unwrap_or_default())
+            let builder = prepare!(agent.post(&url));
+            match body_bytes {
+                Some(bytes) => builder.send(bytes),
+                None => builder.send(body.unwrap_or_default()),
+            }
         }
-        HttpMethod::Put => prepare!(agent.put(&request.url)).send(request.body.unwrap_or_default()),
+        HttpMethod::Put => {
+            let builder = prepare!(agent.put(&url));
+            match body_bytes {
+                Some(bytes) => builder.send(bytes),
+                None => builder.send(body.unwrap_or_default()),
+            }
+        }
         HttpMethod::Patch => {
-            prepare!(agent.patch(&request.url)).send(request.body.unwrap_or_default())
+            let builder = prepare!(agent.patch(&url));
+            match body_bytes {
+                Some(bytes) => builder.send(bytes),
+                None => builder.send(body.unwrap_or_default()),
+            }
         }
     };
     let mut response = result.map_err(|error| TransportError(error.to_string()))?;

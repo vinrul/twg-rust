@@ -1,4 +1,6 @@
-use bevy::asset::{AssetMetaCheck, AssetPlugin};
+use bevy::asset::io::file::FileAssetReader;
+use bevy::asset::io::{AssetSourceBuilder, AssetSourceId};
+use bevy::asset::{AssetApp, AssetMetaCheck, AssetPlugin};
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowPlugin};
 use bevy::winit::WinitSettings;
@@ -10,8 +12,8 @@ use twg_client::native::{
 };
 use twg_map::{BaseLayer, MapCameraState};
 use twg_render::{
-    BaseLayerResource, DEFAULT_STRESS_ZOOM, DracoProbe, MapCameraResource, MarkerModelSet,
-    MemoryProbe, StressMode, StressRun, TacticalRenderPlugin, TileProxyConfig,
+    BaseLayerResource, CACHE_ASSET_SOURCE, DEFAULT_STRESS_ZOOM, DracoProbe, MapCameraResource,
+    MarkerModelSet, MemoryProbe, StressMode, StressRun, TacticalRenderPlugin, TileProxyConfig,
 };
 use twg_ui::{ClientBackend, TacticalUiPlugin};
 
@@ -20,6 +22,13 @@ fn main() {
     let cli = CliArgs::parse();
 
     let mut app = App::new();
+    // Expose the offline asset cache to Bevy as `twg-cache://...`. The source
+    // must exist before `DefaultPlugins` builds the asset server.
+    let cache_root = twg_client::asset_cache::default_root();
+    app.register_asset_source(
+        AssetSourceId::from(CACHE_ASSET_SOURCE),
+        AssetSourceBuilder::new(move || Box::new(FileAssetReader::new(cache_root.clone()))),
+    );
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {

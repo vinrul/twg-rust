@@ -1,4 +1,9 @@
 use bevy::prelude::*;
+use std::path::Path;
+
+/// Name of the Bevy asset source that maps to the offline asset cache. The
+/// desktop app registers it in `main.rs` before adding `DefaultPlugins`.
+pub const CACHE_ASSET_SOURCE: &str = "twg-cache";
 
 pub const STRESS_COUNTS: [usize; 3] = [1_000, 5_000, 10_000];
 pub const DEFAULT_STRESS_ZOOM: f32 = 19.0;
@@ -78,6 +83,66 @@ impl Default for MarkerModelSet {
         // only, so it stays opt-in on both targets.
         Self::for_variant(cfg!(target_arch = "wasm32"), false)
     }
+}
+
+/// One glTF path selected from the asset library, already pointing at the
+/// offline cache through [`CACHE_ASSET_SOURCE`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerModelPath {
+    pub path: String,
+    pub draco: bool,
+}
+
+/// Overrides the built-in marker models with files picked in the Aset screen.
+/// When unset, rendering falls back to [`MarkerModelSet`].
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct MarkerModelOverride {
+    /// Model used for animated markers (slot `animated`).
+    pub animated: Option<MarkerModelPath>,
+    /// Model used for static markers (slot `static` or `idle`).
+    pub still: Option<MarkerModelPath>,
+}
+
+impl MarkerModelOverride {
+    pub fn is_set(&self) -> bool {
+        self.animated.is_some() || self.still.is_some()
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Path and Draco flag for one slot, falling back to the built-in set.
+    pub fn resolve(&self, models: &MarkerModelSet, animated: bool) -> (String, bool) {
+        let selected = if animated {
+            self.animated.as_ref()
+        } else {
+            self.still.as_ref()
+        };
+        match selected {
+            Some(model) => (model.path.clone(), model.draco),
+            None => {
+                let path = if animated {
+                    models.animated
+                } else {
+                    models.still
+                };
+                (path.to_owned(), models.draco)
+            }
+        }
+    }
+}
+
+/// Converts an absolute file from the offline cache into a Bevy asset path on
+/// the [`CACHE_ASSET_SOURCE`] source, e.g.
+/// `twg-cache://<asset-id>/animated/draco_lod2.glb`.
+pub fn cache_asset_path(cache_root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(cache_root).ok()?;
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    if relative.is_empty() {
+        return None;
+    }
+    Some(format!("{CACHE_ASSET_SOURCE}://{relative}"))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -202,3 +267,63 @@ pub struct StressMarker {
 
 #[derive(Component)]
 pub struct BakeTemplate;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CACHE_ASSET_SOURCE, MarkerModelOverride, MarkerModelPath, MarkerModelSet, cache_asset_path,
+    };
+    use bevy::asset::AssetPath;
+    use std::path::Path;
+
+    #[test]
+    fn cache_paths_become_asset_source_paths() {
+        let root = Path::new("/Users/me/Library/Caches/twg/assets");
+        let file = root.join("0f8fad5b-d9cb-469f-a165-70867728950e/animated/draco_lod2.glb");
+        let asset_path = cache_asset_path(root, &file).expect("path inside cache");
+        assert_eq!(
+            asset_path,
+            "twg-cache://0f8fad5b-d9cb-469f-a165-70867728950e/animated/draco_lod2.glb"
+        );
+        let parsed = AssetPath::parse(&asset_path);
+        assert_eq!(parsed.source().as_str(), Some(CACHE_ASSET_SOURCE));
+        assert_eq!(
+            parsed.path().to_string_lossy(),
+            "0f8fad5b-d9cb-469f-a165-70867728950e/animated/draco_lod2.glb"
+        );
+        assert!(cache_asset_path(root, Path::new("/tmp/elsewhere.glb")).is_none());
+    }
+
+    #[test]
+    fn override_resolves_selected_models_first() {
+        let models = MarkerModelSet::LOD;
+        let empty = MarkerModelOverride::default();
+        assert_eq!(
+            empty.resolve(&models, true),
+            (models.animated.to_owned(), false)
+        );
+        assert_eq!(
+            empty.resolve(&models, false),
+            (models.still.to_owned(), false)
+        );
+
+        let selected = MarkerModelOverride {
+            animated: Some(MarkerModelPath {
+                path: "twg-cache://a/animated/draco_lod2.glb".to_owned(),
+                draco: true,
+            }),
+            still: Some(MarkerModelPath {
+                path: "twg-cache://a/idle/original.glb".to_owned(),
+                draco: false,
+            }),
+        };
+        assert_eq!(
+            selected.resolve(&models, true),
+            ("twg-cache://a/animated/draco_lod2.glb".to_owned(), true)
+        );
+        assert_eq!(
+            selected.resolve(&models, false),
+            ("twg-cache://a/idle/original.glb".to_owned(), false)
+        );
+    }
+}

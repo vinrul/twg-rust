@@ -5,6 +5,8 @@ use std::time::Duration;
 use thiserror::Error;
 use twg_auth::AuthConfig;
 
+use crate::assets::ConvertConfig;
+
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8010";
 pub const DEFAULT_MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 pub const DEFAULT_RATE_LIMIT: u32 = 10;
@@ -12,6 +14,8 @@ pub const DEFAULT_RATE_WINDOW_SECONDS: u64 = 60;
 pub const DEFAULT_WS_TICKET_TTL_SECONDS: u64 = 30;
 pub const DEFAULT_WS_HISTORY_LIMIT: usize = 256;
 pub const DEFAULT_CHANNEL: &str = "twg-jagradewata";
+pub const DEFAULT_ASSETS_DIR: &str = "asset-store";
+pub const DEFAULT_GLTF_TRANSFORM: &str = "gltf-transform";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct CentrifugoConfig {
@@ -53,6 +57,8 @@ pub struct ServerConfig {
     pub cors_domains: Vec<String>,
     pub max_body_bytes: usize,
     pub uploads_dir: PathBuf,
+    pub assets_dir: PathBuf,
+    pub convert: ConvertConfig,
     pub auth: AuthConfig,
     pub rate_limit: RateLimitConfig,
     pub ws_ticket_ttl: Duration,
@@ -100,6 +106,23 @@ impl ServerConfig {
         let uploads_dir = env::var("UPLOADS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("uploads"));
+        let assets_dir = env::var("ASSETS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_ASSETS_DIR));
+        let convert = ConvertConfig {
+            gltf_transform: env::var("GLTF_TRANSFORM_BIN")
+                .unwrap_or_else(|_| DEFAULT_GLTF_TRANSFORM.to_owned()),
+            lod2_ratio: env::var("ASSET_LOD2_RATIO")
+                .ok()
+                .and_then(|value| value.parse::<f64>().ok())
+                .unwrap_or(0.5)
+                .clamp(0.01, 1.0),
+            lod2_error: env::var("ASSET_LOD2_ERROR")
+                .ok()
+                .and_then(|value| value.parse::<f64>().ok())
+                .unwrap_or(0.001)
+                .clamp(0.00001, 100.0),
+        };
         let attempts = env::var("AUTH_RATE_LIMIT")
             .ok()
             .map(|value| value.parse::<u32>())
@@ -152,6 +175,8 @@ impl ServerConfig {
             cors_domains,
             max_body_bytes,
             uploads_dir,
+            assets_dir,
+            convert,
             auth,
             rate_limit: RateLimitConfig {
                 attempts,
@@ -173,6 +198,8 @@ impl std::fmt::Debug for ServerConfig {
             .field("cors_domains", &self.cors_domains)
             .field("max_body_bytes", &self.max_body_bytes)
             .field("uploads_dir", &self.uploads_dir)
+            .field("assets_dir", &self.assets_dir)
+            .field("convert", &self.convert)
             .field("auth", &self.auth)
             .field("rate_limit", &self.rate_limit)
             .field("ws_ticket_ttl", &self.ws_ticket_ttl)

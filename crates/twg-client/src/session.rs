@@ -20,6 +20,7 @@ pub enum NavItem {
     Dashboard,
     Operations,
     Scenarios,
+    Assets,
     Games,
     Users,
     Satkers,
@@ -30,10 +31,11 @@ pub enum NavItem {
 }
 
 impl NavItem {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Dashboard,
         Self::Operations,
         Self::Scenarios,
+        Self::Assets,
         Self::Games,
         Self::Users,
         Self::Satkers,
@@ -48,6 +50,7 @@ impl NavItem {
             Self::Dashboard => "Dashboard",
             Self::Operations => "Operasi",
             Self::Scenarios => "Skenario",
+            Self::Assets => "Aset",
             Self::Games => "Latihan",
             Self::Users => "Pengguna",
             Self::Satkers => "Satker",
@@ -63,6 +66,7 @@ impl NavItem {
             Self::Dashboard => "#",
             Self::Operations => "OP",
             Self::Scenarios => "SK",
+            Self::Assets => "AS",
             Self::Games => "LT",
             Self::Users => "US",
             Self::Satkers => "ST",
@@ -220,7 +224,18 @@ mod tests {
     fn nav_visibility_follows_role() {
         let user_items = NavItem::visible_items(Role::User).collect::<Vec<_>>();
         assert!(!user_items.contains(&NavItem::Users));
+        // Everyone may browse the asset catalog; writes are gated server-side.
+        assert!(user_items.contains(&NavItem::Assets));
         let admin_items = NavItem::visible_items(Role::Admin).collect::<Vec<_>>();
         assert!(admin_items.contains(&NavItem::Users));
+    }
+
+    #[test]
+    fn assets_nav_opens_the_workspace_screen() {
+        let mut state = ClientState::default();
+        state.login(session(Role::Admin));
+        state.navigate(NavItem::Assets);
+        assert_eq!(state.nav, NavItem::Assets);
+        assert_eq!(state.screen, Screen::Workspace);
     }
 }
