@@ -13,7 +13,7 @@ use twg_render::{
 use crate::state::ClientUi;
 
 use super::model::{
-    Draft, DragState, EditorState, EditorTool, MIN_MARKER_SCALE, ObjectKey, ObjectType,
+    Draft, DragState, EditorKind, EditorState, EditorTool, MIN_MARKER_SCALE, ObjectKey, ObjectType,
     offset_object,
 };
 
@@ -395,13 +395,23 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
             Some(unit) => vec![unit.position],
             None => object.kind.points(),
         };
-        let altitude = match &object.kind {
-            super::model::EditorKind::Text(text) => text.altitude as f32,
-            _ => 0.0,
+        let altitudes = match &object.kind {
+            super::model::EditorKind::Line(line) => line
+                .altitudes
+                .iter()
+                .map(|value| *value as f32)
+                .collect::<Vec<_>>(),
+            super::model::EditorKind::Text(text) => vec![text.altitude as f32],
+            super::model::EditorKind::Building(building) => {
+                vec![building.altitude as f32; points.len()]
+            }
+            _ => Vec::new(),
         };
         let mut screen_points = Vec::with_capacity(points.len());
-        for point in &points {
-            let Some(world) = world_of_at(editor, *point, altitude) else {
+        for (index, point) in points.iter().enumerate() {
+            let Some(world) =
+                world_of_at(editor, *point, altitudes.get(index).copied().unwrap_or(0.0))
+            else {
                 continue;
             };
             let Ok(screen) = camera.world_to_viewport(transform, world) else {
@@ -585,7 +595,7 @@ fn gizmo_axis_at(
     if !editor.tool.changes_gizmo() {
         return None;
     }
-    let (_, target) = editor.primary_transform()?;
+    let (_, target) = editor.gizmo_target()?;
     let size = (editor.map_state.meters_per_pixel() as f32 * 90.0).max(1.0);
     let (x, z) = editor
         .map_state
@@ -603,9 +613,28 @@ fn gizmo_axis_at(
             if anchor_screen.distance(pointer) <= 30.0 {
                 return Some(EditorGizmoAxis::Uniform);
             }
-            handle_axis_at(camera, transform, anchor, anchor_screen, size, pointer)
+            handle_axis_at(
+                camera,
+                transform,
+                anchor,
+                anchor_screen,
+                size,
+                pointer,
+                true,
+            )
         }
-        EditorTool::Move => handle_axis_at(camera, transform, anchor, anchor_screen, size, pointer),
+        EditorTool::Move => {
+            let allow_y = editor.point_edit.is_none() || editor.point_edit_allows_altitude();
+            handle_axis_at(
+                camera,
+                transform,
+                anchor,
+                anchor_screen,
+                size,
+                pointer,
+                allow_y,
+            )
+        }
         _ => None,
     }
 }
@@ -618,6 +647,7 @@ fn handle_axis_at(
     anchor_screen: egui::Pos2,
     size: f32,
     pointer: egui::Pos2,
+    allow_y: bool,
 ) -> Option<EditorGizmoAxis> {
     let axes = [
         (EditorGizmoAxis::X, Vec3::X),
@@ -626,6 +656,9 @@ fn handle_axis_at(
     ];
     let mut best: Option<(f32, EditorGizmoAxis)> = None;
     for (axis, direction) in axes {
+        if axis == EditorGizmoAxis::Y && !allow_y {
+            continue;
+        }
         let tip = anchor + direction * size;
         let Ok(tip_screen) = camera.world_to_viewport(transform, tip) else {
             continue;
@@ -683,7 +716,7 @@ fn gizmo_center_screen(
     camera: &Camera,
     transform: &GlobalTransform,
 ) -> Option<egui::Pos2> {
-    let (_, target) = editor.primary_transform()?;
+    let (_, target) = editor.gizmo_target()?;
     let (x, z) = editor
         .map_state
         .geo_to_world(GeoPoint::new(target.lon, target.lat))?;
@@ -692,6 +725,51 @@ fn gizmo_center_screen(
         .world_to_viewport(transform, anchor)
         .ok()
         .map(|point| egui::pos2(point.x, point.y))
+}
+
+fn line_screen_points(editor: &EditorState, key: ObjectKey) -> Option<&[egui::Pos2]> {
+    editor
+        .projected
+        .iter()
+        .find(|(projected_key, _, _, _)| *projected_key == key)
+        .map(|(_, _, points, _)| points.as_slice())
+}
+
+/// Index of the line handle under the pointer, if any.
+fn line_handle_at(editor: &EditorState, pointer: egui::Pos2) -> Option<usize> {
+    let edit = editor.point_edit?;
+    let points = line_screen_points(editor, edit.key)?;
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, position)| (index, position.distance(pointer)))
+        .filter(|(_, distance)| *distance <= 10.0)
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(index, _)| index)
+}
+
+/// Segment under the pointer plus the fraction along it, used by double-click
+/// insertion.
+fn line_segment_at(editor: &EditorState, pointer: egui::Pos2) -> Option<(usize, f64)> {
+    let edit = editor.point_edit?;
+    let points = line_screen_points(editor, edit.key)?;
+    let mut best: Option<(usize, f64, f32)> = None;
+    for index in 0..points.len().saturating_sub(1) {
+        let start = points[index];
+        let end = points[index + 1];
+        let segment = end - start;
+        let length_sq = segment.length_sq();
+        if length_sq <= 1.0 {
+            continue;
+        }
+        let t = ((pointer - start).dot(segment) / length_sq).clamp(0.0, 1.0);
+        let closest = start + segment * t;
+        let distance = closest.distance(pointer);
+        if distance <= 8.0 && best.is_none_or(|(_, _, best)| distance < best) {
+            best = Some((index, t as f64, distance));
+        }
+    }
+    best.map(|(index, t, _)| (index, t))
 }
 
 fn keyboard_shortcuts(
@@ -744,7 +822,9 @@ fn keyboard_shortcuts(
             finish_draft(editor);
         }
         if keys.just_pressed(KeyCode::Escape) {
-            if editor.asset_drag.is_some() {
+            if editor.point_edit.is_some() {
+                editor.end_point_edit();
+            } else if editor.asset_drag.is_some() {
                 editor.asset_drag = None;
             } else if editor.draft.is_active() {
                 editor.draft.clear();
@@ -789,6 +869,30 @@ fn mouse_input(
             return;
         }
 
+        // Per-point line editing: click a handle to select a vertex, or
+        // double-click a segment to insert a new vertex there.
+        if let Some(edit) = editor.point_edit {
+            if let Some(index) = line_handle_at(editor, pointer) {
+                editor.set_point_edit_index(index);
+                return;
+            }
+            if let Some((segment, t)) = line_segment_at(editor, pointer) {
+                let double_click = editor.last_click.is_some_and(|(last, position)| {
+                    now - last < 0.35 && position.distance(pointer) < 6.0
+                });
+                if double_click {
+                    editor.insert_edit_point(edit.key, segment, t);
+                } else {
+                    editor.last_click = Some((now, pointer));
+                }
+                return;
+            }
+            // Keep edit mode active on other viewport clicks; exit with the
+            // Inspector button or Escape so a missed handle does not drop out.
+            editor.last_click = None;
+            return;
+        }
+
         match editor.tool {
             EditorTool::Shape => {
                 if let Some(geo) = geo {
@@ -796,12 +900,15 @@ fn mouse_input(
                         if !matches!(editor.draft, Draft::Polygon(_)) {
                             editor.draft = Draft::Polygon(Vec::new());
                         }
-                        editor.draft.push(geo);
                         let double_click = editor.last_click.is_some_and(|(last, position)| {
                             now - last < 0.35 && position.distance(pointer) < 6.0
                         });
                         if double_click {
+                            // Do not push the second click of a double-click: it
+                            // would add a duplicate vertex and taper the shape.
                             finish_draft(editor);
+                        } else {
+                            editor.draft.push(geo);
                         }
                         editor.last_click = Some((now, pointer));
                     } else {
@@ -822,14 +929,14 @@ fn mouse_input(
                 if !matches!(editor.draft, Draft::Line(_)) {
                     editor.draft = Draft::Line(Vec::new());
                 }
-                if let Some(geo) = geo {
-                    editor.draft.push(geo);
-                }
                 let double_click = editor.last_click.is_some_and(|(last, position)| {
                     now - last < 0.35 && position.distance(pointer) < 6.0
                 });
                 if double_click {
+                    // The first click already added the final vertex.
                     finish_draft(editor);
+                } else if let Some(geo) = geo {
+                    editor.draft.push(geo);
                 }
                 editor.last_click = Some((now, pointer));
             }
@@ -920,6 +1027,42 @@ fn begin_gizmo_drag(
     pointer: egui::Pos2,
     center_screen: Option<egui::Pos2>,
 ) {
+    // Point editing uses the same gizmo; only the selected vertex moves.
+    if let Some(edit) = editor.point_edit
+        && let Some(index) = edit.point
+    {
+        let original = editor
+            .object(edit.key)
+            .and_then(|object| match &object.kind {
+                EditorKind::Line(line) => {
+                    let point = line.points.get(index)?;
+                    Some([point[0], point[1], line.altitude(index)])
+                }
+                EditorKind::Building(building) if building.shape == EditorShapeKind::Custom => {
+                    let point = building.points.get(index)?;
+                    Some([point[0], point[1], building.altitude])
+                }
+                _ => None,
+            });
+        if let Some(original) = original
+            && matches!(
+                axis,
+                EditorGizmoAxis::X | EditorGizmoAxis::Y | EditorGizmoAxis::Z
+            )
+        {
+            editor.push_undo();
+            editor.drag = DragState::PointDrag {
+                axis,
+                key: edit.key,
+                index,
+                original,
+                start_world: world,
+                start_screen: pointer,
+            };
+        }
+        return;
+    }
+
     let originals = editor
         .selected
         .iter()
@@ -1093,6 +1236,83 @@ fn update_drag(
                 }
                 object.dirty = true;
             }
+            editor.dirty = true;
+            editor.touch();
+        }
+        DragState::PointDrag {
+            axis,
+            key,
+            index,
+            original,
+            start_world,
+            start_screen,
+        } => {
+            let direction = axis_vector(axis);
+            let delta = if axis == EditorGizmoAxis::Y {
+                (start_screen.y - pointer.y) * editor.map_state.meters_per_pixel() as f32
+            } else {
+                let Some(world) = ground_point(camera, transform, pointer, editor) else {
+                    return;
+                };
+                (world - start_world).dot(direction)
+            };
+            let target = if axis == EditorGizmoAxis::Y {
+                None
+            } else {
+                let target_world = start_world + direction * delta;
+                let Some(start_geo) = editor.map_state.world_to_geo(start_world.x, start_world.z)
+                else {
+                    return;
+                };
+                let Some(target_geo) = editor
+                    .map_state
+                    .world_to_geo(target_world.x, target_world.z)
+                else {
+                    return;
+                };
+                let Ok(offset) = target_geo.local_offset(start_geo) else {
+                    return;
+                };
+                GeoPoint::from_local_offset(
+                    GeoPoint::new(original[0], original[1]),
+                    offset.east_meters,
+                    offset.north_meters,
+                )
+                .ok()
+            };
+            let Some(object) = editor.object_mut(key) else {
+                return;
+            };
+            match &mut object.kind {
+                EditorKind::Line(line) => match axis {
+                    EditorGizmoAxis::Y => {
+                        let Some(altitude) = line.altitudes.get_mut(index) else {
+                            return;
+                        };
+                        *altitude = (original[2] + delta as f64).max(0.0);
+                    }
+                    EditorGizmoAxis::X | EditorGizmoAxis::Z => {
+                        let (Some(point), Some(target)) = (line.points.get_mut(index), target)
+                        else {
+                            return;
+                        };
+                        *point = [target.longitude, target.latitude];
+                    }
+                    _ => return,
+                },
+                EditorKind::Building(building) if building.shape == EditorShapeKind::Custom => {
+                    if !matches!(axis, EditorGizmoAxis::X | EditorGizmoAxis::Z) {
+                        return;
+                    }
+                    let (Some(point), Some(target)) = (building.points.get_mut(index), target)
+                    else {
+                        return;
+                    };
+                    *point = [target.longitude, target.latitude];
+                }
+                _ => return,
+            }
+            object.dirty = true;
             editor.dirty = true;
             editor.touch();
         }
@@ -1274,5 +1494,38 @@ mod tests {
 
         assert_eq!(editor.tool, EditorTool::Select);
         assert_eq!(editor.objects.len(), 1);
+    }
+
+    #[test]
+    fn dragging_a_custom_mesh_point_starts_a_point_drag() {
+        let mut editor = EditorState::new();
+        editor.loaded = true;
+        let base = GeoPoint::new(115.225, -8.648);
+        editor.add_polygon(vec![
+            base,
+            GeoPoint::from_local_offset(base, 5.0, 0.0).expect("east"),
+            GeoPoint::from_local_offset(base, 5.0, 5.0).expect("corner"),
+            GeoPoint::from_local_offset(base, 0.0, 5.0).expect("north"),
+        ]);
+        let key = *editor.selected.iter().next().expect("shape selected");
+        editor.begin_point_edit(key);
+        editor.set_point_edit_index(0);
+
+        begin_gizmo_drag(
+            &mut editor,
+            EditorGizmoAxis::X,
+            Vec3::ZERO,
+            egui::pos2(10.0, 10.0),
+            None,
+        );
+
+        assert!(matches!(
+            editor.drag,
+            DragState::PointDrag {
+                axis: EditorGizmoAxis::X,
+                index: 0,
+                ..
+            }
+        ));
     }
 }

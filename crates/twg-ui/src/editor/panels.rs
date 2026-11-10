@@ -1132,6 +1132,7 @@ fn draw_object_inspector(
     let mut undo = false;
     let mut delete = false;
     let mut duplicate = false;
+    let mut remove_point = false;
 
     ui.horizontal(|ui| {
         ui.label(
@@ -1250,8 +1251,48 @@ fn draw_object_inspector(
             changed |= ui.text_edit_multiline(&mut marker.keterangan).changed();
         }
         EditorKind::Line(line) => {
+            let editing = editor.point_edit_active(key);
+            if ui
+                .button(if editing {
+                    "Selesai edit titik"
+                } else {
+                    "Edit titik"
+                })
+                .clicked()
+            {
+                if editing {
+                    editor.end_point_edit();
+                } else {
+                    editor.begin_point_edit(key);
+                }
+            }
+            if editing {
+                ui.label(theme::muted(
+                    "Klik titik di peta untuk memilih, klik dua kali segmen untuk menambah titik.",
+                ));
+                if let Some(edit) = editor.point_edit
+                    && let Some(index) = edit.point
+                    && index < line.points.len()
+                {
+                    ui.label(format!("Titik {} dari {}", index + 1, line.points.len()));
+                    let mut altitude = line.altitude(index);
+                    let altitude_row = drag_row(ui, "Alt titik", &mut altitude, 0.25, 0.5, 1, " m");
+                    undo |= altitude_row.gained_focus() || altitude_row.drag_started();
+                    if altitude_row.changed() {
+                        if index < line.altitudes.len() {
+                            line.altitudes[index] = altitude.max(0.0);
+                        }
+                        changed = true;
+                    }
+                    if ui.button("Hapus titik").clicked() {
+                        remove_point = true;
+                    }
+                } else {
+                    ui.label(theme::muted("Pilih titik di peta."));
+                }
+            }
             color_row(ui, "Warna", &mut line.color, &mut changed);
-            let width = drag_row(ui, "Lebar", &mut line.width, 0.2, 0.5, 1, " px");
+            let width = drag_row(ui, "Lebar", &mut line.width, 0.2, 0.5, 1, " m");
             undo |= width.drag_started();
             changed |= width.changed();
             let alpha = drag_row(ui, "Alpha", &mut line.alpha, 0.01, 0.05, 2, "");
@@ -1274,6 +1315,10 @@ fn draw_object_inspector(
                                 building.shape = shape;
                                 changed = true;
                                 undo = true;
+                                if shape != EditorShapeKind::Custom && editor.point_edit_active(key)
+                                {
+                                    editor.end_point_edit();
+                                }
                                 if shape == EditorShapeKind::Custom && building.points.is_empty() {
                                     let center = GeoPoint::new(building.lon, building.lat);
                                     for (east, north) in
@@ -1325,57 +1370,41 @@ fn draw_object_inspector(
                 ui.add_space(6.0);
                 ui.separator();
                 ui.label(theme::title("Bentuk custom"));
-                ui.label(theme::muted("Titik diukur dari pusat objek."));
-                let center = GeoPoint::new(building.lon, building.lat);
-                let can_remove = building.points.len() > 3;
-                let mut remove = None;
-                for (index, point) in building.points.iter_mut().enumerate() {
-                    let current = GeoPoint::new(point[0], point[1]);
-                    let Ok(offset) = current.local_offset(center) else {
-                        continue;
-                    };
-                    let mut east = offset.east_meters;
-                    let mut north = offset.north_meters;
-                    ui.horizontal(|ui| {
-                        ui.label(format!("T{}", index + 1));
-                        let east_row = drag_row(ui, "E", &mut east, 0.25, 0.5, 2, " m");
-                        undo |= east_row.drag_started();
-                        let north_row = drag_row(ui, "N", &mut north, 0.25, 0.5, 2, " m");
-                        undo |= north_row.drag_started();
-                        if (east_row.changed() || north_row.changed())
-                            && let Ok(updated) = GeoPoint::from_local_offset(center, east, north)
-                        {
-                            *point = [updated.longitude, updated.latitude];
-                            changed = true;
-                        }
-                        if can_remove && ui.small_button("×").clicked() {
-                            remove = Some(index);
-                        }
-                    });
-                }
-                if let Some(index) = remove
-                    && index < building.points.len()
-                    && building.points.len() > 3
+                let editing = editor.point_edit_active(key);
+                if ui
+                    .button(if editing {
+                        "Selesai edit titik"
+                    } else {
+                        "Edit titik"
+                    })
+                    .clicked()
                 {
-                    building.points.remove(index);
-                    changed = true;
-                    undo = true;
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Tambah titik").clicked() {
-                        let angle = building.points.len() as f64 * std::f64::consts::TAU / 8.0;
-                        if let Ok(point) = GeoPoint::from_local_offset(
-                            center,
-                            2.0 * angle.cos(),
-                            2.0 * angle.sin(),
-                        ) {
-                            building.points.push([point.longitude, point.latitude]);
-                            changed = true;
-                            undo = true;
-                        }
+                    if editing {
+                        editor.end_point_edit();
+                    } else {
+                        editor.begin_point_edit(key);
                     }
-                    ui.label(theme::muted(&format!("{} titik", building.points.len())));
-                });
+                }
+                if editing {
+                    ui.label(theme::muted(
+                        "Klik titik di peta untuk memilih, klik dua kali segmen untuk menambah titik.",
+                    ));
+                    if let Some(edit) = editor.point_edit
+                        && let Some(index) = edit.point
+                        && index < building.points.len()
+                    {
+                        ui.label(format!(
+                            "Titik {} dari {}",
+                            index + 1,
+                            building.points.len()
+                        ));
+                        if ui.button("Hapus titik").clicked() {
+                            remove_point = true;
+                        }
+                    } else {
+                        ui.label(theme::muted("Pilih titik di peta."));
+                    }
+                }
                 let height = drag_row(ui, "Tinggi", &mut building.height, 0.5, 0.5, 1, " m");
                 undo |= height.drag_started();
                 changed |= height.changed();
@@ -1535,6 +1564,9 @@ fn draw_object_inspector(
     }
     if changed || undo {
         editor.touch();
+    }
+    if remove_point {
+        editor.remove_point_edit_point();
     }
     if delete {
         editor.delete_selected();
@@ -1746,6 +1778,7 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                 draw_measure(&painter, editor);
                 draw_marquee(&painter, editor);
                 draw_labels(&painter, editor);
+                draw_point_edit_handles(&painter, editor);
             } else {
                 draw_play_overlay(&painter, editor);
             }
@@ -1927,6 +1960,41 @@ fn draw_text_overlays(painter: &egui::Painter, editor: &EditorState) {
                 (color[1] * 255.0) as u8,
                 (color[2] * 255.0) as u8,
             ),
+        );
+    }
+}
+
+fn draw_point_edit_handles(painter: &egui::Painter, editor: &EditorState) {
+    let Some(edit) = editor.point_edit else {
+        return;
+    };
+    let Some((_, _, points, _)) = editor
+        .projected
+        .iter()
+        .find(|(key, _, _, _)| *key == edit.key)
+    else {
+        return;
+    };
+    for (index, position) in points.iter().enumerate() {
+        let selected = edit.point == Some(index);
+        let radius = if selected { 6.5 } else { 4.5 };
+        let fill = if selected {
+            theme::color(DARK.warning)
+        } else {
+            egui::Color32::WHITE
+        };
+        painter.circle_filled(*position, radius, fill);
+        painter.circle_stroke(
+            *position,
+            radius,
+            egui::Stroke::new(1.5, egui::Color32::from_black_alpha(180)),
+        );
+        painter.text(
+            *position + egui::vec2(0.0, -12.0),
+            egui::Align2::CENTER_BOTTOM,
+            format!("{}", index + 1),
+            egui::FontId::monospace(10.0),
+            egui::Color32::WHITE,
         );
     }
 }

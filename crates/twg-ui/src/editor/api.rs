@@ -873,6 +873,7 @@ fn marker_object(marker: Marker) -> EditorObject {
 }
 
 fn line_object(line: Line) -> EditorObject {
+    let (points, altitudes) = parse_line_geom(&line.geom);
     EditorObject {
         key: 0,
         server_id: Some(line.id),
@@ -880,7 +881,8 @@ fn line_object(line: Line) -> EditorObject {
         visible: true,
         dirty: false,
         kind: EditorKind::Line(LineObject {
-            points: parse_geom(&line.geom),
+            points,
+            altitudes,
             color: line.color,
             width: line.width,
             alpha: line.alpha,
@@ -1083,6 +1085,54 @@ fn geom_json(points: &[[f64; 2]]) -> String {
     serde_json::to_string(points).unwrap_or_else(|_| "[]".to_owned())
 }
 
+/// Lines store `[lon, lat]` or `[lon, lat, altitude]` rows. Older scenarios
+/// only have two values per point; those load with altitude 0.
+fn parse_line_geom(geom: &str) -> (Vec<[f64; 2]>, Vec<f64>) {
+    let Ok(rows) = serde_json::from_str::<Vec<Value>>(geom) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut points = Vec::with_capacity(rows.len());
+    let mut altitudes = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(items) = row.as_array() else {
+            continue;
+        };
+        let (Some(lon), Some(lat)) = (
+            items.first().and_then(Value::as_f64),
+            items.get(1).and_then(Value::as_f64),
+        ) else {
+            continue;
+        };
+        points.push([lon, lat]);
+        altitudes.push(items.get(2).and_then(Value::as_f64).unwrap_or(0.0));
+    }
+    (points, altitudes)
+}
+
+fn line_geom_json(line: &LineObject) -> String {
+    let with_altitudes = line
+        .altitudes
+        .iter()
+        .any(|altitude| altitude.abs() > 1.0e-4);
+    let rows = line
+        .points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            if with_altitudes {
+                serde_json::json!([
+                    point[0],
+                    point[1],
+                    line.altitudes.get(index).copied().unwrap_or(0.0)
+                ])
+            } else {
+                serde_json::json!([point[0], point[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_owned())
+}
+
 fn create_request(
     object: &EditorObject,
     operation_id: Uuid,
@@ -1116,7 +1166,7 @@ fn create_request(
                 color: line.color.clone(),
                 width: line.width,
                 alpha: line.alpha,
-                geom: geom_json(&line.points),
+                geom: line_geom_json(line),
             })
             .ok()?,
         ),
@@ -1279,7 +1329,7 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                 method: HttpMethod::Put,
                 path: format!("/private/lines/geom/{id}"),
                 body: serde_json::to_value(LineGeomUpdateRequest {
-                    geom: geom_json(&line.points),
+                    geom: line_geom_json(line),
                 })
                 .ok(),
             });
@@ -1395,6 +1445,21 @@ mod tests {
         let path = Path::new("../../assets/models/polwan_airud_idle_lod2.glb");
         let height = model_height(path).expect("GLB height");
         assert!(height > 0.01 && height < 100_000.0, "height {height}");
+    }
+
+    #[test]
+    fn line_geometry_round_trips_point_altitudes() {
+        let mut line = LineObject::new(vec![[115.2, -8.6], [115.21, -8.61]]);
+        line.altitudes = vec![0.0, 12.5];
+
+        let (points, altitudes) = parse_line_geom(&line_geom_json(&line));
+
+        assert_eq!(points, line.points);
+        assert_eq!(altitudes, vec![0.0, 12.5]);
+        // Legacy two-value rows still load with altitude 0.
+        let (points, altitudes) = parse_line_geom("[[115.2,-8.6],[115.21,-8.61]]");
+        assert_eq!(points.len(), 2);
+        assert_eq!(altitudes, vec![0.0, 0.0]);
     }
 
     #[test]

@@ -312,9 +312,28 @@ impl MarkerObject {
 #[derive(Clone, Debug)]
 pub struct LineObject {
     pub points: Vec<[f64; 2]>,
+    /// Height in meters for each point, parallel to `points`.
+    pub altitudes: Vec<f64>,
     pub color: String,
     pub width: f64,
     pub alpha: f64,
+}
+
+impl LineObject {
+    pub fn new(points: Vec<[f64; 2]>) -> Self {
+        let altitudes = vec![0.0; points.len()];
+        Self {
+            points,
+            altitudes,
+            color: "#00b8ff".to_owned(),
+            width: 4.0,
+            alpha: 0.9,
+        }
+    }
+
+    pub fn altitude(&self, index: usize) -> f64 {
+        self.altitudes.get(index).copied().unwrap_or(0.0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -828,6 +847,15 @@ pub enum DragState {
         start_world: Vec3,
         start_screen: egui::Pos2,
     },
+    PointDrag {
+        axis: EditorGizmoAxis,
+        key: ObjectKey,
+        index: usize,
+        /// Original `[lon, lat, altitude]` of the edited point.
+        original: [f64; 3],
+        start_world: Vec3,
+        start_screen: egui::Pos2,
+    },
     Rotate {
         axis: EditorGizmoAxis,
         /// Original `[rot_x, rot_y, rot_z]` per selected marker.
@@ -860,6 +888,13 @@ pub struct GeocodeHit {
     pub longitude: f64,
 }
 
+/// Point-editing state for a line selected in the Inspector.
+#[derive(Clone, Copy, Debug)]
+pub struct PointEditState {
+    pub key: ObjectKey,
+    pub point: Option<usize>,
+}
+
 pub struct EditorState {
     pub scenario_id: Option<Uuid>,
     pub operation_id: Option<Uuid>,
@@ -879,6 +914,8 @@ pub struct EditorState {
     pub undo: Vec<SceneSnapshot>,
     pub redo: Vec<SceneSnapshot>,
     pub drag: DragState,
+    /// Active per-point line editing, if any.
+    pub point_edit: Option<PointEditState>,
     pub draft: Draft,
     pub measure: MeasureState,
     pub snap_meters: f32,
@@ -1002,6 +1039,7 @@ impl EditorState {
             undo: Vec::new(),
             redo: Vec::new(),
             drag: DragState::None,
+            point_edit: None,
             draft: Draft::None,
             measure: MeasureState::default(),
             snap_meters: 0.0,
@@ -1106,6 +1144,11 @@ impl EditorState {
             return;
         }
         self.tool = tool;
+        // Line point editing only supports the Move gizmo; switching to any
+        // other tool leaves the point-edit mode.
+        if tool != EditorTool::Move {
+            self.point_edit = None;
+        }
         self.draft.clear();
         // The transform gizmo depends on the tool, so the scene must be rebuilt
         // immediately instead of on the next unrelated change.
@@ -1162,14 +1205,23 @@ impl EditorState {
     }
 
     pub fn select_only(&mut self, key: ObjectKey) {
+        if self.point_edit.is_some_and(|edit| edit.key != key) {
+            self.point_edit = None;
+        }
         self.selected.clear();
         self.selected.insert(key);
         self.touch();
     }
 
     pub fn toggle_selected(&mut self, key: ObjectKey) {
+        if self.point_edit.is_some_and(|edit| edit.key != key) {
+            self.point_edit = None;
+        }
         if !self.selected.insert(key) {
             self.selected.remove(&key);
+            if self.point_edit.is_some_and(|edit| edit.key == key) {
+                self.point_edit = None;
+            }
         }
         self.touch();
     }
@@ -1181,6 +1233,7 @@ impl EditorState {
     }
 
     pub fn clear_selection(&mut self) {
+        self.point_edit = None;
         if !self.selected.is_empty() {
             self.selected.clear();
             self.touch();
@@ -1583,6 +1636,7 @@ impl EditorState {
             dirty: true,
             kind: EditorKind::Line(LineObject {
                 points: coordinates,
+                altitudes: vec![0.0; points.len()],
                 color: "#00b8ff".to_owned(),
                 width: 4.0,
                 alpha: 0.9,
@@ -1636,6 +1690,12 @@ impl EditorState {
         if self.selected.is_empty() {
             return;
         }
+        if self
+            .point_edit
+            .is_some_and(|edit| self.selected.contains(&edit.key))
+        {
+            self.point_edit = None;
+        }
         self.push_undo();
         let selected = self.selected.clone();
         for key in &selected {
@@ -1687,6 +1747,274 @@ impl EditorState {
         let key = self.next_key;
         self.next_key = self.next_key.wrapping_add(1).max(1);
         key
+    }
+
+    /// True when `object` supports on-map point editing.
+    fn supports_point_edit(object: &EditorObject) -> bool {
+        match &object.kind {
+            EditorKind::Line(_) => true,
+            EditorKind::Building(building) => building.shape == EditorShapeKind::Custom,
+            _ => false,
+        }
+    }
+
+    /// Starts on-map point editing for `key` (line or custom mesh).
+    pub fn begin_point_edit(&mut self, key: ObjectKey) {
+        let Some(object) = self.object(key) else {
+            return;
+        };
+        if !Self::supports_point_edit(object) {
+            return;
+        }
+        self.point_edit = Some(PointEditState { key, point: None });
+        self.selected.clear();
+        self.selected.insert(key);
+        if self.tool != EditorTool::Move {
+            self.set_tool(EditorTool::Move);
+        }
+        self.last_click = None;
+        self.touch();
+    }
+
+    pub fn end_point_edit(&mut self) {
+        if self.point_edit.take().is_some() {
+            self.last_click = None;
+            self.touch();
+        }
+    }
+
+    pub fn point_edit_active(&self, key: ObjectKey) -> bool {
+        self.point_edit.is_some_and(|edit| edit.key == key)
+    }
+
+    /// Custom mesh points are flat, so their move gizmo has no Y axis.
+    pub fn point_edit_allows_altitude(&self) -> bool {
+        self.point_edit.is_some_and(|edit| {
+            self.object(edit.key)
+                .is_some_and(|object| matches!(object.kind, EditorKind::Line(_)))
+        })
+    }
+
+    /// Transform used by the gizmo. In point-edit mode this is the selected
+    /// vertex instead of a whole object.
+    pub fn gizmo_target(&self) -> Option<(ObjectKey, ObjectTransform)> {
+        if let Some(edit) = self.point_edit {
+            let object = self.object(edit.key)?;
+            let index = edit.point?;
+            return match &object.kind {
+                EditorKind::Line(line) => {
+                    let point = line.points.get(index)?;
+                    Some((
+                        edit.key,
+                        ObjectTransform {
+                            lon: point[0],
+                            lat: point[1],
+                            altitude: line.altitude(index),
+                            rot: [0.0; 3],
+                            scale: [1.0; 3],
+                        },
+                    ))
+                }
+                EditorKind::Building(building) if building.shape == EditorShapeKind::Custom => {
+                    let point = building.points.get(index)?;
+                    Some((
+                        edit.key,
+                        ObjectTransform {
+                            lon: point[0],
+                            lat: point[1],
+                            altitude: building.altitude,
+                            rot: [0.0; 3],
+                            scale: [1.0; 3],
+                        },
+                    ))
+                }
+                _ => None,
+            };
+        }
+        self.primary_transform()
+    }
+
+    pub fn set_point_edit_index(&mut self, index: usize) {
+        let Some(edit) = self.point_edit else {
+            return;
+        };
+        let Some(object) = self.object(edit.key) else {
+            return;
+        };
+        let count = match &object.kind {
+            EditorKind::Line(line) => line.points.len(),
+            EditorKind::Building(building) => building.points.len(),
+            _ => return,
+        };
+        if index >= count {
+            return;
+        }
+        self.point_edit = Some(PointEditState {
+            key: edit.key,
+            point: Some(index),
+        });
+        self.last_click = None;
+        self.touch();
+    }
+
+    /// Inserts a point on segment `segment` at fraction `t` (0..1).
+    pub fn insert_edit_point(&mut self, key: ObjectKey, segment: usize, t: f64) -> bool {
+        let Some(object) = self.object(key) else {
+            return false;
+        };
+        match &object.kind {
+            EditorKind::Line(_) => self.insert_line_point(key, segment, t),
+            EditorKind::Building(building) if building.shape == EditorShapeKind::Custom => {
+                self.insert_custom_point(key, segment, t)
+            }
+            _ => false,
+        }
+    }
+
+    fn insert_line_point(&mut self, key: ObjectKey, segment: usize, t: f64) -> bool {
+        let Some(object) = self.object(key) else {
+            return false;
+        };
+        let EditorKind::Line(line) = &object.kind else {
+            return false;
+        };
+        if segment + 1 >= line.points.len() {
+            return false;
+        }
+        let start = GeoPoint::new(line.points[segment][0], line.points[segment][1]);
+        let end = GeoPoint::new(line.points[segment + 1][0], line.points[segment + 1][1]);
+        let Ok(offset) = end.local_offset(start) else {
+            return false;
+        };
+        let t = t.clamp(0.0, 1.0);
+        let Ok(point) =
+            GeoPoint::from_local_offset(start, offset.east_meters * t, offset.north_meters * t)
+        else {
+            return false;
+        };
+        let altitude = line.altitude(segment) * (1.0 - t) + line.altitude(segment + 1) * t;
+
+        self.push_undo();
+        let Some(object) = self.object_mut(key) else {
+            return false;
+        };
+        let EditorKind::Line(line) = &mut object.kind else {
+            return false;
+        };
+        let index = segment + 1;
+        line.points.insert(index, [point.longitude, point.latitude]);
+        line.altitudes.insert(index, altitude);
+        object.dirty = true;
+        self.point_edit = Some(PointEditState {
+            key,
+            point: Some(index),
+        });
+        self.dirty = true;
+        self.touch();
+        true
+    }
+
+    fn insert_custom_point(&mut self, key: ObjectKey, segment: usize, t: f64) -> bool {
+        let Some(object) = self.object(key) else {
+            return false;
+        };
+        let EditorKind::Building(building) = &object.kind else {
+            return false;
+        };
+        if building.shape != EditorShapeKind::Custom || segment + 1 >= building.points.len() {
+            return false;
+        }
+        let start = GeoPoint::new(building.points[segment][0], building.points[segment][1]);
+        let end = GeoPoint::new(
+            building.points[segment + 1][0],
+            building.points[segment + 1][1],
+        );
+        let Ok(offset) = end.local_offset(start) else {
+            return false;
+        };
+        let t = t.clamp(0.0, 1.0);
+        let Ok(point) =
+            GeoPoint::from_local_offset(start, offset.east_meters * t, offset.north_meters * t)
+        else {
+            return false;
+        };
+
+        self.push_undo();
+        let Some(object) = self.object_mut(key) else {
+            return false;
+        };
+        let EditorKind::Building(building) = &mut object.kind else {
+            return false;
+        };
+        let index = segment + 1;
+        building
+            .points
+            .insert(index, [point.longitude, point.latitude]);
+        object.dirty = true;
+        self.point_edit = Some(PointEditState {
+            key,
+            point: Some(index),
+        });
+        self.dirty = true;
+        self.touch();
+        true
+    }
+
+    pub fn remove_point_edit_point(&mut self) -> bool {
+        let Some(edit) = self.point_edit else {
+            return false;
+        };
+        let Some(index) = edit.point else {
+            return false;
+        };
+        let Some(object) = self.object(edit.key) else {
+            return false;
+        };
+        let (count, minimum) = match &object.kind {
+            EditorKind::Line(line) => {
+                if index >= line.points.len() {
+                    return false;
+                }
+                (line.points.len(), 2)
+            }
+            EditorKind::Building(building) if building.shape == EditorShapeKind::Custom => {
+                if index >= building.points.len() {
+                    return false;
+                }
+                (building.points.len(), 3)
+            }
+            _ => return false,
+        };
+        if count <= minimum {
+            return false;
+        }
+
+        self.push_undo();
+        let Some(object) = self.object_mut(edit.key) else {
+            return false;
+        };
+        let next = match &mut object.kind {
+            EditorKind::Line(line) => {
+                line.points.remove(index);
+                if index < line.altitudes.len() {
+                    line.altitudes.remove(index);
+                }
+                index.min(line.points.len() - 1)
+            }
+            EditorKind::Building(building) => {
+                building.points.remove(index);
+                index.min(building.points.len() - 1)
+            }
+            _ => return false,
+        };
+        object.dirty = true;
+        self.point_edit = Some(PointEditState {
+            key: edit.key,
+            point: Some(next),
+        });
+        self.dirty = true;
+        self.touch();
+        true
     }
 
     pub fn snap_point(&self, point: GeoPoint) -> GeoPoint {
@@ -1874,6 +2202,7 @@ impl EditorState {
                 }
                 EditorKind::Line(line) => EditorSceneKind::Line {
                     points: line.points.clone(),
+                    altitudes: line.altitudes.iter().map(|value| *value as f32).collect(),
                     width: line.width as f32,
                     color: parse_hex_color(&line.color),
                     alpha: line.alpha as f32,
@@ -1946,7 +2275,7 @@ impl EditorState {
         let gizmo = if self.preview || !self.tool.changes_gizmo() {
             None
         } else {
-            self.primary_transform().and_then(|(key, transform)| {
+            self.gizmo_target().and_then(|(key, transform)| {
                 let mode = match self.tool {
                     EditorTool::Rotate => EditorGizmoMode::Rotate,
                     EditorTool::Scale => EditorGizmoMode::Scale,
@@ -1957,7 +2286,8 @@ impl EditorState {
                     self.object(key).map(|object| &object.kind),
                     Some(EditorKind::Text(_))
                 );
-                if is_text && mode != EditorGizmoMode::Move {
+                let is_point_edit = self.point_edit.is_some();
+                if (is_text || is_point_edit) && mode != EditorGizmoMode::Move {
                     return None;
                 }
                 Some(EditorGizmo {
@@ -1966,6 +2296,7 @@ impl EditorState {
                     altitude: transform.altitude as f32,
                     mode,
                     active_axis: self.hover_axis,
+                    show_y: !is_point_edit || self.point_edit_allows_altitude(),
                 })
             })
         };
@@ -2514,6 +2845,85 @@ mod tests {
         assert_eq!(transform.scale, [2.0, 2.0, 2.0]);
         // Primitive shapes expose a square outline for picking/selection.
         assert_eq!(object.kind.points().len(), 4);
+    }
+
+    #[test]
+    fn line_point_editing_keeps_altitudes_in_sync() {
+        let mut editor = editor();
+        editor.add_line(vec![
+            GeoPoint::new(115.225, -8.648),
+            GeoPoint::new(115.226, -8.648),
+            GeoPoint::new(115.226, -8.649),
+        ]);
+        let key = *editor.selected.iter().next().expect("line selected");
+        editor.begin_point_edit(key);
+
+        assert!(editor.insert_line_point(key, 0, 0.5));
+        let index = editor
+            .point_edit
+            .and_then(|edit| edit.point)
+            .expect("inserted point selected");
+        if let Some(EditorKind::Line(line)) = editor.object_mut(key).map(|object| &mut object.kind)
+        {
+            line.altitudes[index] = 10.0;
+        }
+
+        let (_, transform) = editor.gizmo_target().expect("line point gizmo target");
+        assert_eq!(transform.altitude, 10.0);
+        assert!(editor.point_edit_allows_altitude());
+        assert!(
+            editor
+                .build_scene()
+                .gizmo
+                .as_ref()
+                .is_some_and(|gizmo| gizmo.show_y)
+        );
+        let EditorKind::Line(line) = &editor.object(key).expect("line object").kind else {
+            panic!("expected line");
+        };
+        assert_eq!(line.points.len(), 4);
+        assert_eq!(line.altitudes.len(), 4);
+
+        assert!(editor.remove_point_edit_point());
+        let EditorKind::Line(line) = &editor.object(key).expect("line object").kind else {
+            panic!("expected line");
+        };
+        assert_eq!(line.points.len(), 3);
+        assert_eq!(line.altitudes.len(), 3);
+    }
+
+    #[test]
+    fn custom_mesh_points_are_flat_and_edited_on_the_map() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        editor.add_polygon(vec![
+            base,
+            GeoPoint::from_local_offset(base, 5.0, 0.0).expect("east"),
+            GeoPoint::from_local_offset(base, 5.0, 5.0).expect("corner"),
+            GeoPoint::from_local_offset(base, 0.0, 5.0).expect("north"),
+        ]);
+        let key = *editor.selected.iter().next().expect("shape selected");
+        editor.begin_point_edit(key);
+
+        assert!(editor.insert_edit_point(key, 0, 0.5));
+        let EditorKind::Building(building) = &editor.object(key).expect("shape").kind else {
+            panic!("expected building");
+        };
+        assert_eq!(building.points.len(), 5);
+        assert!(!editor.point_edit_allows_altitude());
+        assert!(
+            !editor
+                .build_scene()
+                .gizmo
+                .as_ref()
+                .is_some_and(|gizmo| gizmo.show_y)
+        );
+
+        assert!(editor.remove_point_edit_point());
+        let EditorKind::Building(building) = &editor.object(key).expect("shape").kind else {
+            panic!("expected building");
+        };
+        assert_eq!(building.points.len(), 4);
     }
 
     #[test]

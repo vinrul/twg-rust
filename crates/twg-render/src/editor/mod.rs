@@ -1,4 +1,4 @@
-mod mesh;
+pub(crate) mod mesh;
 mod scene;
 
 use bevy::prelude::*;

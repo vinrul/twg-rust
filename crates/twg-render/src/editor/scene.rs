@@ -177,6 +177,8 @@ pub enum EditorSceneKind {
     },
     Line {
         points: Vec<[f64; 2]>,
+        /// Per-point height in meters, parallel to `points`.
+        altitudes: Vec<f32>,
         width: f32,
         color: [f32; 4],
         alpha: f32,
@@ -239,6 +241,8 @@ pub struct EditorGizmo {
     pub altitude: f32,
     pub mode: EditorGizmoMode,
     pub active_axis: Option<EditorGizmoAxis>,
+    /// Custom mesh points are flat, so their move gizmo hides the Y axis.
+    pub show_y: bool,
 }
 
 #[derive(Resource, Default)]
@@ -944,6 +948,7 @@ fn spawn_object(
         }
         EditorSceneKind::Line {
             points,
+            altitudes,
             width,
             color,
             alpha,
@@ -956,13 +961,16 @@ fn spawn_object(
             if local.len() < 2 {
                 return;
             }
-            let mesh = meshes.add(mesh::ribbon_mesh(&local, *width, 0.0));
+            let Some(ribbon) = mesh::ribbon_mesh(&local, altitudes, *width, 0.6) else {
+                return;
+            };
+            let mesh = meshes.add(ribbon);
             let material = materials.add(unlit_material(*color, *alpha));
             let entity = commands
                 .spawn((
                     Mesh3d(mesh),
                     MeshMaterial3d(material),
-                    Transform::from_xyz(0.0, 0.6, 0.0),
+                    Transform::default(),
                     anchor,
                     name,
                 ))
@@ -1205,16 +1213,18 @@ fn spawn_gizmo(
                     Transform::from_xyz(1.0, 0.0, 0.0)
                         .with_rotation(Quat::from_rotation_z(-quarter_turn)),
                 ));
-                parent.spawn((
-                    Mesh3d(handles.shaft_y.clone()),
-                    MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
-                    Transform::from_xyz(0.0, 0.45, 0.0),
-                ));
-                parent.spawn((
-                    Mesh3d(handles.tip.clone()),
-                    MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
-                    Transform::from_xyz(0.0, 1.0, 0.0),
-                ));
+                if gizmo.show_y {
+                    parent.spawn((
+                        Mesh3d(handles.shaft_y.clone()),
+                        MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
+                        Transform::from_xyz(0.0, 0.45, 0.0),
+                    ));
+                    parent.spawn((
+                        Mesh3d(handles.tip.clone()),
+                        MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
+                        Transform::from_xyz(0.0, 1.0, 0.0),
+                    ));
+                }
                 parent.spawn((
                     Mesh3d(handles.shaft_z.clone()),
                     MeshMaterial3d(pick(EditorGizmoAxis::Z, &materials.z)),

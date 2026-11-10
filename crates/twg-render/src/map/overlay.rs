@@ -37,14 +37,17 @@ pub fn spawn_overlays(
         (75.0, 45.0),
     ]
     .map(|(east, north)| (east, -north));
-    commands.spawn((
-        Mesh3d(meshes.add(ribbon_mesh(&line_points, 2.2, 0.25))),
-        MeshMaterial3d(line_material),
-        Transform::from_xyz(0.0, 0.25, 0.0),
-        center_anchor,
-        DemoOverlay,
-        Name::new("Demo route line"),
-    ));
+    let local = line_points.iter().map(|&(x, z)| [x, z]).collect::<Vec<_>>();
+    if let Some(mesh) = crate::editor::mesh::ribbon_mesh(&local, &[], 2.2, 0.25) {
+        commands.spawn((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(line_material),
+            Transform::from_xyz(0.0, 0.25, 0.0),
+            center_anchor,
+            DemoOverlay,
+            Name::new("Demo route line"),
+        ));
+    }
 
     let building_center = camera.world_to_geo(120.0, -80.0).unwrap_or(center);
     if let Some(anchor) = GeoAnchor::new(building_center) {
@@ -91,48 +94,6 @@ pub fn spawn_overlays(
             Name::new("Demo floor plan"),
         ));
     }
-}
-
-fn ribbon_mesh(points: &[(f32, f32)], width: f32, height: f32) -> Mesh {
-    let half = width * 0.5;
-    let mut positions = Vec::with_capacity(points.len() * 2);
-    let mut normals = Vec::with_capacity(points.len() * 2);
-    let mut indices = Vec::new();
-
-    for (index, &(x, z)) in points.iter().enumerate() {
-        let (dx, dz) = if index + 1 < points.len() {
-            let (nx, nz) = points[index + 1];
-            (nx - x, nz - z)
-        } else {
-            let (px, pz) = points[index - 1];
-            (x - px, z - pz)
-        };
-        let length = (dx * dx + dz * dz).sqrt().max(0.001);
-        let (nx, nz) = (-dz / length, dx / length);
-        positions.push([x + nx * half, height, z + nz * half]);
-        positions.push([x - nx * half, height, z - nz * half]);
-        normals.push([0.0, 1.0, 0.0]);
-        normals.push([0.0, 1.0, 0.0]);
-        if index > 0 {
-            let base = (index as u32 - 1) * 2;
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
-        }
-    }
-
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(
-        Mesh::ATTRIBUTE_POSITION,
-        VertexAttributeValues::Float32x3(positions),
-    );
-    mesh.insert_attribute(
-        Mesh::ATTRIBUTE_NORMAL,
-        VertexAttributeValues::Float32x3(normals),
-    );
-    mesh.insert_indices(Indices::U32(indices));
-    mesh
 }
 
 fn prism_mesh(footprint: &[(f32, f32)], height: f32) -> Mesh {
