@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use twg_map::{CameraFlight, MapCameraState};
 
-use super::{BaseLayerResource, CameraFlightState, MapCameraResource};
+use super::{BaseLayerResource, CameraFlightState, MapCameraResource, UiPointerState};
 use crate::editor::EditorMode;
 
 const KEYBOARD_PAN_SPEED: f64 = 1.1;
@@ -19,6 +19,7 @@ pub fn map_input(
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
     editor: Option<Res<EditorMode>>,
+    pointer: Res<UiPointerState>,
     mut camera: ResMut<MapCameraResource>,
 ) {
     let Ok(window) = windows.single() else {
@@ -40,6 +41,7 @@ pub fn map_input(
     }
 
     if mouse_inside
+        && !pointer.over_ui
         && ((!editor_active && mouse_buttons.pressed(MouseButton::Left))
             || mouse_buttons.pressed(MouseButton::Middle))
     {
@@ -54,7 +56,7 @@ pub fn map_input(
         );
     }
 
-    if mouse_inside && mouse_buttons.pressed(MouseButton::Right) {
+    if mouse_inside && !pointer.over_ui && mouse_buttons.pressed(MouseButton::Right) {
         if delta != Vec2::ZERO {
             cancel_flight = true;
         }
@@ -74,7 +76,7 @@ pub fn map_input(
         };
         wheel_lines += lines;
     }
-    if mouse_inside && wheel_lines.abs() > f32::EPSILON {
+    if mouse_inside && !pointer.over_ui && wheel_lines.abs() > f32::EPSILON {
         cancel_flight = true;
         camera.zoom_by(wheel_lines.clamp(-1.0, 1.0) * 0.15);
     }

@@ -5,14 +5,16 @@ use bevy::window::PrimaryWindow;
 use bevy_egui::egui;
 use twg_map::{CameraFlight, GeoPoint};
 use twg_render::{
-    BaseLayerResource, CameraFlightState, EditorGizmoAxis, EditorMode, EditorScene, MapCamera,
-    MapCameraResource, MapCursorResource, UiPointerState,
+    BaseLayerResource, CameraFlightState, EditorGizmoAxis, EditorMode, EditorPlayFrame,
+    EditorPlayUnit, EditorScene, EditorShapeKind, MapCamera, MapCameraResource, MapCursorResource,
+    UiPointerState,
 };
 
 use crate::state::ClientUi;
 
 use super::model::{
-    Draft, DragState, EditorState, EditorTool, ObjectKey, ObjectType, offset_object,
+    Draft, DragState, EditorState, EditorTool, MIN_MARKER_SCALE, ObjectKey, ObjectType,
+    offset_object,
 };
 
 /// Set by the egui pass so editor shortcuts do not fire while a text field has
@@ -45,12 +47,15 @@ pub fn editor_input(
     mut layers: ResMut<BaseLayerResource>,
     cursor: Res<MapCursorResource>,
     diagnostics: Res<DiagnosticsStore>,
+    mut play_frame: ResMut<EditorPlayFrame>,
 ) {
     let in_editor = client.state.screen == twg_client::session::Screen::MapEditor;
     if !in_editor {
         if mode.active {
             mode.active = false;
         }
+        play_frame.active = false;
+        play_frame.units.clear();
         if render.revision != client.editor.render_revision || !render.objects.is_empty() {
             *render = EditorScene {
                 revision: client.editor.render_revision,
@@ -68,8 +73,10 @@ pub fn editor_input(
     }
 
     let (camera, camera_transform) = *camera_query;
+    let base_url = client.base_url.clone();
     let editor = &mut client.editor;
     editor.map_state = map_camera.0;
+    editor.base_url = base_url;
     editor.cursor_geo = cursor.0.position;
     editor.fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
@@ -77,6 +84,17 @@ pub fn editor_input(
         .unwrap_or_default();
 
     apply_requests(editor, &mut map_camera, &mut flight, &mut layers);
+
+    // Play mode: start/stop the RTS state with the Play toggle and advance the
+    // moving units before they are projected for picking and overlays.
+    if editor.preview && editor.loaded {
+        if !editor.play.active {
+            editor.start_play();
+        }
+        editor.play_tick(time.delta_secs_f64());
+    } else if editor.play.active {
+        editor.stop_play();
+    }
 
     let viewport = if editor.viewport_rect.width() > 1.0 && editor.viewport_rect.height() > 1.0 {
         editor.viewport_rect
@@ -89,12 +107,14 @@ pub fn editor_input(
     let pointer_pos = window
         .cursor_position()
         .map(|position| egui::pos2(position.x, position.y));
-    let inside_viewport =
-        pointer_pos.is_some_and(|position| viewport.contains(position)) && !pointer.over_ui;
+    let pointer_in_viewport = pointer_pos.is_some_and(|position| viewport.contains(position));
+    let inside_viewport = pointer_in_viewport && !pointer.over_ui;
     let editing = !editor.preview && editor.loaded;
 
+    // Track the ground point whenever the pointer is over the map, including
+    // while a panel drag is in progress (egui owns the pointer then).
     editor.cursor_world = pointer_pos
-        .filter(|_| inside_viewport)
+        .filter(|position| viewport.contains(*position))
         .and_then(|position| ground_point(camera, camera_transform, position, editor));
     if let Some(world) = editor.cursor_world {
         editor.cursor_geo = editor.map_state.world_to_geo(world.x, world.z);
@@ -118,19 +138,41 @@ pub fn editor_input(
                 .extend(project_geo(editor, camera, camera_transform, end));
         }
     }
-    if inside_viewport && editing {
-        editor.hover_axis = gizmo_axis_at(editor, camera, camera_transform, pointer_pos.unwrap());
-        editor.hover_key = if editor.hover_axis.is_none() {
-            pick_object(editor, pointer_pos.unwrap())
-        } else {
-            None
-        };
+    let hover_axis = if inside_viewport && editing {
+        gizmo_axis_at(editor, camera, camera_transform, pointer_pos.unwrap())
     } else {
+        None
+    };
+    if hover_axis != editor.hover_axis {
+        editor.hover_axis = hover_axis;
+        // The gizmo highlight is part of the render scene.
+        editor.touch();
+    }
+    editor.hover_key = if inside_viewport && editing && hover_axis.is_none() {
+        pick_object(editor, pointer_pos.unwrap())
+    } else {
+        None
+    };
+
+    if editing && editor.asset_drag.is_some() {
+        // An asset card is being dragged out of the bottom panel. egui owns the
+        // pointer, so the map must not treat the same press as a click, and the
+        // drop is resolved here where the camera can produce a ground point.
         editor.hover_axis = None;
         editor.hover_key = None;
-    }
-
-    if editing {
+        if mouse.just_released(MouseButton::Left) {
+            if let (Some(draft), Some(position)) = (editor.asset_drag.take(), pointer_pos)
+                && viewport.contains(position)
+                && let Some(world) = ground_point(camera, camera_transform, position, editor)
+                && let Some(geo) = editor.map_state.world_to_geo(world.x, world.z)
+            {
+                editor.add_asset_marker(&draft, editor.snap_point(geo));
+            }
+        } else if !mouse.pressed(MouseButton::Left) {
+            // egui cancelled the drag (Esc) or the button went up off-window.
+            editor.asset_drag = None;
+        }
+    } else if editing {
         if mouse.just_pressed(MouseButton::Left) {
             editor.context_menu = None;
         }
@@ -163,6 +205,35 @@ pub fn editor_input(
     } else {
         editor.drag = DragState::None;
         editor.context_menu = None;
+        editor.asset_drag = None;
+        if editor.preview && editor.loaded {
+            play_input(
+                editor,
+                &mouse,
+                &keys,
+                pointer_pos,
+                inside_viewport,
+                camera,
+                camera_transform,
+            );
+        } else {
+            editor.hover_key = None;
+            editor.hover_axis = None;
+        }
+    }
+
+    play_frame.active = editor.play.active;
+    play_frame.units.clear();
+    if editor.play.active {
+        play_frame
+            .units
+            .extend(editor.play.units.iter().map(|(key, unit)| EditorPlayUnit {
+                key: *key,
+                lon: unit.position.longitude,
+                lat: unit.position.latitude,
+                heading_deg: unit.heading_deg,
+                moving: unit.target.is_some(),
+            }));
     }
 
     if render.revision != editor.render_revision {
@@ -198,6 +269,96 @@ fn apply_requests(
     }
 }
 
+/// RTS input used while the editor is in Play mode. Animated units can be
+/// selected (click / Shift+click / marquee) and ordered to move with a right
+/// click; static markers are neither pickable nor draggable.
+#[allow(clippy::too_many_arguments)]
+fn play_input(
+    editor: &mut EditorState,
+    mouse: &ButtonInput<MouseButton>,
+    keys: &ButtonInput<KeyCode>,
+    pointer: Option<egui::Pos2>,
+    inside_viewport: bool,
+    camera: &Camera,
+    transform: &GlobalTransform,
+) {
+    let additive = keys.pressed(KeyCode::ShiftLeft)
+        || keys.pressed(KeyCode::ShiftRight)
+        || keys.pressed(KeyCode::ControlLeft)
+        || keys.pressed(KeyCode::ControlRight);
+
+    if !inside_viewport {
+        editor.play.marquee = None;
+        editor.play.right_press = None;
+        editor.hover_key = None;
+        editor.hover_axis = None;
+        return;
+    }
+    let Some(position) = pointer else {
+        return;
+    };
+    editor.hover_axis = None;
+    editor.hover_key = editor.play_pick(position);
+
+    if mouse.just_pressed(MouseButton::Left) {
+        if let Some(key) = editor.play_pick(position) {
+            if additive {
+                editor.play_toggle_selected(key);
+            } else {
+                editor.play_select_only(key);
+            }
+            editor.play.marquee = None;
+        } else {
+            if !additive {
+                editor.play_clear_selection();
+            }
+            editor.play.marquee = Some((position, position));
+        }
+    }
+    if mouse.pressed(MouseButton::Left)
+        && let Some((_, current)) = editor.play.marquee.as_mut()
+    {
+        *current = position;
+    }
+    if mouse.just_released(MouseButton::Left)
+        && let Some((start, current)) = editor.play.marquee.take()
+    {
+        let rect = egui::Rect::from_two_pos(start, current);
+        if rect.width() > 3.0 || rect.height() > 3.0 {
+            editor.play_box_select(rect, additive);
+        }
+    }
+
+    if mouse.just_pressed(MouseButton::Right) {
+        editor.play.right_press = Some(position);
+    }
+    if mouse.just_released(MouseButton::Right)
+        && let Some(start) = editor.play.right_press.take()
+        && start.distance(position) <= 4.0
+        && !editor.selected.is_empty()
+        && let Some(world) = ground_point_raw(camera, transform, position)
+        && let Some(target) = editor.map_state.world_to_geo(world.x, world.z)
+    {
+        editor.play_move_selected(target);
+    }
+
+    if keys.just_pressed(KeyCode::Escape) {
+        editor.play_clear_selection();
+    }
+}
+
+/// Ground point under the cursor without the editor's snap grid.
+fn ground_point_raw(
+    camera: &Camera,
+    transform: &GlobalTransform,
+    position: egui::Pos2,
+) -> Option<Vec3> {
+    let ray = camera
+        .viewport_to_world(transform, egui_vec2(position))
+        .ok()?;
+    ray.plane_intersection_point(Vec3::ZERO, InfinitePlane3d::new(Vec3::Y))
+}
+
 fn ground_point(
     camera: &Camera,
     transform: &GlobalTransform,
@@ -225,14 +386,22 @@ fn egui_vec2(position: egui::Pos2) -> Vec2 {
 fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &GlobalTransform) {
     editor.projected.clear();
     editor.labels.clear();
+    editor.text_overlays.clear();
     for object in &editor.objects {
         if !object.visible || !editor.visible.allows(object.object_type()) {
             continue;
         }
-        let points = object.kind.points();
+        let points = match editor.play.units.get(&object.key) {
+            Some(unit) => vec![unit.position],
+            None => object.kind.points(),
+        };
+        let altitude = match &object.kind {
+            super::model::EditorKind::Text(text) => text.altitude as f32,
+            _ => 0.0,
+        };
         let mut screen_points = Vec::with_capacity(points.len());
         for point in &points {
-            let Some(world) = world_of(editor, *point) else {
+            let Some(world) = world_of_at(editor, *point, altitude) else {
                 continue;
             };
             let Ok(screen) = camera.world_to_viewport(transform, world) else {
@@ -250,9 +419,18 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
             screen_points,
             editor.selected.contains(&object.key),
         ));
-        if editor.labels_visible {
+        if let super::model::EditorKind::Text(text) = &object.kind {
+            // Text is content, not a debug label: it stays visible in Play mode
+            // and its size follows the Font field.
+            editor.text_overlays.push((
+                label_position,
+                text.text.clone(),
+                super::model::parse_hex_color(&object.kind.color()),
+                text.font_size.max(6.0) as f32,
+            ));
+        }
+        if editor.labels_visible && !editor.preview {
             let label = match &object.kind {
-                super::model::EditorKind::Text(text) => Some(text.text.clone()),
                 super::model::EditorKind::Marker(_) if object.visible => Some(object.name.clone()),
                 _ => None,
             };
@@ -268,11 +446,46 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
     if editor.labels.len() > 400 {
         editor.labels.truncate(400);
     }
+    if editor.text_overlays.len() > 1_000 {
+        editor.text_overlays.truncate(1_000);
+    }
+
+    // Ground rings for the RTS selection overlay: sample a circle in meters
+    // around every unit and project it, so the ring lies on the map plane
+    // instead of facing the camera.
+    let mut rings = Vec::new();
+    if editor.preview && editor.play.active {
+        const SEGMENTS: usize = 32;
+        for (key, unit) in &editor.play.units {
+            let mut ring = Vec::with_capacity(SEGMENTS);
+            for index in 0..SEGMENTS {
+                let angle = index as f64 / SEGMENTS as f64 * std::f64::consts::TAU;
+                let Ok(point) = GeoPoint::from_local_offset(
+                    unit.position,
+                    unit.radius * angle.cos(),
+                    unit.radius * angle.sin(),
+                ) else {
+                    continue;
+                };
+                if let Some(screen) = project_geo(editor, camera, transform, point) {
+                    ring.push(screen);
+                }
+            }
+            if ring.len() >= 3 {
+                rings.push((*key, ring));
+            }
+        }
+    }
+    editor.play_rings = rings;
 }
 
 fn world_of(editor: &EditorState, point: GeoPoint) -> Option<Vec3> {
+    world_of_at(editor, point, 0.0)
+}
+
+fn world_of_at(editor: &EditorState, point: GeoPoint, altitude: f32) -> Option<Vec3> {
     let (x, z) = editor.map_state.geo_to_world(point)?;
-    Some(Vec3::new(x, 0.0, z))
+    Some(Vec3::new(x, altitude, z))
 }
 
 fn project_geo(
@@ -372,35 +585,40 @@ fn gizmo_axis_at(
     if !editor.tool.changes_gizmo() {
         return None;
     }
-    let marker = editor.primary_marker()?;
+    let (_, target) = editor.primary_transform()?;
     let size = (editor.map_state.meters_per_pixel() as f32 * 90.0).max(1.0);
-    let (x, z) = editor.map_state.geo_to_world(marker.point())?;
-    let anchor = Vec3::new(x, marker.altitude as f32, z);
+    let (x, z) = editor
+        .map_state
+        .geo_to_world(GeoPoint::new(target.lon, target.lat))?;
+    let anchor = Vec3::new(x, target.altitude as f32, z);
     let anchor_screen = camera
         .world_to_viewport(transform, anchor)
         .ok()
         .map(|point| egui::pos2(point.x, point.y))?;
 
-    if editor.tool == EditorTool::Rotate {
-        let mut best = f32::MAX;
-        let mut previous: Option<egui::Pos2> = None;
-        for step in 0..=48 {
-            let angle = step as f32 / 48.0 * std::f32::consts::TAU;
-            let point = anchor + Vec3::new(angle.cos() * size, 0.0, angle.sin() * size);
-            let Ok(screen) = camera.world_to_viewport(transform, point) else {
-                continue;
-            };
-            let screen = egui::pos2(screen.x, screen.y);
-            if let Some(previous) = previous {
-                best = best.min(segment_distance(previous, screen, pointer));
+    match editor.tool {
+        EditorTool::Rotate => ring_axis_at(camera, transform, anchor, size, pointer),
+        EditorTool::Scale => {
+            // The center ring/handle scales every axis at once.
+            if anchor_screen.distance(pointer) <= 30.0 {
+                return Some(EditorGizmoAxis::Uniform);
             }
-            previous = Some(screen);
+            handle_axis_at(camera, transform, anchor, anchor_screen, size, pointer)
         }
-        if best <= 10.0 {
-            return Some(EditorGizmoAxis::RotateY);
-        }
+        EditorTool::Move => handle_axis_at(camera, transform, anchor, anchor_screen, size, pointer),
+        _ => None,
     }
+}
 
+/// Picks the straight axis handle under the pointer (move and scale gizmos).
+fn handle_axis_at(
+    camera: &Camera,
+    transform: &GlobalTransform,
+    anchor: Vec3,
+    anchor_screen: egui::Pos2,
+    size: f32,
+    pointer: egui::Pos2,
+) -> Option<EditorGizmoAxis> {
     let axes = [
         (EditorGizmoAxis::X, Vec3::X),
         (EditorGizmoAxis::Y, Vec3::Y),
@@ -419,6 +637,61 @@ fn gizmo_axis_at(
         }
     }
     best.map(|(_, axis)| axis)
+}
+
+/// Picks the rotation ring under the pointer. Each ring lives in the plane
+/// perpendicular to its axis.
+fn ring_axis_at(
+    camera: &Camera,
+    transform: &GlobalTransform,
+    anchor: Vec3,
+    size: f32,
+    pointer: egui::Pos2,
+) -> Option<EditorGizmoAxis> {
+    let rings = [
+        (EditorGizmoAxis::RotateX, Vec3::Y, Vec3::Z),
+        (EditorGizmoAxis::RotateY, Vec3::X, Vec3::Z),
+        (EditorGizmoAxis::RotateZ, Vec3::X, Vec3::Y),
+    ];
+    let mut best: Option<(f32, EditorGizmoAxis)> = None;
+    for (axis, u, v) in rings {
+        let mut previous: Option<egui::Pos2> = None;
+        let mut distance_to_ring = f32::MAX;
+        for step in 0..=64 {
+            let angle = step as f32 / 64.0 * std::f32::consts::TAU;
+            let point = anchor + (u * angle.cos() + v * angle.sin()) * size;
+            let Ok(screen) = camera.world_to_viewport(transform, point) else {
+                continue;
+            };
+            let screen = egui::pos2(screen.x, screen.y);
+            if let Some(previous) = previous {
+                distance_to_ring =
+                    distance_to_ring.min(segment_distance(previous, screen, pointer));
+            }
+            previous = Some(screen);
+        }
+        if distance_to_ring <= 10.0 && best.is_none_or(|(current, _)| distance_to_ring < current) {
+            best = Some((distance_to_ring, axis));
+        }
+    }
+    best.map(|(_, axis)| axis)
+}
+
+/// Screen position of the gizmo origin (the primary transformable object).
+fn gizmo_center_screen(
+    editor: &EditorState,
+    camera: &Camera,
+    transform: &GlobalTransform,
+) -> Option<egui::Pos2> {
+    let (_, target) = editor.primary_transform()?;
+    let (x, z) = editor
+        .map_state
+        .geo_to_world(GeoPoint::new(target.lon, target.lat))?;
+    let anchor = Vec3::new(x, target.altitude as f32, z);
+    camera
+        .world_to_viewport(transform, anchor)
+        .ok()
+        .map(|point| egui::pos2(point.x, point.y))
 }
 
 fn keyboard_shortcuts(
@@ -444,37 +717,36 @@ fn keyboard_shortcuts(
             editor.delete_selected();
         }
         if keys.just_pressed(KeyCode::Digit1) {
-            editor.tool = EditorTool::Marker;
+            editor.set_tool(EditorTool::Shape);
         }
         if keys.just_pressed(KeyCode::Digit2) {
-            editor.tool = EditorTool::Line;
+            editor.set_tool(EditorTool::Line);
         }
         if keys.just_pressed(KeyCode::Digit3) {
-            editor.tool = EditorTool::Polygon;
+            editor.set_tool(EditorTool::Text);
         }
         if keys.just_pressed(KeyCode::Digit4) {
-            editor.tool = EditorTool::Text;
-        }
-        if keys.just_pressed(KeyCode::Digit5) {
-            editor.tool = EditorTool::Measure;
+            editor.set_tool(EditorTool::Measure);
         }
         if keys.just_pressed(KeyCode::KeyQ) {
-            editor.tool = EditorTool::Select;
+            editor.set_tool(EditorTool::Select);
         }
         if keys.just_pressed(KeyCode::KeyW) {
-            editor.tool = EditorTool::Move;
+            editor.set_tool(EditorTool::Move);
         }
         if keys.just_pressed(KeyCode::KeyE) {
-            editor.tool = EditorTool::Rotate;
+            editor.set_tool(EditorTool::Rotate);
         }
         if keys.just_pressed(KeyCode::KeyR) {
-            editor.tool = EditorTool::Scale;
+            editor.set_tool(EditorTool::Scale);
         }
         if keys.just_pressed(KeyCode::Enter) {
             finish_draft(editor);
         }
         if keys.just_pressed(KeyCode::Escape) {
-            if editor.draft.is_active() {
+            if editor.asset_drag.is_some() {
+                editor.asset_drag = None;
+            } else if editor.draft.is_active() {
                 editor.draft.clear();
             } else if editor.measure.start.is_some() {
                 editor.measure = Default::default();
@@ -512,33 +784,43 @@ fn mouse_input(
             .map(|point| editor.snap_point(point));
 
         if let Some(axis) = gizmo_axis_at(editor, camera, transform, pointer) {
-            begin_gizmo_drag(editor, axis, world, pointer);
+            let center = gizmo_center_screen(editor, camera, transform);
+            begin_gizmo_drag(editor, axis, world, pointer, center);
             return;
         }
 
         match editor.tool {
-            EditorTool::Marker => {
+            EditorTool::Shape => {
                 if let Some(geo) = geo {
-                    editor.add_marker(geo, editor.active_unit);
+                    if editor.active_shape == EditorShapeKind::Custom {
+                        if !matches!(editor.draft, Draft::Polygon(_)) {
+                            editor.draft = Draft::Polygon(Vec::new());
+                        }
+                        editor.draft.push(geo);
+                        let double_click = editor.last_click.is_some_and(|(last, position)| {
+                            now - last < 0.35 && position.distance(pointer) < 6.0
+                        });
+                        if double_click {
+                            finish_draft(editor);
+                        }
+                        editor.last_click = Some((now, pointer));
+                    } else {
+                        editor.add_shape(editor.active_shape, geo);
+                        // One click creates one shape; go back to Select so the
+                        // next click does not place another shape by accident.
+                        editor.set_tool(EditorTool::Select);
+                    }
                 }
             }
             EditorTool::Text => {
                 if let Some(geo) = geo {
                     editor.add_text(geo);
+                    editor.set_tool(EditorTool::Select);
                 }
             }
-            EditorTool::Line | EditorTool::Polygon => {
-                let polygon = editor.tool == EditorTool::Polygon;
-                let matches_kind = matches!(
-                    (&editor.draft, polygon),
-                    (Draft::Line(_), false) | (Draft::Polygon(_), true)
-                );
-                if !matches_kind {
-                    editor.draft = if polygon {
-                        Draft::Polygon(Vec::new())
-                    } else {
-                        Draft::Line(Vec::new())
-                    };
+            EditorTool::Line => {
+                if !matches!(editor.draft, Draft::Line(_)) {
+                    editor.draft = Draft::Line(Vec::new());
                 }
                 if let Some(geo) = geo {
                     editor.draft.push(geo);
@@ -571,8 +853,8 @@ fn mouse_input(
                     } else if !editor.selected.contains(&key) {
                         editor.select_only(key);
                     }
-                    let selection_has_marker = editor.primary_marker().is_some();
-                    if selection_has_marker
+                    let selection_transformable = editor.primary_transform().is_some();
+                    if selection_transformable
                         && matches!(editor.tool, EditorTool::Select | EditorTool::Move)
                     {
                         let originals = selected_points(editor);
@@ -636,58 +918,80 @@ fn begin_gizmo_drag(
     axis: EditorGizmoAxis,
     world: Vec3,
     pointer: egui::Pos2,
+    center_screen: Option<egui::Pos2>,
 ) {
     let originals = editor
         .selected
         .iter()
         .filter_map(|key| {
             let object = editor.object(*key)?;
-            match &object.kind {
-                super::model::EditorKind::Marker(marker) => Some((
-                    *key,
-                    (marker.lon, marker.lat, marker.altitude, marker.rot_y),
-                )),
-                _ => None,
-            }
+            let transform = object.kind.transform()?;
+            Some((
+                *key,
+                (
+                    [transform.lon, transform.lat, transform.altitude],
+                    transform.rot,
+                    transform.scale,
+                ),
+            ))
         })
         .collect::<Vec<_>>();
     if originals.is_empty() {
         return;
     }
-    editor.push_undo();
-    if axis == EditorGizmoAxis::RotateY {
-        let Some(marker) = editor.primary_marker() else {
-            return;
-        };
-        let (x, z) = editor
-            .map_state
-            .geo_to_world(marker.point())
-            .unwrap_or((0.0, 0.0));
-        let start_angle = (world.z - z).atan2(world.x - x);
-        editor.drag = DragState::Rotate {
-            originals: originals.iter().map(|(key, data)| (*key, data.3)).collect(),
-            start_angle,
-        };
-    } else if editor.tool == EditorTool::Scale {
-        editor.drag = DragState::Scale {
-            axis,
-            originals: originals
-                .iter()
-                .map(|(key, data)| (*key, [data.0, data.1, data.2]))
-                .collect(),
-            start_world: world,
-            start_screen: pointer,
-        };
-    } else {
-        editor.drag = DragState::Gizmo {
-            axis,
-            original: originals
-                .iter()
-                .map(|(key, data)| (*key, [data.0, data.1, data.2]))
-                .collect(),
-            start_world: world,
-            start_screen: pointer,
-        };
+    match axis {
+        EditorGizmoAxis::RotateX | EditorGizmoAxis::RotateY | EditorGizmoAxis::RotateZ => {
+            let Some(center) = center_screen else {
+                return;
+            };
+            let start_angle = (pointer.y - center.y).atan2(pointer.x - center.x);
+            editor.push_undo();
+            editor.drag = DragState::Rotate {
+                axis,
+                originals: originals
+                    .iter()
+                    .map(|(key, (_, rotation, _))| (*key, *rotation))
+                    .collect(),
+                center_screen: center,
+                start_angle,
+            };
+        }
+        EditorGizmoAxis::Uniform => {
+            editor.push_undo();
+            editor.drag = DragState::Scale {
+                axis,
+                originals: originals
+                    .iter()
+                    .map(|(key, (_, _, scale))| (*key, *scale))
+                    .collect(),
+                start_world: world,
+                start_screen: pointer,
+            };
+        }
+        _ if editor.tool == EditorTool::Scale => {
+            editor.push_undo();
+            editor.drag = DragState::Scale {
+                axis,
+                originals: originals
+                    .iter()
+                    .map(|(key, (_, _, scale))| (*key, *scale))
+                    .collect(),
+                start_world: world,
+                start_screen: pointer,
+            };
+        }
+        _ => {
+            editor.push_undo();
+            editor.drag = DragState::Gizmo {
+                axis,
+                original: originals
+                    .iter()
+                    .map(|(key, (position, _, _))| (*key, *position))
+                    .collect(),
+                start_world: world,
+                start_screen: pointer,
+            };
+        }
     }
 }
 
@@ -709,11 +1013,16 @@ fn update_drag(
             let Ok(offset) = current.local_offset(start) else {
                 return;
             };
-            for (key, _) in originals {
+            for (key, original) in originals {
                 let Some(object) = editor.object_mut(key) else {
                     continue;
                 };
-                offset_object(&mut object.kind, offset.east_meters, offset.north_meters);
+                let Ok(target) =
+                    GeoPoint::from_local_offset(original, offset.east_meters, offset.north_meters)
+                else {
+                    continue;
+                };
+                object.kind.set_position(target);
                 object.dirty = true;
             }
             editor.dirty = true;
@@ -734,34 +1043,53 @@ fn update_drag(
                 };
                 (world - start_world).dot(direction)
             };
+            // Convert the ground displacement from the drag origin into a geo
+            // offset once, then place every object from its original anchor.
+            // Applying `offset_object` here would add the cumulative delta on
+            // top of the current position on every frame and make objects
+            // accelerate away from the pointer.
+            let offset = if axis == EditorGizmoAxis::Y {
+                None
+            } else {
+                let target_world = start_world + direction * delta;
+                let Some(start_geo) = editor.map_state.world_to_geo(start_world.x, start_world.z)
+                else {
+                    return;
+                };
+                let Some(target_geo) = editor
+                    .map_state
+                    .world_to_geo(target_world.x, target_world.z)
+                else {
+                    return;
+                };
+                match target_geo.local_offset(start_geo) {
+                    Ok(offset) => Some(offset),
+                    Err(_) => return,
+                }
+            };
             for (key, data) in original {
                 let Some(object) = editor.object_mut(key) else {
                     continue;
                 };
-                let super::model::EditorKind::Marker(marker) = &mut object.kind else {
-                    continue;
-                };
                 match axis {
-                    EditorGizmoAxis::X => {
-                        if let Ok(point) = GeoPoint::from_local_offset(
-                            GeoPoint::new(data[0], data[1]),
-                            delta as f64,
-                            0.0,
-                        ) {
-                            marker.set_point(point);
+                    EditorGizmoAxis::X | EditorGizmoAxis::Z => {
+                        if let Some(offset) = offset
+                            && let Ok(target) = GeoPoint::from_local_offset(
+                                GeoPoint::new(data[0], data[1]),
+                                offset.east_meters,
+                                offset.north_meters,
+                            )
+                        {
+                            object.kind.set_position(target);
                         }
                     }
-                    EditorGizmoAxis::Y => marker.altitude = (data[2] + delta as f64).max(0.0),
-                    EditorGizmoAxis::Z => {
-                        if let Ok(point) = GeoPoint::from_local_offset(
-                            GeoPoint::new(data[0], data[1]),
-                            0.0,
-                            -(delta as f64),
-                        ) {
-                            marker.set_point(point);
-                        }
+                    EditorGizmoAxis::Y => {
+                        object.kind.set_altitude((data[2] + delta as f64).max(0.0));
                     }
-                    EditorGizmoAxis::RotateY => {}
+                    EditorGizmoAxis::RotateX
+                    | EditorGizmoAxis::RotateY
+                    | EditorGizmoAxis::RotateZ
+                    | EditorGizmoAxis::Uniform => {}
                 }
                 object.dirty = true;
             }
@@ -769,29 +1097,33 @@ fn update_drag(
             editor.touch();
         }
         DragState::Rotate {
+            axis,
             originals,
+            center_screen,
             start_angle,
         } => {
-            let Some(world) = editor.cursor_world else {
-                return;
-            };
-            let Some(marker) = editor.primary_marker() else {
-                return;
-            };
-            let (x, z) = editor
-                .map_state
-                .geo_to_world(marker.point())
-                .unwrap_or((0.0, 0.0));
-            let angle = (world.z - z).atan2(world.x - x);
-            let delta = (angle - start_angle).to_degrees() as f64;
+            let angle = (pointer.y - center_screen.y).atan2(pointer.x - center_screen.x);
+            // Screen angles grow clockwise; the stored rotations follow the
+            // opposite convention.
+            let mut delta = -(angle - start_angle).to_degrees() as f64;
+            if delta > 180.0 {
+                delta -= 360.0;
+            } else if delta < -180.0 {
+                delta += 360.0;
+            }
             for (key, original) in originals {
                 let Some(object) = editor.object_mut(key) else {
                     continue;
                 };
-                if let super::model::EditorKind::Marker(marker) = &mut object.kind {
-                    marker.rot_y = (original + delta).rem_euclid(360.0);
-                    object.dirty = true;
-                }
+                let axis_index = match axis {
+                    EditorGizmoAxis::RotateX => 0,
+                    EditorGizmoAxis::RotateY => 1,
+                    EditorGizmoAxis::RotateZ => 2,
+                    _ => continue,
+                };
+                let value = (original[axis_index] + delta).rem_euclid(360.0);
+                object.kind.set_rotation_axis(axis_index, value);
+                object.dirty = true;
             }
             editor.dirty = true;
             editor.touch();
@@ -802,29 +1134,43 @@ fn update_drag(
             start_world,
             start_screen,
         } => {
-            let direction = axis_vector(axis);
-            let delta = if axis == EditorGizmoAxis::Y {
-                (start_screen.y - pointer.y) * editor.map_state.meters_per_pixel() as f32
+            let factor = if axis == EditorGizmoAxis::Uniform {
+                // Uniform scaling follows the pointer drag from the click point
+                // (dragging right/up grows, left/down shrinks).
+                let delta = (pointer.x - start_screen.x) + (start_screen.y - pointer.y);
+                (1.0 + delta / 140.0).clamp(0.1, 10.0) as f64
             } else {
-                let Some(world) = editor.cursor_world else {
-                    return;
+                let direction = axis_vector(axis);
+                let delta = if axis == EditorGizmoAxis::Y {
+                    (start_screen.y - pointer.y) * editor.map_state.meters_per_pixel() as f32
+                } else {
+                    let Some(world) = editor.cursor_world else {
+                        return;
+                    };
+                    (world - start_world).dot(direction)
                 };
-                (world - start_world).dot(direction)
+                (1.0_f32 + delta / 60.0).clamp(0.1, 10.0) as f64
             };
-            let factor = (1.0_f32 + delta / 60.0).clamp(0.1, 10.0) as f64;
             for (key, original) in originals {
                 let Some(object) = editor.object_mut(key) else {
                     continue;
                 };
-                if let super::model::EditorKind::Marker(marker) = &mut object.kind {
-                    match axis {
-                        EditorGizmoAxis::X => marker.scale_x = (original[0] * factor).max(0.05),
-                        EditorGizmoAxis::Y => marker.scale_y = (original[1] * factor).max(0.05),
-                        EditorGizmoAxis::Z => marker.scale_z = (original[2] * factor).max(0.05),
-                        EditorGizmoAxis::RotateY => {}
+                let mut scale = original;
+                match axis {
+                    EditorGizmoAxis::X => scale[0] = (original[0] * factor).max(MIN_MARKER_SCALE),
+                    EditorGizmoAxis::Y => scale[1] = (original[1] * factor).max(MIN_MARKER_SCALE),
+                    EditorGizmoAxis::Z => scale[2] = (original[2] * factor).max(MIN_MARKER_SCALE),
+                    EditorGizmoAxis::Uniform => {
+                        scale = [
+                            (original[0] * factor).max(MIN_MARKER_SCALE),
+                            (original[1] * factor).max(MIN_MARKER_SCALE),
+                            (original[2] * factor).max(MIN_MARKER_SCALE),
+                        ];
                     }
-                    object.dirty = true;
+                    _ => continue,
                 }
+                object.kind.set_scale(scale);
+                object.dirty = true;
             }
             editor.dirty = true;
             editor.touch();
@@ -844,15 +1190,22 @@ fn axis_vector(axis: EditorGizmoAxis) -> Vec3 {
         EditorGizmoAxis::X => Vec3::X,
         EditorGizmoAxis::Y => Vec3::Y,
         EditorGizmoAxis::Z => Vec3::Z,
-        EditorGizmoAxis::RotateY => Vec3::Y,
+        EditorGizmoAxis::RotateX | EditorGizmoAxis::RotateY | EditorGizmoAxis::RotateZ => Vec3::Y,
+        EditorGizmoAxis::Uniform => Vec3::ONE,
     }
 }
 
 fn finish_draft(editor: &mut EditorState) {
     let draft = std::mem::take(&mut editor.draft);
     match draft {
-        Draft::Line(points) if points.len() >= 2 => editor.add_line(points),
-        Draft::Polygon(points) if points.len() >= 3 => editor.add_polygon(points),
+        Draft::Line(points) if points.len() >= 2 => {
+            editor.add_line(points);
+            editor.set_tool(EditorTool::Select);
+        }
+        Draft::Polygon(points) if points.len() >= 3 => {
+            editor.add_polygon(points);
+            editor.set_tool(EditorTool::Select);
+        }
         _ => {}
     }
 }
@@ -884,4 +1237,42 @@ pub fn distance_meters(a: GeoPoint, b: GeoPoint) -> f64 {
 pub fn select_all(editor: &mut EditorState) {
     editor.selected = editor.objects.iter().map(|object| object.key).collect();
     editor.touch();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finishing_a_line_returns_to_select() {
+        let mut editor = EditorState::new();
+        editor.loaded = true;
+        editor.set_tool(EditorTool::Line);
+        editor.draft = Draft::Line(vec![
+            GeoPoint::new(115.225, -8.648),
+            GeoPoint::new(115.226, -8.649),
+        ]);
+
+        finish_draft(&mut editor);
+
+        assert_eq!(editor.tool, EditorTool::Select);
+        assert_eq!(editor.objects.len(), 1);
+    }
+
+    #[test]
+    fn finishing_a_custom_polygon_returns_to_select() {
+        let mut editor = EditorState::new();
+        editor.loaded = true;
+        editor.set_tool(EditorTool::Shape);
+        editor.draft = Draft::Polygon(vec![
+            GeoPoint::new(115.225, -8.648),
+            GeoPoint::new(115.226, -8.648),
+            GeoPoint::new(115.226, -8.649),
+        ]);
+
+        finish_draft(&mut editor);
+
+        assert_eq!(editor.tool, EditorTool::Select);
+        assert_eq!(editor.objects.len(), 1);
+    }
 }

@@ -150,6 +150,10 @@ pub fn router(state: AppState) -> Router {
             put(handlers::markers::update_name),
         )
         .route(
+            "/private/markers/unit/{id}",
+            put(handlers::markers::update_unit),
+        )
+        .route(
             "/private/markers/scale/{id}",
             put(handlers::markers::update_scale),
         )
@@ -404,6 +408,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/admin/assets/{id}",
             put(handlers::assets::update).delete(handlers::assets::delete),
+        )
+        .route(
+            "/admin/assets/{id}/source",
+            post(handlers::assets::replace_source),
         )
         .route(
             "/admin/assets/{id}/convert",
@@ -1165,20 +1173,26 @@ mod tests {
     #[tokio::test]
     async fn asset_writes_are_admin_only() {
         let app = router(test_state(100));
+        let asset_id = Uuid::nil();
         for username in ["baselineuser", "baselinemonitor", "baselineadminsatker"] {
             let session = login(app.clone(), username, "device-1").await;
-            let (status, _, body) = send(
-                app.clone(),
-                Method::POST,
-                "/admin/assets",
-                None,
-                &[
-                    ("authorization", bearer(&session).as_str()),
-                    ("x-device-id", "device-1"),
-                ],
-            )
-            .await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{username}: {body}");
+            for path in [
+                "/admin/assets".to_owned(),
+                format!("/admin/assets/{asset_id}/source"),
+            ] {
+                let (status, _, body) = send(
+                    app.clone(),
+                    Method::POST,
+                    &path,
+                    None,
+                    &[
+                        ("authorization", bearer(&session).as_str()),
+                        ("x-device-id", "device-1"),
+                    ],
+                )
+                .await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{username} {path}: {body}");
+            }
         }
     }
 
@@ -1198,6 +1212,27 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["message"], "database is not available");
+    }
+
+    #[tokio::test]
+    async fn marker_unit_update_needs_a_database() {
+        let app = router(test_state(100));
+        let session = login(app.clone(), "baselineuser", "device-1").await;
+        let marker_id = Uuid::nil();
+        let unit_id = Uuid::new_v4().to_string();
+        let (status, _, body) = send(
+            app,
+            Method::PUT,
+            &format!("/private/markers/unit/{marker_id}"),
+            Some(json!({ "unit_id": unit_id })),
+            &[
+                ("authorization", bearer(&session).as_str()),
+                ("x-device-id", "device-1"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert_eq!(body["message"], "database is not available");
     }
 

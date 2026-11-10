@@ -3,16 +3,23 @@ use bevy::prelude::*;
 
 mod editor;
 mod map;
+mod preview;
 mod stress;
 
 pub use editor::{
-    EditorGizmo, EditorGizmoAxis, EditorGrid, EditorMode, EditorRenderPlugin, EditorScene,
-    EditorSceneKind, EditorSceneObject,
+    EditorGizmo, EditorGizmoAxis, EditorGizmoMode, EditorGrid, EditorMode, EditorModelShading,
+    EditorPlayFrame, EditorPlayModel, EditorPlayUnit, EditorRenderPlugin, EditorScene,
+    EditorSceneKind, EditorSceneObject, EditorShapeKind,
 };
 pub use map::{
     BaseLayerResource, CAMERA_FOV_Y, CameraFlightState, DemoMarker, GeoAnchor, MapCamera,
     MapCameraResource, MapCursorResource, MapRenderPlugin, MapUpdateSet, Tile, TileProxyConfig,
     TileWorld, UiPointerState,
+};
+pub use preview::{
+    AssetPreview, AssetPreviewPlugin, AssetPreviewRequest, ImagePreviewKey, ModelPreviewKey,
+    PREVIEW_LAYER_BASE, PREVIEW_SIZE, PREVIEW_SLOTS, PreviewOrbitInput, PreviewOrbitInputs,
+    PreviewPhase, PreviewSource,
 };
 pub use stress::{
     ANIMATED_MODEL, ANIMATED_MODEL_DRACO, ANIMATED_MODEL_LOD, ANIMATED_MODEL_LOD_DRACO, BenchPhase,
@@ -35,6 +42,7 @@ impl Plugin for TacticalRenderPlugin {
                 MapRenderPlugin,
                 EditorRenderPlugin,
                 StressPlugin,
+                AssetPreviewPlugin,
             ));
     }
 }

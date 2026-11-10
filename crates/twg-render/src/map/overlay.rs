@@ -213,7 +213,7 @@ fn quad_mesh(width: f32, depth: f32, height: f32) -> Mesh {
         Mesh::ATTRIBUTE_UV_0,
         VertexAttributeValues::Float32x2(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
     );
-    mesh.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
+    mesh.insert_indices(Indices::U32(vec![0, 2, 1, 0, 3, 2]));
     mesh
 }
 

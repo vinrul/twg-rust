@@ -1,14 +1,36 @@
 use std::collections::HashMap;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::gltf::GltfAssetLabel;
+use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
 use bevy::image::Image;
+use bevy::mesh::VertexAttributeValues;
+use bevy::pbr::wireframe::Wireframe;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::world_serialization::{WorldAsset, WorldAssetRoot};
 use twg_map::GeoPoint;
 
 use super::mesh;
 use crate::map::{GeoAnchor, MapCameraResource};
+
+/// Per-frame RTS play state pushed by the UI layer. Unlike [`EditorScene`]
+/// this resource is updated every frame and never rebuilds the entity graph;
+/// it only moves and animates the existing marker roots.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct EditorPlayFrame {
+    pub active: bool,
+    pub units: Vec<EditorPlayUnit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorPlayUnit {
+    pub key: u64,
+    pub lon: f64,
+    pub lat: f64,
+    /// Bearing in degrees clockwise from north.
+    pub heading_deg: f32,
+    pub moving: bool,
+}
 
 /// Enables editing behaviour and tells map input to stop using left-drag for
 /// panning. `preview` keeps the scene visible while disabling editor input.
@@ -28,6 +50,89 @@ pub struct EditorScene {
     pub objects: Vec<EditorSceneObject>,
     pub grid: Option<EditorGrid>,
     pub gizmo: Option<EditorGizmo>,
+    /// Shading used for imported glTF models in the editor viewport.
+    pub model_shading: EditorModelShading,
+}
+
+/// Viewport shading for imported models, mirroring Blender's modes. Only the
+/// editor uses it; gameplay/simulation always renders textures.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EditorModelShading {
+    #[default]
+    Textured,
+    Solid,
+    Wireframe,
+}
+
+impl EditorModelShading {
+    pub const ALL: [Self; 3] = [Self::Textured, Self::Solid, Self::Wireframe];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Textured => "Texture",
+            Self::Solid => "Solid",
+            Self::Wireframe => "Wireframe",
+        }
+    }
+}
+
+/// Primitive shape used by editor "Bentuk" objects. Custom uses the authored
+/// footprint polygon (the old building/polygon behaviour).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum EditorShapeKind {
+    #[default]
+    Box,
+    Cylinder,
+    Sphere,
+    Cone,
+    Ground,
+    Custom,
+}
+
+impl EditorShapeKind {
+    pub const ALL: [Self; 6] = [
+        Self::Box,
+        Self::Cylinder,
+        Self::Sphere,
+        Self::Cone,
+        Self::Ground,
+        Self::Custom,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Box => "Kubus / Kotak",
+            Self::Cylinder => "Silinder",
+            Self::Sphere => "Bola",
+            Self::Cone => "Kerucut",
+            Self::Ground => "Plane / Ground",
+            Self::Custom => "Custom mesh",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Box => "box",
+            Self::Cylinder => "cylinder",
+            Self::Sphere => "sphere",
+            Self::Cone => "cone",
+            Self::Ground => "ground",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        match key.trim().to_ascii_lowercase().as_str() {
+            "box" | "cube" | "kubus" => Self::Box,
+            "cylinder" | "silinder" => Self::Cylinder,
+            "sphere" | "bola" => Self::Sphere,
+            "cone" | "kerucut" => Self::Cone,
+            // Legacy scenarios stored the old flat disc as `circle`; keep them
+            // as a plane so their footprint stays flat.
+            "circle" | "ground" | "plane" => Self::Ground,
+            _ => Self::Custom,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,10 +146,30 @@ pub struct EditorSceneObject {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct EditorPlayModel {
+    pub model: String,
+    pub draco: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum EditorSceneKind {
     Marker {
         model: String,
         base_scale: f32,
+        /// When set, the spawned mesh is rescaled once it loads so its own
+        /// height matches this value in meters. Used by models coming from the
+        /// asset library, whose export units are unknown.
+        normalize_height: Option<f32>,
+        /// The model uses `KHR_draco_mesh_compression`.
+        draco: bool,
+        /// Load the whole glTF scene (with its own materials and textures)
+        /// instead of the first primitive with a tint colour. Used by models
+        /// coming from the asset library.
+        scene_asset: bool,
+        /// Play only: the model holds an animation clip. `model` is the
+        /// animated file used while the unit moves; this is the idle file that
+        /// is shown again once the unit stops.
+        play_idle: Option<EditorPlayModel>,
         rotation_deg: [f32; 3],
         scale: [f32; 3],
         altitude: f32,
@@ -57,9 +182,15 @@ pub enum EditorSceneKind {
         alpha: f32,
     },
     Building {
+        shape: EditorShapeKind,
         points: Vec<[f64; 2]>,
         height: f32,
         color: [f32; 4],
+        rotation_deg: [f32; 3],
+        scale: [f32; 3],
+        altitude: f32,
+        /// Cached/remote image path used as the base colour texture.
+        texture: Option<String>,
     },
     Text {
         color: [f32; 4],
@@ -85,7 +216,20 @@ pub enum EditorGizmoAxis {
     X,
     Y,
     Z,
+    RotateX,
     RotateY,
+    RotateZ,
+    /// Center handle that scales every axis at once.
+    Uniform,
+}
+
+/// Which handles the transform gizmo shows. The editor toolbar picks this from
+/// the active tool so the gizmo matches move/rotate/scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorGizmoMode {
+    Move,
+    Rotate,
+    Scale,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,9 +237,8 @@ pub struct EditorGizmo {
     pub lon: f64,
     pub lat: f64,
     pub altitude: f32,
+    pub mode: EditorGizmoMode,
     pub active_axis: Option<EditorGizmoAxis>,
-    pub show_rotate: bool,
-    pub show_scale: bool,
 }
 
 #[derive(Resource, Default)]
@@ -109,6 +252,28 @@ pub(crate) struct EditorRenderCache {
     marker_materials: HashMap<[u8; 4], Handle<StandardMaterial>>,
     gizmo_meshes: Option<GizmoMeshes>,
     gizmo_materials: Option<GizmoMaterials>,
+    solid_material: Option<Handle<StandardMaterial>>,
+    wire_material: Option<Handle<StandardMaterial>>,
+    /// Animation graph and clip index per animated model path.
+    marker_animations: HashMap<String, (Handle<AnimationGraph>, AnimationNodeIndex)>,
+    /// Unit primitive meshes shared by all shape objects.
+    shape_meshes: HashMap<EditorShapeKind, Handle<Mesh>>,
+    /// Materials for shape objects, keyed by colour + texture path.
+    building_materials: HashMap<([u8; 4], Option<String>), Handle<StandardMaterial>>,
+    /// Loaded image textures used by shape objects.
+    building_textures: HashMap<String, Handle<Image>>,
+    /// Warm glTF scene handles for Play mode (idle + animated files), so
+    /// swapping a unit between them does not wait for a cold asset load.
+    play_scene_assets: HashMap<String, Handle<WorldAsset>>,
+    /// Hidden scene roots kept for reuse when a unit switches between idle and
+    /// animated state, keyed by model path. Bounded to avoid keeping too much
+    /// duplicate instance data alive.
+    idle_pool: HashMap<String, Vec<Entity>>,
+    animated_pool: HashMap<String, Vec<Entity>>,
+    /// Active Play root per editor object key, with its current scene mode
+    /// (`true` = animated). Tracked explicitly so swaps never depend on the
+    /// timing of deferred commands.
+    play_roots: HashMap<u64, (Entity, bool)>,
     floor_image: Option<Handle<Image>>,
     floor_material: Option<Handle<StandardMaterial>>,
 }
@@ -126,11 +291,57 @@ struct GizmoMaterials {
     x: Handle<StandardMaterial>,
     y: Handle<StandardMaterial>,
     z: Handle<StandardMaterial>,
+    uniform: Handle<StandardMaterial>,
     highlight: Handle<StandardMaterial>,
 }
 
 #[derive(Component)]
 pub(crate) struct EditorGizmoRoot;
+
+/// Requests a one-time rescale of a marker mesh once its asset has loaded.
+#[derive(Component)]
+pub(crate) struct MarkerNormalize {
+    height: f32,
+}
+
+#[derive(Component)]
+pub(crate) struct MarkerNormalized;
+
+/// Shading requested for the glTF scene root of a marker.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct MarkerShading(pub EditorModelShading);
+
+/// Marks a scene mesh whose material has already been overridden.
+#[derive(Component)]
+pub(crate) struct ShadingApplied;
+
+/// Links a rendered marker root to its editor object key.
+#[derive(Component)]
+pub(crate) struct EditorPlayKey(pub u64);
+
+/// Play-mode animation state for an animated marker root. The `AnimationPlayer`
+/// is created by the glTF scene instance, so it is looked up once and cached.
+#[derive(Component)]
+pub(crate) struct EditorPlayAnimation {
+    graph: Handle<AnimationGraph>,
+    index: AnimationNodeIndex,
+    player: Option<Entity>,
+}
+
+/// Upper bound for pooled scene roots per model path and for the whole pool.
+const PLAY_POOL_PER_MODEL: usize = 128;
+const PLAY_POOL_TOTAL: usize = 512;
+/// Maximum number of new scene instances per frame. Releases still happen
+/// immediately; only spawns are spread over frames so a large group changing
+/// state at once does not cause a single-frame hitch.
+const PLAY_SPAWN_BUDGET: usize = 64;
+
+impl EditorRenderCache {
+    fn pooled_roots(&self) -> usize {
+        self.idle_pool.values().map(Vec::len).sum::<usize>()
+            + self.animated_pool.values().map(Vec::len).sum::<usize>()
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn sync_editor_scene(
@@ -152,6 +363,10 @@ pub fn sync_editor_scene(
     for entity in cache.entities.drain(..) {
         commands.entity(entity).despawn();
     }
+    // Pooled roots were part of `cache.entities`, so they were just despawned.
+    cache.idle_pool.clear();
+    cache.animated_pool.clear();
+    cache.play_roots.clear();
     if let Some(entity) = cache.gizmo.take() {
         commands.entity(entity).despawn();
     }
@@ -187,6 +402,7 @@ pub fn sync_editor_scene(
             &mut cache,
             object,
             ground_scale,
+            scene.model_shading,
         );
     }
 
@@ -202,6 +418,430 @@ pub fn sync_editor_scene(
     }
 }
 
+/// Rescales a marker mesh once the glTF primitive is loaded. The asset library
+/// stores the export as-is, so the model's own units are unknown; matching a
+/// target height keeps newly added markers visible at a comparable size.
+pub(crate) fn normalize_marker_meshes(
+    mut commands: Commands,
+    meshes: Res<Assets<Mesh>>,
+    markers: Query<(Entity, &Mesh3d, &Transform, &MarkerNormalize), Without<MarkerNormalized>>,
+) {
+    for (entity, mesh3d, transform, normalize) in &markers {
+        let Some(mesh) = meshes.get(&mesh3d.0) else {
+            continue;
+        };
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            commands.entity(entity).insert(MarkerNormalized);
+            continue;
+        };
+        let (min, max) = positions.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(min, max), position| (min.min(position[1]), max.max(position[1])),
+        );
+        let height = max - min;
+        if !height.is_finite() || height <= 1.0e-4 {
+            commands.entity(entity).insert(MarkerNormalized);
+            continue;
+        }
+        let factor = normalize.height / height;
+        commands.entity(entity).insert((
+            transform.with_scale(transform.scale * factor),
+            MarkerNormalized,
+        ));
+    }
+}
+
+/// Loads the first primitive of a marker model. Draco-compressed files must
+/// skip glTF validation, same as the asset preview.
+fn load_marker_mesh(asset_server: &AssetServer, model: &str, draco: bool) -> Handle<Mesh> {
+    let path = GltfAssetLabel::Primitive {
+        mesh: 0,
+        primitive: 0,
+    }
+    .from_asset(model.to_owned());
+    if draco {
+        asset_server
+            .load_builder()
+            .with_settings(|settings: &mut GltfLoaderSettings| settings.validate = false)
+            .load(path)
+    } else {
+        asset_server.load(path)
+    }
+}
+
+/// Loads the whole glTF scene so its own materials and textures are used.
+fn load_marker_scene(asset_server: &AssetServer, model: &str, draco: bool) -> Handle<WorldAsset> {
+    let path = GltfAssetLabel::Scene(0).from_asset(model.to_owned());
+    if draco {
+        asset_server
+            .load_builder()
+            .with_settings(|settings: &mut GltfLoaderSettings| settings.validate = false)
+            .load(path)
+    } else {
+        asset_server.load(path)
+    }
+}
+
+/// Loads the first animation clip of a play-mode marker model.
+fn load_marker_animation(
+    asset_server: &AssetServer,
+    model: &str,
+    draco: bool,
+) -> Handle<AnimationClip> {
+    let path = GltfAssetLabel::Animation(0).from_asset(model.to_owned());
+    if draco {
+        asset_server
+            .load_builder()
+            .with_settings(|settings: &mut GltfLoaderSettings| settings.validate = false)
+            .load(path)
+    } else {
+        asset_server.load(path)
+    }
+}
+
+/// Loads (or reuses) a Play-mode scene handle. Keeping the handle alive means
+/// both the idle and animated files stay warm while Play is active, so swapping
+/// a unit between them does not trigger a cold asset load.
+fn play_scene_handle(
+    asset_server: &AssetServer,
+    cache: &mut EditorRenderCache,
+    model: &str,
+    draco: bool,
+) -> Handle<WorldAsset> {
+    cache
+        .play_scene_assets
+        .entry(model.to_owned())
+        .or_insert_with(|| load_marker_scene(asset_server, model, draco))
+        .clone()
+}
+
+/// Swaps each animated unit between its idle and animated glTF scene when the
+/// moving state changes. Only one scene instance is active per unit; the
+/// previous root is kept in a bounded pool and reused instead of being
+/// respawned, which avoids instantiation hitches for repeated moves.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sync_editor_play_scenes(
+    mut commands: Commands,
+    frame: Res<EditorPlayFrame>,
+    scene: Res<EditorScene>,
+    mut cache: ResMut<EditorRenderCache>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    asset_server: Res<AssetServer>,
+    animations: Query<&EditorPlayAnimation>,
+    mut players: Query<&mut AnimationPlayer>,
+) {
+    if !frame.active {
+        return;
+    }
+    let units = frame
+        .units
+        .iter()
+        .map(|unit| (unit.key, unit))
+        .collect::<HashMap<_, _>>();
+    let mut spawned = 0usize;
+    for object in &scene.objects {
+        let EditorSceneKind::Marker {
+            model,
+            base_scale,
+            draco,
+            play_idle: Some(idle),
+            scale,
+            altitude,
+            ..
+        } = &object.kind
+        else {
+            continue;
+        };
+        let Some(unit) = units.get(&object.key) else {
+            continue;
+        };
+        let Some(&(entity, animated)) = cache.play_roots.get(&object.key) else {
+            continue;
+        };
+        if animated == unit.moving {
+            continue;
+        }
+        let Some(anchor) = GeoAnchor::new(GeoPoint::new(unit.lon, unit.lat)) else {
+            continue;
+        };
+        let transform = Transform::from_xyz(0.0, *altitude, 0.0)
+            .with_rotation(Quat::from_rotation_y(
+                std::f32::consts::PI - unit.heading_deg.to_radians(),
+            ))
+            .with_scale(Vec3::new(scale[0], scale[1], scale[2]) * *base_scale);
+        let (path, path_draco) = if unit.moving {
+            (model.as_str(), *draco)
+        } else {
+            (idle.model.as_str(), idle.draco)
+        };
+        let pooled_available = if unit.moving {
+            cache
+                .animated_pool
+                .get(path)
+                .is_some_and(|pool| !pool.is_empty())
+        } else {
+            cache
+                .idle_pool
+                .get(path)
+                .is_some_and(|pool| !pool.is_empty())
+        };
+        if !pooled_available && spawned >= PLAY_SPAWN_BUDGET {
+            // Try again next frame; the unit keeps its current scene meanwhile.
+            continue;
+        }
+
+        // Return the old root to its mode-specific pool. Over the cap it is
+        // despawned so pooled instance data stays bounded.
+        let old_model = if animated {
+            model.clone()
+        } else {
+            idle.model.clone()
+        };
+        let player = animations
+            .get(entity)
+            .ok()
+            .and_then(|animation| animation.player);
+        if let Some(player) = player
+            && let Ok(mut player) = players.get_mut(player)
+        {
+            player.stop_all();
+        }
+        commands
+            .entity(entity)
+            .remove::<(EditorPlayKey, EditorPlayAnimation)>();
+        commands.entity(entity).insert(Visibility::Hidden);
+        let per_model = if animated {
+            cache.animated_pool.get(&old_model).map_or(0, Vec::len)
+        } else {
+            cache.idle_pool.get(&old_model).map_or(0, Vec::len)
+        };
+        if per_model >= PLAY_POOL_PER_MODEL || cache.pooled_roots() >= PLAY_POOL_TOTAL {
+            commands.entity(entity).despawn();
+            cache.entities.retain(|candidate| *candidate != entity);
+        } else if animated {
+            cache
+                .animated_pool
+                .entry(old_model)
+                .or_default()
+                .push(entity);
+        } else {
+            cache.idle_pool.entry(old_model).or_default().push(entity);
+        }
+
+        let animation = if unit.moving {
+            Some(
+                cache
+                    .marker_animations
+                    .entry(model.clone())
+                    .or_insert_with(|| {
+                        let clip = load_marker_animation(&asset_server, model, *draco);
+                        let (graph, index) = AnimationGraph::from_clip(clip);
+                        (graphs.add(graph), index)
+                    })
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let pooled = if unit.moving {
+            cache.animated_pool.get_mut(path).and_then(Vec::pop)
+        } else {
+            cache.idle_pool.get_mut(path).and_then(Vec::pop)
+        };
+        if let Some(pooled) = pooled {
+            commands.entity(pooled).insert((
+                transform,
+                anchor,
+                Name::new(object.label.clone()),
+                EditorPlayKey(object.key),
+                Visibility::Visible,
+            ));
+            if let Some((graph, index)) = animation {
+                commands.entity(pooled).insert(EditorPlayAnimation {
+                    graph,
+                    index,
+                    player: None,
+                });
+            }
+            cache.play_roots.insert(object.key, (pooled, unit.moving));
+            continue;
+        }
+        let handle = play_scene_handle(&asset_server, &mut cache, path, path_draco);
+        let mut spawn = commands.spawn((
+            WorldAssetRoot(handle),
+            transform,
+            anchor,
+            Name::new(object.label.clone()),
+            EditorPlayKey(object.key),
+            Visibility::Visible,
+        ));
+        if let Some((graph, index)) = animation {
+            spawn.insert(EditorPlayAnimation {
+                graph,
+                index,
+                player: None,
+            });
+        }
+        let new_entity = spawn.id();
+        spawned += 1;
+        cache
+            .play_roots
+            .insert(object.key, (new_entity, unit.moving));
+        cache.entities.push(new_entity);
+    }
+}
+
+/// Applies the RTS play positions every frame without rebuilding the scene.
+/// Only moving units are touched here; standing units were already placed when
+/// their idle scene was spawned, and camera pans are handled by
+/// `update_geo_anchors` with a full pass.
+pub(crate) fn apply_editor_play_frame(
+    frame: Res<EditorPlayFrame>,
+    mut markers: Query<(&EditorPlayKey, &mut GeoAnchor, &mut Transform)>,
+) {
+    if !frame.active {
+        return;
+    }
+    let units = frame
+        .units
+        .iter()
+        .map(|unit| (unit.key, unit))
+        .collect::<HashMap<_, _>>();
+    for (key, mut anchor, mut transform) in &mut markers {
+        let Some(unit) = units.get(&key.0) else {
+            continue;
+        };
+        if !unit.moving {
+            continue;
+        }
+        if let Ok(mercator) = GeoPoint::new(unit.lon, unit.lat).mercator()
+            && anchor.mercator != mercator
+        {
+            anchor.mercator = mercator;
+        }
+        // Most authoring assets face +Z; tests showed the walk clip moving
+        // backwards when using `-heading`, so the model is turned half a
+        // circle around.
+        transform.rotation =
+            Quat::from_rotation_y(std::f32::consts::PI - unit.heading_deg.to_radians());
+    }
+}
+
+/// Ensures every animated play root has a live `AnimationPlayer` running its
+/// clip. The player belongs to the glTF scene instance and appears
+/// asynchronously (and can be replaced when a scene is re-instanced), so this
+/// runs every frame and re-discovers/restarts as needed. Idle units have no
+/// animated scene at all, so no hidden animation keeps running.
+pub(crate) fn sync_editor_play_animations(
+    mut commands: Commands,
+    mut roots: Query<(Entity, &mut EditorPlayAnimation)>,
+    children: Query<&Children>,
+    mut players: Query<&mut AnimationPlayer>,
+    handles: Query<&AnimationGraphHandle>,
+) {
+    for (root, mut animation) in &mut roots {
+        // The scene instance may replace the player entity (asset reload), so
+        // do not trust a cached entity that is no longer valid.
+        if animation
+            .player
+            .is_some_and(|player| players.get_mut(player).is_err())
+        {
+            animation.player = None;
+        }
+        if animation.player.is_none() {
+            animation.player = std::iter::once(root)
+                .chain(children.iter_descendants(root))
+                .find(|entity| players.contains(*entity));
+        }
+        let Some(player_entity) = animation.player else {
+            continue;
+        };
+        let Ok(mut player) = players.get_mut(player_entity) else {
+            animation.player = None;
+            continue;
+        };
+        // Retry every frame until the clip is actually running. This covers the
+        // first spawn where the graph handle and the player become ready on
+        // different frames.
+        if handles.get(player_entity).is_err() || !player.is_playing_animation(animation.index) {
+            commands
+                .entity(player_entity)
+                .insert(AnimationGraphHandle(animation.graph.clone()));
+            player.play(animation.index).repeat();
+        }
+    }
+}
+
+/// Applies the editor's viewport shading to imported glTF models. The scene is
+/// instantiated asynchronously, so this runs every frame and marks the meshes it
+/// has already overridden.
+pub(crate) fn apply_marker_shading(
+    mut commands: Commands,
+    mut cache: ResMut<EditorRenderCache>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    roots: Query<(Entity, &MarkerShading)>,
+    children: Query<&Children>,
+    parts: Query<&MeshMaterial3d<StandardMaterial>, Without<ShadingApplied>>,
+) {
+    for (root, shading) in &roots {
+        let wireframe = match shading.0 {
+            EditorModelShading::Textured => continue,
+            EditorModelShading::Solid => false,
+            EditorModelShading::Wireframe => true,
+        };
+        let material = if wireframe {
+            cache
+                .wire_material
+                .get_or_insert_with(|| materials.add(wireframe_material()))
+                .clone()
+        } else {
+            cache
+                .solid_material
+                .get_or_insert_with(|| materials.add(solid_material()))
+                .clone()
+        };
+        let mut stack = vec![root];
+        while let Some(entity) = stack.pop() {
+            let Ok(list) = children.get(entity) else {
+                continue;
+            };
+            for child in list.iter() {
+                stack.push(child);
+                if parts.get(child).is_err() {
+                    continue;
+                }
+                let mut part = commands.entity(child);
+                part.insert((MeshMaterial3d(material.clone()), ShadingApplied));
+                if wireframe {
+                    part.insert(Wireframe);
+                }
+            }
+        }
+    }
+}
+
+fn solid_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::srgb(0.72, 0.76, 0.82),
+        perceptual_roughness: 0.75,
+        metallic: 0.0,
+        ..default()
+    }
+}
+
+fn wireframe_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::srgba(0.05, 0.06, 0.09, 0.18),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_object(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -210,6 +850,7 @@ fn spawn_object(
     cache: &mut EditorRenderCache,
     object: &EditorSceneObject,
     ground_scale: f64,
+    shading: EditorModelShading,
 ) {
     let Some(anchor) = GeoAnchor::new(GeoPoint::new(object.lon, object.lat)) else {
         return;
@@ -220,29 +861,15 @@ fn spawn_object(
         EditorSceneKind::Marker {
             model,
             base_scale,
+            normalize_height,
+            draco,
+            scene_asset,
+            play_idle,
             rotation_deg,
             scale,
             altitude,
             color,
         } => {
-            let mesh = cache
-                .marker_meshes
-                .entry(model.clone())
-                .or_insert_with(|| {
-                    asset_server.load(
-                        GltfAssetLabel::Primitive {
-                            mesh: 0,
-                            primitive: 0,
-                        }
-                        .from_asset(model.clone()),
-                    )
-                })
-                .clone();
-            let material = cache
-                .marker_materials
-                .entry(color_key(*color))
-                .or_insert_with(|| materials.add(lit_material(*color)))
-                .clone();
             let rotation = Quat::from_euler(
                 EulerRot::YXZ,
                 rotation_deg[1].to_radians(),
@@ -250,17 +877,69 @@ fn spawn_object(
                 rotation_deg[2].to_radians(),
             );
             let scale = Vec3::new(scale[0], scale[1], scale[2]) * *base_scale;
-            let entity = commands
-                .spawn((
-                    Mesh3d(mesh),
-                    MeshMaterial3d(material),
-                    Transform::from_xyz(0.0, *altitude, 0.0)
-                        .with_rotation(rotation)
-                        .with_scale(scale),
-                    anchor,
-                    name,
-                ))
-                .id();
+            if *scene_asset {
+                // Keep the glTF's own materials and textures.
+                let transform = Transform::from_xyz(0.0, *altitude, 0.0)
+                    .with_rotation(rotation)
+                    .with_scale(scale);
+                if let Some(idle) = play_idle {
+                    // Play starts with the idle scene only. The animated scene is
+                    // spawned on demand while the unit moves, and the idle scene
+                    // is restored when it stops (one instance per unit).
+                    let _ = play_scene_handle(asset_server, cache, model, *draco);
+                    let handle = play_scene_handle(asset_server, cache, &idle.model, idle.draco);
+                    let entity = commands
+                        .spawn((
+                            WorldAssetRoot(handle),
+                            transform,
+                            anchor,
+                            name,
+                            EditorPlayKey(object.key),
+                            Visibility::Visible,
+                            MarkerShading(shading),
+                        ))
+                        .id();
+                    cache.play_roots.insert(object.key, (entity, false));
+                    cache.entities.push(entity);
+                    return;
+                }
+                let handle = load_marker_scene(asset_server, model, *draco);
+                let entity = commands
+                    .spawn((
+                        WorldAssetRoot(handle),
+                        transform,
+                        anchor,
+                        name,
+                        EditorPlayKey(object.key),
+                        MarkerShading(shading),
+                    ))
+                    .id();
+                cache.entities.push(entity);
+                return;
+            }
+            let mesh = cache
+                .marker_meshes
+                .entry(model.clone())
+                .or_insert_with(|| load_marker_mesh(asset_server, model, *draco))
+                .clone();
+            let material = cache
+                .marker_materials
+                .entry(color_key(*color))
+                .or_insert_with(|| materials.add(lit_material(*color)))
+                .clone();
+            let mut spawn = commands.spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                Transform::from_xyz(0.0, *altitude, 0.0)
+                    .with_rotation(rotation)
+                    .with_scale(scale),
+                anchor,
+                name,
+            ));
+            if let Some(height) = normalize_height {
+                spawn.insert(MarkerNormalize { height: *height });
+            }
+            let entity = spawn.id();
             cache.entities.push(entity);
         }
         EditorSceneKind::Line {
@@ -291,45 +970,93 @@ fn spawn_object(
             cache.entities.push(entity);
         }
         EditorSceneKind::Building {
+            shape,
             points,
             height,
             color,
+            rotation_deg,
+            scale,
+            altitude,
+            texture,
         } => {
-            let Some(first) = points.first() else {
-                return;
+            let rotation = Quat::from_euler(
+                EulerRot::YXZ,
+                rotation_deg[1].to_radians(),
+                rotation_deg[0].to_radians(),
+                rotation_deg[2].to_radians(),
+            );
+            let mesh = match shape {
+                EditorShapeKind::Custom => {
+                    if points.is_empty() {
+                        return;
+                    }
+                    let origin = GeoPoint::new(object.lon, object.lat);
+                    let local = local_points(points, origin, ground_scale);
+                    if local.len() < 3 {
+                        return;
+                    }
+                    meshes.add(mesh::prism_mesh(&local, *height))
+                }
+                _ => cache
+                    .shape_meshes
+                    .entry(*shape)
+                    .or_insert_with(|| {
+                        meshes.add(match shape {
+                            EditorShapeKind::Cylinder => mesh::shape_cylinder_mesh(),
+                            EditorShapeKind::Sphere => mesh::shape_sphere_mesh(),
+                            EditorShapeKind::Cone => mesh::shape_cone_mesh(),
+                            EditorShapeKind::Ground => mesh::shape_ground_mesh(),
+                            _ => mesh::shape_box_mesh(),
+                        })
+                    })
+                    .clone(),
             };
-            let anchor_point = GeoPoint::new(first[0], first[1]);
-            let local = local_points(points, anchor_point, ground_scale);
-            if local.len() < 3 {
-                return;
-            }
-            let mesh = meshes.add(mesh::prism_mesh(&local, *height));
-            let material = materials.add(unlit_material(*color, 0.78));
+            let texture_handle = texture.as_ref().map(|path| {
+                cache
+                    .building_textures
+                    .entry(path.clone())
+                    .or_insert_with(|| asset_server.load(path.clone()))
+                    .clone()
+            });
+            let material_key = (color_key(*color), texture.clone());
+            let material = cache
+                .building_materials
+                .entry(material_key)
+                .or_insert_with(|| {
+                    // A texture is modulated by base colour, so keep it white
+                    // when a texture is active.
+                    let mut material = if texture.is_some() {
+                        unlit_material([1.0, 1.0, 1.0, 1.0], 1.0)
+                    } else {
+                        unlit_material(*color, 0.9)
+                    };
+                    material.base_color_texture = texture_handle;
+                    materials.add(material)
+                })
+                .clone();
+            // A plane at altitude 0 would z-fight with the map tiles (also at
+            // y = 0). Lift it slightly so its texture stays visible.
+            let plane_lift = if *shape == EditorShapeKind::Ground {
+                0.02
+            } else {
+                0.0
+            };
             let entity = commands
                 .spawn((
                     Mesh3d(mesh),
                     MeshMaterial3d(material),
-                    Transform::from_xyz(0.0, 0.05, 0.0),
+                    Transform::from_xyz(0.0, *altitude + plane_lift, 0.0)
+                        .with_rotation(rotation)
+                        .with_scale(Vec3::new(scale[0], scale[1], scale[2])),
                     anchor,
                     name,
                 ))
                 .id();
             cache.entities.push(entity);
         }
-        EditorSceneKind::Text { color, .. } => {
-            let mesh = meshes.add(mesh::cuboid_mesh(Vec3::splat(1.4)));
-            let material = materials.add(unlit_material(*color, 1.0));
-            let entity = commands
-                .spawn((
-                    Mesh3d(mesh),
-                    MeshMaterial3d(material),
-                    Transform::from_xyz(0.0, 2.0, 0.0).with_rotation(Quat::from_rotation_y(0.785)),
-                    anchor,
-                    name,
-                ))
-                .id();
-            cache.entities.push(entity);
-        }
+        // Text is rendered as a screen-space label overlay by the editor UI;
+        // there is no 3D placeholder mesh anymore.
+        EditorSceneKind::Text { .. } => {}
         EditorSceneKind::Particle { color, radius } => {
             let mesh = meshes.add(mesh::sphere_mesh((*radius).max(0.4)));
             let material = materials.add(unlit_material(*color, 0.9));
@@ -433,12 +1160,13 @@ fn spawn_gizmo(
         shaft_z: meshes.add(mesh::cuboid_mesh(Vec3::new(0.06, 0.06, 0.9))),
         tip: meshes.add(mesh::cone_mesh(0.12, 0.26)),
         center: meshes.add(mesh::cuboid_mesh(Vec3::splat(0.13))),
-        ring: meshes.add(mesh::circle_mesh(1.0, 72, 0.02)),
+        ring: meshes.add(mesh::ring_mesh(1.0, 0.935, 96)),
     });
     let materials = cache.gizmo_materials.get_or_insert_with(|| GizmoMaterials {
         x: materials.add(gizmo_material([0.92, 0.24, 0.24, 1.0])),
         y: materials.add(gizmo_material([0.28, 0.92, 0.38, 1.0])),
         z: materials.add(gizmo_material([0.24, 0.52, 1.0, 1.0])),
+        uniform: materials.add(gizmo_material([0.85, 0.88, 0.92, 1.0])),
         highlight: materials.add(gizmo_material([1.0, 0.86, 0.2, 1.0])),
     });
 
@@ -462,48 +1190,115 @@ fn spawn_gizmo(
         }
     };
 
+    let quarter_turn = std::f32::consts::FRAC_PI_2;
     commands.entity(root).with_children(|parent| {
-        parent.spawn((
-            Mesh3d(handles.shaft_x.clone()),
-            MeshMaterial3d(pick(EditorGizmoAxis::X, &materials.x)),
-            Transform::from_xyz(0.45, 0.0, 0.0),
-        ));
-        parent.spawn((
-            Mesh3d(handles.tip.clone()),
-            MeshMaterial3d(pick(EditorGizmoAxis::X, &materials.x)),
-            Transform::from_xyz(1.0, 0.0, 0.0)
-                .with_rotation(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)),
-        ));
-        parent.spawn((
-            Mesh3d(handles.shaft_y.clone()),
-            MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
-            Transform::from_xyz(0.0, 0.45, 0.0),
-        ));
-        parent.spawn((
-            Mesh3d(handles.tip.clone()),
-            MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
-            Transform::from_xyz(0.0, 1.0, 0.0),
-        ));
-        parent.spawn((
-            Mesh3d(handles.shaft_z.clone()),
-            MeshMaterial3d(pick(EditorGizmoAxis::Z, &materials.z)),
-            Transform::from_xyz(0.0, 0.0, 0.45),
-        ));
-        parent.spawn((
-            Mesh3d(handles.tip.clone()),
-            MeshMaterial3d(pick(EditorGizmoAxis::Z, &materials.z)),
-            Transform::from_xyz(0.0, 0.0, 1.0)
-                .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-        ));
-        parent.spawn((
-            Mesh3d(handles.center.clone()),
-            MeshMaterial3d(materials.highlight.clone()),
-        ));
-        if gizmo.show_rotate {
-            parent.spawn((
-                Mesh3d(handles.ring.clone()),
-                MeshMaterial3d(pick(EditorGizmoAxis::RotateY, &materials.highlight)),
-            ));
+        match gizmo.mode {
+            EditorGizmoMode::Move => {
+                parent.spawn((
+                    Mesh3d(handles.shaft_x.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::X, &materials.x)),
+                    Transform::from_xyz(0.45, 0.0, 0.0),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.tip.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::X, &materials.x)),
+                    Transform::from_xyz(1.0, 0.0, 0.0)
+                        .with_rotation(Quat::from_rotation_z(-quarter_turn)),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.shaft_y.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
+                    Transform::from_xyz(0.0, 0.45, 0.0),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.tip.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
+                    Transform::from_xyz(0.0, 1.0, 0.0),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.shaft_z.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Z, &materials.z)),
+                    Transform::from_xyz(0.0, 0.0, 0.45),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.tip.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Z, &materials.z)),
+                    Transform::from_xyz(0.0, 0.0, 1.0)
+                        .with_rotation(Quat::from_rotation_x(quarter_turn)),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.center.clone()),
+                    MeshMaterial3d(materials.uniform.clone()),
+                ));
+            }
+            EditorGizmoMode::Rotate => {
+                // The ring mesh lies in the XZ plane, i.e. it rotates around Y.
+                // Rotating it a quarter turn around Z / X moves it onto the YZ /
+                // XY planes for the X and Z handles.
+                let lift = Vec3::new(0.0, 0.02, 0.0);
+                parent.spawn((
+                    Mesh3d(handles.ring.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::RotateX, &materials.x)),
+                    Transform::from_rotation(Quat::from_rotation_z(quarter_turn))
+                        .with_translation(lift),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.ring.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::RotateY, &materials.y)),
+                    Transform::from_translation(lift),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.ring.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::RotateZ, &materials.z)),
+                    Transform::from_rotation(Quat::from_rotation_x(quarter_turn))
+                        .with_translation(lift),
+                ));
+            }
+            EditorGizmoMode::Scale => {
+                parent.spawn((
+                    Mesh3d(handles.shaft_x.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::X, &materials.x)),
+                    Transform::from_xyz(0.42, 0.0, 0.0),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.center.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::X, &materials.x)),
+                    Transform::from_xyz(0.9, 0.0, 0.0).with_scale(Vec3::splat(1.9)),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.shaft_y.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
+                    Transform::from_xyz(0.0, 0.42, 0.0),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.center.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Y, &materials.y)),
+                    Transform::from_xyz(0.0, 0.9, 0.0).with_scale(Vec3::splat(1.9)),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.shaft_z.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Z, &materials.z)),
+                    Transform::from_xyz(0.0, 0.0, 0.42),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.center.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Z, &materials.z)),
+                    Transform::from_xyz(0.0, 0.0, 0.9).with_scale(Vec3::splat(1.9)),
+                ));
+                // Center handle: scales every axis at once (Blender style).
+                // A flat ring makes it easy to spot and grab even when the
+                // model covers the gizmo origin.
+                parent.spawn((
+                    Mesh3d(handles.ring.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Uniform, &materials.uniform)),
+                    Transform::from_xyz(0.0, 0.02, 0.0).with_scale(Vec3::splat(0.3)),
+                ));
+                parent.spawn((
+                    Mesh3d(handles.center.clone()),
+                    MeshMaterial3d(pick(EditorGizmoAxis::Uniform, &materials.uniform)),
+                    Transform::from_xyz(0.0, 0.02, 0.0).with_scale(Vec3::splat(1.6)),
+                ));
+            }
         }
     });
     cache.gizmo = Some(root);
@@ -568,6 +1363,9 @@ fn gizmo_material(color: [f32; 4]) -> StandardMaterial {
     StandardMaterial {
         base_color: Color::srgba(color[0], color[1], color[2], color[3]),
         unlit: true,
+        // Rotation rings are flat annuli; show both faces so a ring is visible
+        // from any camera angle.
+        cull_mode: None,
         ..default()
     }
 }
@@ -604,4 +1402,19 @@ fn floor_plan_image() -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     )
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::EditorShapeKind;
+
+    #[test]
+    fn cone_replaces_the_old_circle_and_legacy_circle_stays_flat() {
+        assert_eq!(EditorShapeKind::from_key("cone"), EditorShapeKind::Cone);
+        assert_eq!(EditorShapeKind::from_key("kerucut"), EditorShapeKind::Cone);
+        assert_eq!(EditorShapeKind::from_key("circle"), EditorShapeKind::Ground);
+        assert_eq!(EditorShapeKind::from_key("plane"), EditorShapeKind::Ground);
+        assert_eq!(EditorShapeKind::Cone.key(), "cone");
+        assert_eq!(EditorShapeKind::Ground.key(), "ground");
+    }
 }

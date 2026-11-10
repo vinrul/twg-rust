@@ -16,8 +16,8 @@ use twg_storage::{NewAsset, NewAssetSource, NewAssetVariant};
 use uuid::Uuid;
 
 use crate::assets::{
-    original_filename, probe_gltf, resize_image, run_convert, sha256_hex, stamp_glb_metadata,
-    variant_filename,
+    normalize_glb_image_mime_types, original_filename, probe_gltf, resize_image, run_convert,
+    sha256_hex, stamp_glb_metadata, variant_filename,
 };
 use crate::error::ApiError;
 use crate::handlers::asset_store;
@@ -229,9 +229,16 @@ pub async fn upload(
     let mut sources = Vec::with_capacity(required.len());
     let mut payloads = Vec::with_capacity(required.len());
     for (slot, field) in required.iter().zip(required_fields.iter()) {
-        let (original_name, bytes) = files.remove(*field).ok_or_else(|| {
+        let (original_name, mut bytes) = files.remove(*field).ok_or_else(|| {
             ApiError::bad_request(format!("missing `{field}` file for slot {slot}"))
         })?;
+        if category.is_model()
+            && let Some(fixed) = normalize_glb_image_mime_types(&bytes).map_err(|error| {
+                ApiError::bad_request(format!("invalid glTF/GLB in {slot}: {error}"))
+            })?
+        {
+            bytes = fixed.into();
+        }
         sources.push(prepare_source(category, *slot, &original_name, &bytes)?);
         payloads.push(bytes);
     }
@@ -336,11 +343,122 @@ pub async fn update(
             "category can only change between texture and icon; upload a new asset instead",
         ));
     }
+    // Only a category change can alter which files the asset offers, so a pure
+    // rename keeps the version and desktop clients do not re-download it.
+    let bump_version = request
+        .category
+        .is_some_and(|category| category != current.category);
     let asset = store
-        .update(id, name.as_deref(), request.category)
+        .update(id, name.as_deref(), request.category, bump_version)
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("asset not found"))?;
+    Ok(Json(SingleResponse::success(asset)))
+}
+
+/// Replaces the uploaded file behind one source slot.
+///
+/// Used by the admin screen to fix a broken GLB or swap a texture without
+/// deleting and re-creating the asset (which would lose its id and usage).
+pub async fn replace_source(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> Result<Json<SingleResponse<Asset>>, ApiError> {
+    let store = asset_store(&state)?;
+    let current = store
+        .get(id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("asset not found"))?;
+
+    let mut slot = None;
+    let mut upload = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| ApiError::bad_request(format!("invalid multipart form: {error}")))?
+    {
+        match field.name().unwrap_or_default() {
+            "slot" => {
+                slot =
+                    Some(field.text().await.map_err(|error| {
+                        ApiError::bad_request(format!("invalid slot: {error}"))
+                    })?);
+            }
+            "file" => {
+                let original_name = field.file_name().unwrap_or("asset").to_owned();
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|error| ApiError::bad_request(format!("invalid upload: {error}")))?;
+                upload = Some((original_name, bytes));
+            }
+            _ => {}
+        }
+    }
+
+    let raw_slot = slot
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("slot is required"))?;
+    let slot = AssetSourceSlot::from_str(raw_slot)
+        .map_err(|_| ApiError::bad_request("slot must be one of: static, idle, animated"))?;
+    if !slot.valid_for(current.category, current.model_kind) {
+        return Err(ApiError::bad_request(format!(
+            "slot {slot} does not exist for this asset"
+        )));
+    }
+    let (original_name, mut bytes) =
+        upload.ok_or_else(|| ApiError::bad_request("file is required"))?;
+    if current.category.is_model()
+        && let Some(fixed) = normalize_glb_image_mime_types(&bytes).map_err(|error| {
+            ApiError::bad_request(format!("invalid glTF/GLB in {slot}: {error}"))
+        })?
+    {
+        bytes = fixed.into();
+    }
+    let source = prepare_source(current.category, slot, &original_name, &bytes)?;
+
+    state
+        .asset_files
+        .write(id, slot, &source.filename, &bytes)
+        .await
+        .map_err(ApiError::internal)?;
+    let replaced = store
+        .replace_source(id, source.clone())
+        .await
+        .map_err(ApiError::internal)?;
+    let Some(asset) = replaced else {
+        let _ = state
+            .asset_files
+            .remove_file(id, slot, &source.filename)
+            .await;
+        return Err(ApiError::not_found(format!("source slot {slot} not found")));
+    };
+
+    // Drop the files of the previous upload; the database no longer references
+    // them. Best effort: a leftover file only wastes disk space.
+    if let Some(previous) = current.source(slot) {
+        if previous.file.filename != source.filename {
+            let _ = state
+                .asset_files
+                .remove_file(id, slot, &previous.file.filename)
+                .await;
+        }
+        for variant in &previous.variants {
+            // A `reused` variant points at the source upload itself; never delete
+            // the file the asset now references.
+            if variant.filename == source.filename {
+                continue;
+            }
+            let _ = state
+                .asset_files
+                .remove_file(id, slot, &variant.filename)
+                .await;
+        }
+    }
     Ok(Json(SingleResponse::success(asset)))
 }
 
@@ -474,6 +592,9 @@ pub async fn convert(
             .await
             .map_err(ApiError::internal)?
             .map_err(ApiError::conversion_failed)?;
+        let stamped = normalize_glb_image_mime_types(&stamped)
+            .map_err(ApiError::conversion_failed)?
+            .unwrap_or(stamped);
         tokio::fs::write(&output, &stamped)
             .await
             .map_err(ApiError::internal)?;

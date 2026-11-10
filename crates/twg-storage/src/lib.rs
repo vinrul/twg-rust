@@ -81,9 +81,29 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), StorageError> {
         tracing::warn!(
             "existing legacy schema detected without applied SQLx migrations; skipping migrations"
         );
+        apply_compat_columns(pool).await?;
         return Ok(());
     }
     sqlx::migrate!("./migrations").run(pool).await?;
+    apply_compat_columns(pool).await?;
+    Ok(())
+}
+
+/// Additive columns that must also reach legacy databases whose SQLx
+/// migrations are intentionally skipped. Each statement is idempotent.
+async fn apply_compat_columns(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let text_markers: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public.text_markers')::text")
+            .fetch_one(pool)
+            .await?;
+    if text_markers.is_some() {
+        sqlx::query(
+            "ALTER TABLE text_markers
+             ADD COLUMN IF NOT EXISTS altitude DOUBLE PRECISION NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 

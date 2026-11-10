@@ -150,9 +150,17 @@ fn draw_shell(context: &egui::Context, client: &mut ClientUi) {
                     .inner_margin(egui::Margin::same(SPACE_4 as i8)),
             )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                if client.state.nav == NavItem::Assets {
+                    // Layar Aset mengatur scroll-nya sendiri (daftar dan detail
+                    // masing-masing punya ScrollArea) supaya tingginya mengikuti
+                    // jendela; outer ScrollArea membuat `available_height()`
+                    // tak terbatas.
                     draw_screen(ui, client);
-                });
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        draw_screen(ui, client);
+                    });
+                }
             });
     });
 }

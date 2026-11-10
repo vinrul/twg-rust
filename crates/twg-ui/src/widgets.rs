@@ -64,10 +64,21 @@ pub fn ghost_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
 }
 
 pub fn labeled_input(ui: &mut egui::Ui, label: &str, value: &mut String) -> egui::Response {
+    labeled_input_with_width(ui, label, value, f32::INFINITY)
+}
+
+/// Seperti [`labeled_input`], tetapi lebar input dibatasi sehingga bisa dipakai
+/// di dalam baris `horizontal_wrapped` tanpa memakan satu baris penuh.
+pub fn labeled_input_with_width(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    width: f32,
+) -> egui::Response {
     ui.label(egui::RichText::new(label).size(FONT_XS));
     ui.add(
         egui::TextEdit::singleline(value)
-            .desired_width(f32::INFINITY)
+            .desired_width(width)
             .margin(egui::Margin::symmetric(8, 5)),
     )
 }

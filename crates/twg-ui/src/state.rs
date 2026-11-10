@@ -13,6 +13,8 @@ use twg_client::api::{ApiError, ApiHandle, ApiResponse, HttpMethod};
 use twg_client::asset_cache::AssetCache;
 use twg_client::realtime::{RealtimeState, RealtimeStatus, WsConnection, WsTransport};
 use twg_client::session::{ClientSession, ClientState, NavItem, Screen};
+#[cfg(not(target_arch = "wasm32"))]
+use twg_contracts::assets::AssetSource;
 use twg_contracts::assets::{
     Asset, AssetCategory, AssetManifest, AssetModelKind, AssetSourceSlot, AssetVariantKind,
     ConvertRequest, ConvertResult, ConvertTarget, SyncProgress,
@@ -24,6 +26,9 @@ use twg_contracts::scenarios::Scenario;
 use twg_contracts::snapshots::Snapshot;
 use twg_contracts::users::{OnlineUser, User};
 use twg_domain::Role;
+#[cfg(not(target_arch = "wasm32"))]
+use twg_render::{ImagePreviewKey, ModelPreviewKey};
+use twg_render::{PREVIEW_SLOTS, PreviewOrbitInput, PreviewPhase, PreviewSource};
 use uuid::Uuid;
 
 use crate::editor::model::EditorState;
@@ -72,6 +77,8 @@ pub enum JobKind {
     Assets,
     AssetManifest,
     AssetUpload,
+    AssetRename,
+    AssetReplaceSource,
     AssetConvert,
     AssetDelete,
 }
@@ -184,6 +191,15 @@ impl AssetUploadDraft {
     }
 }
 
+/// Pending file replacement for one source slot of an existing asset. The next
+/// file dropped on the window is uploaded into `slot` instead of the upload
+/// form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetReplaceTarget {
+    pub asset_id: Uuid,
+    pub slot: AssetSourceSlot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsedAssetFile {
     pub slot: AssetSourceSlot,
@@ -236,11 +252,22 @@ pub struct AssetSyncUi {
     pub last_sync: Option<String>,
 }
 
-pub struct AssetPreview {
-    pub asset_id: Uuid,
-    pub texture: Option<egui::TextureHandle>,
-    pub dimensions: Option<(u32, u32)>,
+/// UI-side mirror of [`twg_render::AssetPreview`] plus the egui texture ids.
+#[derive(Default)]
+pub struct PreviewUi {
+    pub panels: Vec<PreviewPanelUi>,
+}
+
+#[derive(Clone, Default)]
+pub struct PreviewPanelUi {
+    pub slot: usize,
+    pub asset_id: Option<Uuid>,
+    pub phase: PreviewPhase,
     pub error: Option<String>,
+    pub texture: Option<egui::TextureId>,
+    pub dimensions: Option<(u32, u32)>,
+    pub label: String,
+    pub is_model: bool,
 }
 
 pub enum Modal {
@@ -329,9 +356,16 @@ pub struct ClientUi {
     pub asset_filter: Option<AssetCategory>,
     pub asset_search: String,
     pub selected_asset: Option<Uuid>,
+    /// Name being edited in the asset detail panel.
+    pub asset_edit_name: String,
+    /// Set while the user is about to drop a replacement file for a slot.
+    pub asset_replace: Option<AssetReplaceTarget>,
     pub asset_upload: AssetUploadDraft,
     pub asset_sync: AssetSyncUi,
-    pub asset_preview: Option<AssetPreview>,
+    pub preview: PreviewUi,
+    pub preview_wanted: [Option<PreviewSource>; PREVIEW_SLOTS],
+    pub preview_orbit: [PreviewOrbitInput; PREVIEW_SLOTS],
+    pub preview_retry: u64,
     pub used_asset: Option<UsedAsset>,
     pub pending_asset_nav: Option<NavItem>,
     pub dropped_files: Vec<PathBuf>,
@@ -346,6 +380,7 @@ impl ClientUi {
         let pending_editor_scenario = initial_editor_scenario();
         let mut state = ClientState::default();
         let session = api.restore();
+        bevy::log::info!("client shell: restored session = {}", session.is_some());
         if session.is_some() {
             state.screen = Screen::Boot;
         } else {
@@ -392,9 +427,14 @@ impl ClientUi {
             asset_filter: None,
             asset_search: String::new(),
             selected_asset: None,
+            asset_edit_name: String::new(),
+            asset_replace: None,
             asset_upload: AssetUploadDraft::default(),
             asset_sync: AssetSyncUi::default(),
-            asset_preview: None,
+            preview: PreviewUi::default(),
+            preview_wanted: std::array::from_fn(|_| None),
+            preview_orbit: [PreviewOrbitInput::default(); PREVIEW_SLOTS],
+            preview_retry: 0,
             used_asset,
             pending_asset_nav: None,
             dropped_files: Vec::new(),
@@ -474,7 +514,12 @@ impl ClientUi {
         self.close_ws();
         self.assets.clear();
         self.selected_asset = None;
-        self.asset_preview = None;
+        self.asset_edit_name.clear();
+        self.asset_replace = None;
+        self.preview = PreviewUi::default();
+        self.preview_wanted = std::array::from_fn(|_| None);
+        self.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];
+        self.preview_retry = 0;
         self.asset_upload.reset();
         self.asset_sync = AssetSyncUi::default();
         self.pending_asset_nav = None;
@@ -592,8 +637,8 @@ impl ClientUi {
         self.sync_profile_fields();
         self.refresh_all();
         self.refresh_assets();
-        // Warm the offline cache in the background; failures stay silent here
-        // and are reported when the user opens the map.
+        // Runs on startup (restored session) and after login: mirror any new or
+        // changed server assets before the editor/game is opened.
         self.request_asset_check(None);
         if let Some(scenario) = self.pending_editor_scenario.take() {
             self.open_editor(Some(scenario));
@@ -853,9 +898,13 @@ impl ClientUi {
                             && !assets.iter().any(|asset| asset.id == selected)
                         {
                             self.selected_asset = None;
-                            self.asset_preview = None;
+                            self.preview = PreviewUi::default();
+                            self.preview_wanted = std::array::from_fn(|_| None);
+                            self.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];
+                            self.preview_retry = 0;
                         }
                         self.assets = assets;
+                        self.sync_editor_marker_models();
                     }
                     Err(error) => self.error(&error),
                 }
@@ -900,9 +949,14 @@ impl ClientUi {
                         );
                         let selected = asset.id;
                         self.asset_upload.reset();
+                        self.asset_edit_name = asset.name.clone();
+                        self.asset_replace = None;
                         self.assets.insert(0, asset);
                         self.selected_asset = Some(selected);
-                        self.asset_preview = None;
+                        self.preview = PreviewUi::default();
+                        self.preview_wanted = std::array::from_fn(|_| None);
+                        self.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];
+                        self.preview_retry = 0;
                         self.request_asset_check(None);
                     }
                     Err(error) => {
@@ -926,11 +980,47 @@ impl ClientUi {
                     Err(error) => self.error(&error),
                 }
             }
+            JobKind::AssetRename => match result.and_then(|response| response.data::<Asset>()) {
+                Ok(asset) => {
+                    self.asset_edit_name = asset.name.clone();
+                    let name = asset.name.clone();
+                    self.replace_asset(asset);
+                    self.toast(
+                        format!("Nama aset diubah menjadi '{name}'."),
+                        ToastKind::Success,
+                    );
+                }
+                Err(error) => self.error(&error),
+            },
+            JobKind::AssetReplaceSource => {
+                match result.and_then(|response| response.data::<Asset>()) {
+                    Ok(asset) => {
+                        let name = asset.name.clone();
+                        let slot = self.asset_replace.take().map(|target| target.slot);
+                        self.replace_asset(asset);
+                        // A new file means a new preview; the version changed so
+                        // the renderer re-fetches the model/texture.
+                        self.preview = PreviewUi::default();
+                        self.toast(
+                            match slot {
+                                Some(slot) => format!("File {slot} '{}' diperbarui.", name),
+                                None => format!("File aset '{name}' diperbarui."),
+                            },
+                            ToastKind::Success,
+                        );
+                        self.request_asset_check(None);
+                    }
+                    Err(error) => self.error(&error),
+                }
+            }
             JobKind::AssetDelete => match result {
                 Ok(_) => {
                     self.toast("Aset dihapus.", ToastKind::Success);
                     self.selected_asset = None;
-                    self.asset_preview = None;
+                    self.preview = PreviewUi::default();
+                    self.preview_wanted = std::array::from_fn(|_| None);
+                    self.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];
+                    self.preview_retry = 0;
                     self.refresh_assets();
                     self.request_asset_check(None);
                 }
@@ -1006,16 +1096,24 @@ impl ClientUi {
         let Some(progress) = self.asset_sync.progress.clone() else {
             return;
         };
-        let finished = {
+        let (finished, done) = {
             let guard = progress.lock().expect("sync progress poisoned");
-            guard.finished.then(|| guard.error.clone())
+            (guard.finished.then(|| guard.error.clone()), guard.done)
         };
         let Some(error) = finished else {
             return;
         };
+        let background = self.pending_asset_nav.is_none();
+        let failed = error.is_some();
         self.asset_sync.progress = None;
         self.asset_sync.last_sync = Some(chrono::Utc::now().format("%H:%M:%S").to_string());
         self.finish_asset_check(error);
+        if background && !failed && done > 0 {
+            self.toast(
+                format!("{done} file aset diperbarui di cache offline."),
+                ToastKind::Info,
+            );
+        }
     }
 
     fn finish_asset_check(&mut self, error: Option<String>) {
@@ -1023,6 +1121,8 @@ impl ClientUi {
             Some(message) => AssetSyncState::Offline(message.clone()),
             None => AssetSyncState::Ready,
         };
+        // Preview files come from the server, so a finished cache sync does
+        // not invalidate them.
         let pending = self.pending_asset_nav.take();
         if let Some(message) = &error {
             let offline_available = self.has_offline_manifest();
@@ -1040,7 +1140,9 @@ impl ClientUi {
         } else if pending.is_some() {
             self.toast("Aset tersinkron ke cache offline.", ToastKind::Success);
         }
-        if let Some(nav) = pending {
+        if let Some(nav) = pending
+            && (error.is_none() || self.has_offline_manifest())
+        {
             self.enter_nav(nav);
         }
     }
@@ -1077,7 +1179,28 @@ impl ClientUi {
             return;
         }
         self.selected_asset = Some(asset_id);
-        self.asset_preview = None;
+        self.asset_edit_name = self
+            .assets
+            .iter()
+            .find(|asset| asset.id == asset_id)
+            .map(|asset| asset.name.clone())
+            .unwrap_or_default();
+        self.asset_replace = None;
+        self.preview = PreviewUi::default();
+        self.preview_wanted = std::array::from_fn(|_| None);
+        self.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];
+        self.preview_retry = 0;
+    }
+
+    fn replace_asset(&mut self, asset: Asset) {
+        match self
+            .assets
+            .iter_mut()
+            .find(|existing| existing.id == asset.id)
+        {
+            Some(existing) => *existing = asset,
+            None => self.assets.insert(0, asset),
+        }
     }
 
     /// True when this asset (and all its files) is already mirrored offline.
@@ -1148,6 +1271,11 @@ impl ClientUi {
         self.dropped_files.push(path.clone());
         if self.state.nav != NavItem::Assets {
             self.toast("Buka menu Aset untuk mengunggah file.", ToastKind::Info);
+            return;
+        }
+        // A pending slot replacement takes precedence over the upload form.
+        if self.asset_replace.is_some() {
+            self.begin_asset_replace_file(path);
             return;
         }
         let draft = &mut self.asset_upload;
@@ -1244,6 +1372,96 @@ impl ClientUi {
         self.track(JobKind::AssetDelete, handle);
     }
 
+    /// Renames the asset using the current `asset_edit_name` value.
+    pub fn begin_asset_rename(&mut self, asset_id: Uuid) {
+        if self.role() != Role::Admin {
+            self.toast("Hanya admin yang bisa mengubah aset.", ToastKind::Error);
+            return;
+        }
+        let name = self.asset_edit_name.trim().to_owned();
+        if name.is_empty() {
+            self.toast("Nama aset wajib diisi.", ToastKind::Error);
+            return;
+        }
+        let handle = self.api.request(
+            HttpMethod::Put,
+            format!("/admin/assets/{asset_id}"),
+            Some(json!({ "name": name })),
+        );
+        self.track(JobKind::AssetRename, handle);
+    }
+
+    /// Arms the next dropped file as a replacement for `slot`.
+    pub fn begin_asset_replace(&mut self, asset_id: Uuid, slot: AssetSourceSlot) {
+        if self.role() != Role::Admin {
+            self.toast(
+                "Hanya admin yang bisa mengganti file aset.",
+                ToastKind::Error,
+            );
+            return;
+        }
+        self.asset_replace = Some(AssetReplaceTarget { asset_id, slot });
+        self.toast(
+            format!("Tarik file {slot} baru ke jendela aplikasi."),
+            ToastKind::Info,
+        );
+    }
+
+    pub fn cancel_asset_replace(&mut self) {
+        self.asset_replace = None;
+    }
+
+    /// Uploads a dropped file into the armed replacement slot. Returns `false`
+    /// when no replacement is pending.
+    pub fn begin_asset_replace_file(&mut self, path: PathBuf) -> bool {
+        let Some(target) = self.asset_replace.clone() else {
+            return false;
+        };
+        let Some(asset) = self
+            .assets
+            .iter()
+            .find(|asset| asset.id == target.asset_id)
+            .cloned()
+        else {
+            self.asset_replace = None;
+            self.toast(
+                "Aset tidak ditemukan; muat ulang daftar aset.",
+                ToastKind::Error,
+            );
+            return true;
+        };
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        if !asset.category.allows_extension(&extension) {
+            self.toast(
+                format!(
+                    "{} harus memakai file: {}",
+                    asset.category,
+                    asset.category.upload_extensions().join(", ")
+                ),
+                ToastKind::Error,
+            );
+            return true;
+        }
+        let (content_type, body) = match multipart_asset_source_body(target.slot, &path) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.toast(error, ToastKind::Error);
+                return true;
+            }
+        };
+        let handle = self.api.upload(
+            format!("/admin/assets/{}/source", target.asset_id),
+            content_type,
+            body,
+        );
+        self.track(JobKind::AssetReplaceSource, handle);
+        true
+    }
+
     /// Marks an asset as the one used by the editor/game, resolving files from
     /// the offline cache (converted variant first, original as fallback).
     pub fn use_asset(&mut self, asset_id: Uuid, prefer_variants: bool) {
@@ -1313,19 +1531,14 @@ impl ClientUi {
         }
     }
 
-    /// Loads the image preview of the selected texture/icon from the cache.
-    pub fn ensure_asset_preview(&mut self, context: &egui::Context) {
+    /// Resolves the server preview of the selected asset. Previews always come
+    /// from the server; the offline cache is only used by the editor/game.
+    pub fn ensure_asset_preview(&mut self, _context: &egui::Context) {
         let Some(asset_id) = self.selected_asset else {
-            self.asset_preview = None;
+            self.preview_wanted = std::array::from_fn(|_| None);
             return;
         };
-        if self
-            .asset_preview
-            .as_ref()
-            .is_some_and(|preview| preview.asset_id == asset_id)
-        {
-            return;
-        }
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(asset) = self
@@ -1336,68 +1549,89 @@ impl ClientUi {
             else {
                 return;
             };
-            if !asset.category.is_image() {
-                self.asset_preview = Some(AssetPreview {
-                    asset_id,
-                    texture: None,
-                    dimensions: None,
-                    error: None,
-                });
-                return;
-            }
-            let path = self.asset_cache.as_ref().and_then(|cache| {
-                let cache = cache.lock().expect("asset cache poisoned");
-                cache
-                    .resolve(&asset, AssetSourceSlot::Static, false)
-                    .map(|(_, path)| path)
-            });
-            let Some(path) = path else {
-                self.asset_preview = Some(AssetPreview {
-                    asset_id,
-                    texture: None,
-                    dimensions: None,
-                    error: Some("belum ada di cache offline".to_owned()),
-                });
-                return;
-            };
-            match std::fs::read(&path)
-                .map_err(|error| error.to_string())
-                .and_then(|bytes| {
-                    image::load_from_memory(&bytes).map_err(|error| error.to_string())
-                }) {
-                Ok(image) => {
-                    let dimensions = (image.width(), image.height());
-                    let rgba = image.to_rgba8();
-                    let color = egui::ColorImage::from_rgba_unmultiplied(
-                        [dimensions.0 as usize, dimensions.1 as usize],
-                        rgba.as_raw(),
-                    );
-                    let texture = context.load_texture(
-                        format!("asset-{asset_id}"),
-                        color,
-                        egui::TextureOptions::LINEAR,
-                    );
-                    self.asset_preview = Some(AssetPreview {
-                        asset_id,
-                        texture: Some(texture),
-                        dimensions: Some(dimensions),
-                        error: None,
-                    });
-                }
-                Err(error) => {
-                    self.asset_preview = Some(AssetPreview {
-                        asset_id,
-                        texture: None,
-                        dimensions: None,
-                        error: Some(error),
-                    });
-                }
-            }
+            self.preview_wanted = self.preview_request(&asset);
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = context;
+            let _ = asset_id;
+            self.preview_wanted = std::array::from_fn(|_| None);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn preview_request(&self, asset: &Asset) -> [Option<PreviewSource>; PREVIEW_SLOTS] {
+        let mut request: [Option<PreviewSource>; PREVIEW_SLOTS] = std::array::from_fn(|_| None);
+        if asset.category.is_model() {
+            let animated = asset.model_kind == Some(AssetModelKind::Animated)
+                || asset.source(AssetSourceSlot::Animated).is_some();
+            if animated {
+                for (index, (slot, label)) in [
+                    (AssetSourceSlot::Idle, "Idle"),
+                    (AssetSourceSlot::Animated, "Animasi"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if let Some(source) = asset.source(slot) {
+                        request[index] = Some(self.model_preview_source(
+                            asset,
+                            source,
+                            label,
+                            slot == AssetSourceSlot::Animated,
+                        ));
+                    }
+                }
+            } else if let Some(source) = asset.sources.first() {
+                request[0] = Some(self.model_preview_source(asset, source, "Model", false));
+            }
+        } else if let Some(source) = asset.sources.first() {
+            request[0] = Some(PreviewSource::Image(ImagePreviewKey {
+                asset_id: asset.id,
+                version: asset.version,
+                retry: self.preview_retry,
+                label: "Preview".to_owned(),
+                url: format!("{}{}", self.base_url.trim_end_matches('/'), source.file.url),
+            }));
+        }
+        request
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn model_preview_source(
+        &self,
+        asset: &Asset,
+        source: &AssetSource,
+        label: &str,
+        with_animation: bool,
+    ) -> PreviewSource {
+        let (url, draco) = self.preview_model_file(source);
+        let animation_url = with_animation.then(|| url.clone());
+        PreviewSource::Model(ModelPreviewKey {
+            asset_id: asset.id,
+            version: asset.version,
+            retry: self.preview_retry,
+            label: label.to_owned(),
+            url,
+            draco,
+            animation_url,
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn preview_model_file(&self, source: &AssetSource) -> (String, bool) {
+        let base = self.base_url.trim_end_matches('/');
+        if self.asset_prefer_variants {
+            for kind in [
+                AssetVariantKind::DracoLod2,
+                AssetVariantKind::Lod2,
+                AssetVariantKind::Draco,
+            ] {
+                if let Some(variant) = source.variant(kind) {
+                    return (format!("{base}{}", variant.url), kind.is_draco());
+                }
+            }
+        }
+        (format!("{base}{}", source.file.url), source.has_draco)
     }
 
     fn tick_toasts(&mut self) {
@@ -1555,11 +1789,20 @@ impl ClientUi {
 
     pub fn go(&mut self, item: NavItem) {
         if item == NavItem::Preview {
-            // Never open the map with a stale offline cache: check the server
-            // first, sync if needed, then continue.
-            self.request_asset_check(Some(item));
-            if !self.asset_sync.state.is_busy() {
+            if self.has_offline_manifest() {
+                // A consistent cache snapshot already exists: open the map
+                // immediately and refresh the manifest in the background. This
+                // keeps startup fast on slow networks; newly downloaded files
+                // are used the next time assets are loaded.
                 self.enter_nav(item);
+                self.request_asset_check(None);
+            } else {
+                // First run: wait for the initial cache fill so the map never
+                // starts with missing assets.
+                self.request_asset_check(Some(item));
+                if !self.asset_sync.state.is_busy() {
+                    self.enter_nav(item);
+                }
             }
             return;
         }
@@ -2063,6 +2306,34 @@ fn multipart_asset_body(
         );
         body.extend_from_slice(b"\r\n");
     }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Ok((format!("multipart/form-data; boundary={boundary}"), body))
+}
+
+/// Builds a `multipart/form-data` body for `POST /admin/assets/{id}/source`,
+/// which replaces the file of one source slot.
+fn multipart_asset_source_body(
+    slot: AssetSourceSlot,
+    path: &std::path::Path,
+) -> Result<(String, Vec<u8>), String> {
+    let boundary = format!("----twg{}", Uuid::new_v4().simple());
+    let mut body = Vec::new();
+    push_form_field(&mut body, &boundary, "slot", &slot.to_string());
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("asset");
+    let mime = mime_for_path(path);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        &std::fs::read(path).map_err(|error| format!("gagal membaca {path:?}: {error}"))?,
+    );
+    body.extend_from_slice(b"\r\n");
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     Ok((format!("multipart/form-data; boundary={boundary}"), body))
 }

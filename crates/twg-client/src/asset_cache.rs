@@ -105,18 +105,35 @@ impl AssetCache {
         same_versions && self.plan(remote).is_empty()
     }
 
-    /// Files that are missing from disk for `remote`.
+    /// Files that are missing from disk for `remote`. When the local manifest
+    /// knows this asset with a different version, every one of its files is
+    /// planned again: a conversion or re-upload can overwrite a file whose size
+    /// happens to stay the same.
     pub fn plan(&self, remote: &AssetManifest) -> Vec<CachedFileRef> {
         remote
             .assets
             .iter()
-            .flat_map(asset_files)
-            .filter(|file| {
-                let path = self.local_path(file.asset_id, file.slot, &file.filename);
-                match fs::metadata(&path) {
-                    Ok(metadata) => metadata.len() != file.size_bytes.max(0) as u64,
-                    Err(_) => true,
-                }
+            .flat_map(|asset| {
+                let changed = self
+                    .manifest
+                    .as_ref()
+                    .and_then(|local| {
+                        local
+                            .assets
+                            .iter()
+                            .find(|local_asset| local_asset.id == asset.id)
+                    })
+                    .is_some_and(|local_asset| local_asset.version != asset.version);
+                asset_files(asset).into_iter().filter(move |file| {
+                    if changed {
+                        return true;
+                    }
+                    let path = self.local_path(file.asset_id, file.slot, &file.filename);
+                    match fs::metadata(&path) {
+                        Ok(metadata) => metadata.len() != file.size_bytes.max(0) as u64,
+                        Err(_) => true,
+                    }
+                })
             })
             .collect()
     }
@@ -433,6 +450,25 @@ mod tests {
             .unwrap();
         assert_eq!(kind, None);
         assert!(path.ends_with("original.glb"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_redownloads_files_when_the_asset_version_changes() {
+        let root = temp_root("version-plan");
+        let mut cache = AssetCache::with_root(&root);
+        let remote = manifest(1);
+        for file in asset_files(&remote.assets[0]) {
+            let path = cache.local_path(file.asset_id, file.slot, &file.filename);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"data").unwrap();
+        }
+        assert!(cache.plan(&remote).is_empty());
+
+        // Same paths and sizes, but a newer version must re-download so an
+        // overwritten conversion cannot stay stale in the cache.
+        cache.manifest = Some(remote.clone());
+        assert_eq!(cache.plan(&manifest(2)).len(), 2);
         let _ = std::fs::remove_dir_all(root);
     }
 

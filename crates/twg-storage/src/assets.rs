@@ -126,17 +126,23 @@ impl AssetStore {
     }
 
     /// Renames or re-categorises an asset. Returns `None` when the id is unknown.
+    ///
+    /// `bump_version` should only be set when something the offline cache has to
+    /// re-download changed (the category decides which files exist). A pure
+    /// rename keeps the version so desktop clients do not fetch the same bytes
+    /// again.
     pub async fn update(
         &self,
         id: Uuid,
         name: Option<&str>,
         category: Option<AssetCategory>,
+        bump_version: bool,
     ) -> Result<Option<Asset>, sqlx::Error> {
         let row = sqlx::query_as::<_, AssetRow>(
             "UPDATE assets
              SET name = COALESCE($2, name),
                  category = COALESCE($3, category),
-                 version = version + 1,
+                 version = CASE WHEN $4 THEN version + 1 ELSE version END,
                  updated_at = NOW()
              WHERE id = $1
              RETURNING id, name, category, model_kind, version, created_at, updated_at",
@@ -144,12 +150,57 @@ impl AssetStore {
         .bind(id)
         .bind(name)
         .bind(category.map(|value| value.to_string()))
+        .bind(bump_version)
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {
             return Ok(None);
         };
         Ok(self.attach_sources(vec![row]).await?.pop())
+    }
+
+    /// Replaces the stored file of one source slot.
+    ///
+    /// The variants derived from the old file are dropped (their bytes no longer
+    /// match the source) and the asset version is bumped so clients download the
+    /// new upload.
+    pub async fn replace_source(
+        &self,
+        asset_id: Uuid,
+        source: NewAssetSource,
+    ) -> Result<Option<Asset>, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE asset_sources
+             SET filename = $3, mime = $4, size_bytes = $5, sha256 = $6,
+                 has_draco = $7, lod = $8
+             WHERE asset_id = $1 AND slot = $2",
+        )
+        .bind(asset_id)
+        .bind(source.slot.to_string())
+        .bind(&source.filename)
+        .bind(&source.mime)
+        .bind(source.size_bytes)
+        .bind(&source.sha256)
+        .bind(source.has_draco)
+        .bind(source.lod.map(|level| level as i16))
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        sqlx::query("DELETE FROM asset_variants WHERE asset_id = $1 AND slot = $2")
+            .bind(asset_id)
+            .bind(source.slot.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("UPDATE assets SET version = version + 1, updated_at = NOW() WHERE id = $1")
+            .bind(asset_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        self.get(asset_id).await
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<bool, sqlx::Error> {
@@ -209,6 +260,59 @@ impl AssetStore {
             return Ok(None);
         }
         self.get(asset_id).await
+    }
+
+    /// Updates size/sha256 for one stored file and bumps the asset version when
+    /// something actually changed. Used by the asset-store repair pass after
+    /// normalizing embedded GLB data.
+    pub async fn sync_file_metadata(
+        &self,
+        asset_id: Uuid,
+        slot: AssetSourceSlot,
+        filename: &str,
+        size_bytes: i64,
+        sha256: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let source = sqlx::query(
+            "UPDATE asset_sources
+             SET size_bytes = $4, sha256 = $5
+             WHERE asset_id = $1 AND slot = $2 AND filename = $3
+               AND (size_bytes IS DISTINCT FROM $4 OR sha256 IS DISTINCT FROM $5)",
+        )
+        .bind(asset_id)
+        .bind(slot.to_string())
+        .bind(filename)
+        .bind(size_bytes)
+        .bind(sha256)
+        .execute(&mut *transaction)
+        .await?;
+        let variant = sqlx::query(
+            "UPDATE asset_variants
+             SET size_bytes = $4, sha256 = $5
+             WHERE asset_id = $1 AND slot = $2 AND filename = $3
+               AND (size_bytes IS DISTINCT FROM $4 OR sha256 IS DISTINCT FROM $5)",
+        )
+        .bind(asset_id)
+        .bind(slot.to_string())
+        .bind(filename)
+        .bind(size_bytes)
+        .bind(sha256)
+        .execute(&mut *transaction)
+        .await?;
+        let changed = source.rows_affected() + variant.rows_affected() > 0;
+        if changed {
+            sqlx::query(
+                "UPDATE assets
+                 SET version = version + 1, updated_at = NOW()
+                 WHERE id = $1",
+            )
+            .bind(asset_id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(changed)
     }
 
     async fn attach_sources(&self, rows: Vec<AssetRow>) -> Result<Vec<Asset>, sqlx::Error> {

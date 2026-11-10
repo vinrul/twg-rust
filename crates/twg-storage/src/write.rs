@@ -534,7 +534,7 @@ impl WriteStore {
         }
 
         let text_markers = sqlx::query_as::<_, CopyTextMarkerRow>(
-            "SELECT text, color, font_size, align, wrap_text, pos_x, pos_y
+            "SELECT text, color, font_size, align, wrap_text, pos_x, pos_y, altitude
              FROM text_markers WHERE skenario_id = $1 ORDER BY created_at ASC",
         )
         .bind(source_id)
@@ -544,8 +544,8 @@ impl WriteStore {
             sqlx::query(
                 "INSERT INTO text_markers (
                      operasi_id, skenario_id, text, color, font_size, align, wrap_text,
-                     pos_x, pos_y
-                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                     pos_x, pos_y, altitude
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             )
             .bind(target_operasi_id)
             .bind(new_id)
@@ -556,6 +556,7 @@ impl WriteStore {
             .bind(marker.wrap_text)
             .bind(marker.pos_x)
             .bind(marker.pos_y)
+            .bind(marker.altitude)
             .execute(&mut *transaction)
             .await?;
         }
@@ -965,6 +966,24 @@ impl WriteStore {
         Ok(row.into_contract(&context))
     }
 
+    pub async fn update_marker_unit(&self, id: Uuid, unit_id: Uuid) -> Result<Marker, WriteError> {
+        let row = sqlx::query_as::<_, MarkerRow>(
+            "UPDATE markers
+             SET unit_id = $2, updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       keterangan, shoot, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(unit_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(WriteError::NotFound("marker not found"))?;
+        let context = self.context(row.skenario_id).await?;
+        Ok(row.into_contract(&context))
+    }
+
     pub async fn update_marker_scale(
         &self,
         id: Uuid,
@@ -1286,14 +1305,15 @@ impl WriteStore {
         wrap_text: bool,
         pos_x: f64,
         pos_y: f64,
+        altitude: f64,
     ) -> Result<TextMarker, WriteError> {
         let row = sqlx::query_as::<_, TextMarkerRow>(
             "INSERT INTO text_markers (
                  operasi_id, skenario_id, text, color, font_size, align, wrap_text,
-                 pos_x, pos_y
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 pos_x, pos_y, altitude
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING id, skenario_id, text, color, font_size, align, wrap_text, pos_x,
-                       pos_y, created_at, updated_at",
+                       pos_y, altitude, created_at, updated_at",
         )
         .bind(operasi_id)
         .bind(skenario_id)
@@ -1304,6 +1324,7 @@ impl WriteStore {
         .bind(wrap_text)
         .bind(pos_x)
         .bind(pos_y)
+        .bind(altitude)
         .fetch_one(&self.pool)
         .await
         .map_err(|error| map_write_error(error, "text marker already exists"))?;
@@ -1327,7 +1348,7 @@ impl WriteStore {
                  updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, text, color, font_size, align, wrap_text, pos_x,
-                       pos_y, created_at, updated_at",
+                       pos_y, altitude, created_at, updated_at",
         )
         .bind(id)
         .bind(text)
@@ -1347,16 +1368,18 @@ impl WriteStore {
         id: Uuid,
         pos_x: f64,
         pos_y: f64,
+        altitude: f64,
     ) -> Result<TextMarker, WriteError> {
         let row = sqlx::query_as::<_, TextMarkerRow>(
-            "UPDATE text_markers SET pos_x = $2, pos_y = $3, updated_at = NOW()
+            "UPDATE text_markers SET pos_x = $2, pos_y = $3, altitude = $4, updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, text, color, font_size, align, wrap_text, pos_x,
-                       pos_y, created_at, updated_at",
+                       pos_y, altitude, created_at, updated_at",
         )
         .bind(id)
         .bind(pos_x)
         .bind(pos_y)
+        .bind(altitude)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(WriteError::NotFound("text marker not found"))?;
@@ -2931,6 +2954,7 @@ struct TextMarkerRow {
     wrap_text: Option<bool>,
     pos_x: Option<f64>,
     pos_y: Option<f64>,
+    altitude: Option<f64>,
     created_at: Option<NaiveDateTime>,
     updated_at: Option<NaiveDateTime>,
 }
@@ -2948,6 +2972,7 @@ impl TextMarkerRow {
             wrap_text: self.wrap_text.unwrap_or(false),
             pos_x: self.pos_x.unwrap_or(0.0),
             pos_y: self.pos_y.unwrap_or(0.0),
+            altitude: self.altitude.unwrap_or(0.0),
             created_at: wita(self.created_at),
             updated_at: wita(self.updated_at),
         }
@@ -3084,6 +3109,7 @@ struct CopyTextMarkerRow {
     wrap_text: bool,
     pos_x: f64,
     pos_y: f64,
+    altitude: f64,
 }
 
 #[derive(Debug, FromRow)]

@@ -71,6 +71,13 @@ pub struct MarkerNameRequest {
     pub keterangan: String,
 }
 
+/// Changes which unit/model a marker points at. The editor stores a server asset
+/// UUID here when the marker was added from the asset library.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkerUnitRequest {
+    pub unit_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarkerScaleRequest {
     pub scale: f64,

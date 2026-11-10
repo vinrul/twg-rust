@@ -1,12 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use bevy::prelude::Vec3;
 use bevy_egui::egui;
 use twg_map::{BaseLayer, GeoPoint, MapCameraState};
 use twg_render::{
-    EditorGizmo, EditorGizmoAxis, EditorGrid, EditorScene, EditorSceneKind, EditorSceneObject,
+    EditorGizmo, EditorGizmoAxis, EditorGizmoMode, EditorGrid, EditorModelShading, EditorPlayModel,
+    EditorScene, EditorSceneKind, EditorSceneObject, EditorShapeKind,
 };
 use uuid::Uuid;
+
+use super::textures;
 
 pub type ObjectKey = u64;
 
@@ -59,28 +63,115 @@ pub fn unit_for_uuid(id: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Model file of a server asset, resolved from the offline cache. The asset UUID
+/// is what gets persisted in `markers.unit_id`, so a marker keeps its model
+/// across save/reload without changing the server contract.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerAssetModel {
+    pub name: String,
+    /// Bevy asset path, e.g. `twg-cache://<id>/static/original.glb`.
+    pub path: String,
+    pub base_scale: f32,
+    /// The file uses Draco compression and must skip glTF validation.
+    pub draco: bool,
+    /// The asset was uploaded as an animated model (idle + animation slots).
+    pub animated: bool,
+    /// Cached path of the animated file, used in Play mode while moving.
+    pub animation_path: Option<String>,
+    pub animation_draco: bool,
+}
+
+/// One row of the editor's Assets tab (server catalogue, models only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorAssetRow {
+    /// Asset UUID as a string; becomes `unit_id` when the marker is created.
+    pub unit_id: String,
+    pub name: String,
+    pub kind_label: String,
+    /// The model file exists in the offline cache and can be rendered.
+    pub cached: bool,
+}
+
+/// One image asset available as a shape texture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorTextureRow {
+    pub id: String,
+    pub name: String,
+    /// A local cache path or server URL is available.
+    pub available: bool,
+}
+
+/// Asset dragged from the Assets tab onto the map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetMarkerDraft {
+    pub unit_id: String,
+    pub name: String,
+}
+
+/// Height in meters server models are normalised to when added as markers.
+pub const ASSET_MARKER_HEIGHT: f32 = 2.0;
+
+/// Smallest marker scale the editor accepts (Inspector and gizmo).
+pub const MIN_MARKER_SCALE: f64 = 0.001;
+
+/// RTS play mode tuning.
+const PLAY_ARRIVE_METERS: f64 = 0.6;
+const PLAY_UNIT_RADIUS: f64 = 0.9;
+const PLAY_FORMATION_SPACING: f64 = 2.6;
+const PLAY_LOOKAHEAD_METERS: f64 = 6.0;
+
+/// Runtime state of one movable unit in Play mode. Positions live here (not in
+/// the marker object) so playing never dirties or saves the scenario.
+#[derive(Debug, Clone, Copy)]
+pub struct PlayUnit {
+    pub position: GeoPoint,
+    pub target: Option<GeoPoint>,
+    /// Bearing in degrees clockwise from north.
+    pub heading_deg: f32,
+    /// Metres per second.
+    pub speed: f64,
+    /// Footprint radius used for the selection ring on the ground.
+    pub radius: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlayObstacle {
+    pub center: GeoPoint,
+    pub radius: f64,
+}
+
+/// RTS play mode state: movable animated markers plus static obstacles.
+#[derive(Debug, Clone, Default)]
+pub struct PlayState {
+    pub active: bool,
+    pub units: BTreeMap<ObjectKey, PlayUnit>,
+    pub obstacles: Vec<PlayObstacle>,
+    /// Screen-space marquee while dragging on empty ground.
+    pub marquee: Option<(egui::Pos2, egui::Pos2)>,
+    /// Right button press position, used to tell a move click from an orbit drag.
+    pub right_press: Option<egui::Pos2>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditorTool {
     Select,
     Move,
     Rotate,
     Scale,
-    Marker,
+    Shape,
     Line,
-    Polygon,
     Text,
     Measure,
 }
 
 impl EditorTool {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::Select,
         Self::Move,
         Self::Rotate,
         Self::Scale,
-        Self::Marker,
+        Self::Shape,
         Self::Line,
-        Self::Polygon,
         Self::Text,
         Self::Measure,
     ];
@@ -91,9 +182,8 @@ impl EditorTool {
             Self::Move => "Move",
             Self::Rotate => "Rotate",
             Self::Scale => "Scale",
-            Self::Marker => "Marker",
+            Self::Shape => "Bentuk",
             Self::Line => "Line",
-            Self::Polygon => "Polygon",
             Self::Text => "Text",
             Self::Measure => "Measure",
         }
@@ -105,9 +195,8 @@ impl EditorTool {
             Self::Move => "M",
             Self::Rotate => "R",
             Self::Scale => "K",
-            Self::Marker => "P",
+            Self::Shape => "B",
             Self::Line => "L",
-            Self::Polygon => "G",
             Self::Text => "T",
             Self::Measure => "D",
         }
@@ -119,11 +208,10 @@ impl EditorTool {
             Self::Move => "W",
             Self::Rotate => "E",
             Self::Scale => "R",
-            Self::Marker => "1",
+            Self::Shape => "1",
             Self::Line => "2",
-            Self::Polygon => "3",
-            Self::Text => "4",
-            Self::Measure => "5",
+            Self::Text => "3",
+            Self::Measure => "4",
         }
     }
 
@@ -154,7 +242,7 @@ impl ObjectType {
         match self {
             Self::Marker => "Marker",
             Self::Line => "Line",
-            Self::Building => "Building",
+            Self::Building => "Bentuk 3D",
             Self::Text => "Text",
             Self::Particle => "Particle",
         }
@@ -231,10 +319,158 @@ pub struct LineObject {
 
 #[derive(Clone, Debug)]
 pub struct BuildingObject {
-    pub points: Vec<[f64; 2]>,
+    pub shape: EditorShapeKind,
+    /// Centre of the footprint.
+    pub lon: f64,
+    pub lat: f64,
+    pub altitude: f64,
+    pub rot_x: f64,
+    pub rot_y: f64,
+    pub rot_z: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+    pub scale_z: f64,
     pub color: String,
+    pub use_texture: bool,
+    /// Asset UUID of the image texture.
+    pub texture: Option<String>,
+    /// Footprint for `Custom`; empty for primitive shapes.
+    pub points: Vec<[f64; 2]>,
+    /// Extrusion height for `Custom` (primitives use `scale_y`).
     pub height: f64,
     pub keterangan: String,
+}
+
+impl BuildingObject {
+    pub fn primitive(shape: EditorShapeKind, point: GeoPoint) -> Self {
+        let (scale_x, scale_y, scale_z) = match shape {
+            EditorShapeKind::Ground => (20.0, 1.0, 20.0),
+            EditorShapeKind::Cone | EditorShapeKind::Sphere => (4.0, 4.0, 4.0),
+            _ => (4.0, 3.0, 4.0),
+        };
+        Self {
+            shape,
+            lon: point.longitude,
+            lat: point.latitude,
+            altitude: 0.0,
+            rot_x: 0.0,
+            rot_y: 0.0,
+            rot_z: 0.0,
+            scale_x,
+            scale_y,
+            scale_z,
+            color: "#ff9f43".to_owned(),
+            use_texture: false,
+            texture: None,
+            points: Vec::new(),
+            height: scale_y,
+            keterangan: String::new(),
+        }
+    }
+
+    pub fn custom(points: Vec<GeoPoint>) -> Self {
+        let center = centroid_of(&points).unwrap_or(GeoPoint::new(0.0, 0.0));
+        Self {
+            shape: EditorShapeKind::Custom,
+            lon: center.longitude,
+            lat: center.latitude,
+            altitude: 0.0,
+            rot_x: 0.0,
+            rot_y: 0.0,
+            rot_z: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            scale_z: 1.0,
+            color: "#ff9f43".to_owned(),
+            use_texture: false,
+            texture: None,
+            points: points
+                .iter()
+                .map(|point| [point.longitude, point.latitude])
+                .collect(),
+            height: 12.0,
+            keterangan: String::new(),
+        }
+    }
+
+    pub fn point(&self) -> GeoPoint {
+        GeoPoint::new(self.lon, self.lat)
+    }
+
+    pub fn translate(&mut self, east_meters: f64, north_meters: f64) {
+        if let Ok(point) = GeoPoint::from_local_offset(self.point(), east_meters, north_meters) {
+            self.lon = point.longitude;
+            self.lat = point.latitude;
+        }
+        offset_points(&mut self.points, east_meters, north_meters);
+    }
+
+    /// Places the footprint centre on `point`, keeping the local outline
+    /// aligned with it.
+    pub fn set_position(&mut self, point: GeoPoint) {
+        let Ok(offset) = point.local_offset(self.point()) else {
+            return;
+        };
+        self.lon = point.longitude;
+        self.lat = point.latitude;
+        offset_points(&mut self.points, offset.east_meters, offset.north_meters);
+    }
+
+    /// Outline used for picking, selection and focus. Primitive shapes use a
+    /// square footprint derived from their scale.
+    pub fn outline(&self) -> Vec<GeoPoint> {
+        if self.shape == EditorShapeKind::Custom && !self.points.is_empty() {
+            return self
+                .points
+                .iter()
+                .map(|point| GeoPoint::new(point[0], point[1]))
+                .collect();
+        }
+        let half_east = (self.scale_x.abs() * 0.5).max(0.5);
+        let half_north = (self.scale_z.abs() * 0.5).max(0.5);
+        let mut points = Vec::with_capacity(4);
+        for (east, north) in [
+            (-half_east, -half_north),
+            (half_east, -half_north),
+            (half_east, half_north),
+            (-half_east, half_north),
+        ] {
+            if let Ok(point) = GeoPoint::from_local_offset(self.point(), east, north) {
+                points.push(point);
+            }
+        }
+        points
+    }
+
+    /// Height sent to the legacy building record.
+    pub fn render_height(&self) -> f64 {
+        if self.shape == EditorShapeKind::Custom {
+            self.height
+        } else {
+            self.scale_y.abs().max(0.1)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectTransform {
+    pub lon: f64,
+    pub lat: f64,
+    pub altitude: f64,
+    pub rot: [f64; 3],
+    pub scale: [f64; 3],
+}
+
+impl Default for ObjectTransform {
+    fn default() -> Self {
+        Self {
+            lon: 0.0,
+            lat: 0.0,
+            altitude: 0.0,
+            rot: [0.0; 3],
+            scale: [1.0; 3],
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -242,6 +478,7 @@ pub struct TextObject {
     pub text: String,
     pub lon: f64,
     pub lat: f64,
+    pub altitude: f64,
     pub color: String,
     pub font_size: f64,
     pub align: String,
@@ -301,10 +538,7 @@ impl EditorKind {
                 .points
                 .first()
                 .map(|point| GeoPoint::new(point[0], point[1])),
-            Self::Building(building) => building
-                .points
-                .first()
-                .map(|point| GeoPoint::new(point[0], point[1])),
+            Self::Building(building) => Some(building.point()),
             Self::Text(text) => Some(text.point()),
             Self::Particle(particle) => Some(particle.point()),
         }
@@ -318,11 +552,7 @@ impl EditorKind {
                 .iter()
                 .map(|point| GeoPoint::new(point[0], point[1]))
                 .collect(),
-            Self::Building(building) => building
-                .points
-                .iter()
-                .map(|point| GeoPoint::new(point[0], point[1]))
-                .collect(),
+            Self::Building(building) => building.outline(),
             Self::Text(text) => vec![text.point()],
             Self::Particle(particle) => vec![particle.point()],
         }
@@ -335,6 +565,136 @@ impl EditorKind {
             Self::Building(building) => building.color.clone(),
             Self::Text(text) => text.color.clone(),
             Self::Particle(particle) => particle_color(particle).to_owned(),
+        }
+    }
+
+    /// Point the camera should centre on when this object is clicked in the
+    /// Scene tree. Lines and buildings use the middle of their footprint.
+    pub fn focus_point(&self) -> Option<GeoPoint> {
+        match self {
+            Self::Line(line) => points_centroid(&line.points),
+            _ => self.point(),
+        }
+    }
+
+    /// Approximate object size in meters, used to pick a focus zoom.
+    pub fn focus_extent_meters(&self) -> f64 {
+        match self {
+            Self::Marker(marker) => {
+                let scale = marker
+                    .scale_x
+                    .abs()
+                    .max(marker.scale_y.abs())
+                    .max(marker.scale_z.abs())
+                    .clamp(0.1, 20.0);
+                (2.0 * scale).max(1.5)
+            }
+            Self::Line(line) => points_extent(&line.points).max(6.0),
+            Self::Building(building) => {
+                let outline = building
+                    .outline()
+                    .iter()
+                    .map(|point| [point.longitude, point.latitude])
+                    .collect::<Vec<_>>();
+                points_extent(&outline)
+                    .max(building.scale_y.abs() * 2.0)
+                    .max(4.0)
+            }
+            Self::Text(_) | Self::Particle(_) => 3.0,
+        }
+    }
+
+    /// Position/rotation/scale used by the transform gizmo. Markers and shape
+    /// objects are transformable; lines/text/particles are not.
+    pub fn transform(&self) -> Option<ObjectTransform> {
+        match self {
+            Self::Marker(marker) => Some(ObjectTransform {
+                lon: marker.lon,
+                lat: marker.lat,
+                altitude: marker.altitude,
+                rot: [marker.rot_x, marker.rot_y, marker.rot_z],
+                scale: [marker.scale_x, marker.scale_y, marker.scale_z],
+            }),
+            Self::Building(building) => Some(ObjectTransform {
+                lon: building.lon,
+                lat: building.lat,
+                altitude: building.altitude,
+                rot: [building.rot_x, building.rot_y, building.rot_z],
+                scale: [building.scale_x, building.scale_y, building.scale_z],
+            }),
+            Self::Text(text) => Some(ObjectTransform {
+                lon: text.lon,
+                lat: text.lat,
+                altitude: text.altitude,
+                rot: [0.0; 3],
+                scale: [1.0; 3],
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn set_altitude(&mut self, altitude: f64) {
+        match self {
+            Self::Marker(marker) => marker.altitude = altitude,
+            Self::Building(building) => building.altitude = altitude,
+            Self::Text(text) => text.altitude = altitude,
+            _ => {}
+        }
+    }
+
+    /// Moves the object so its anchor sits on `point`. Used by drag interaction
+    /// so repeated updates place the object instead of accumulating offsets.
+    pub fn set_position(&mut self, point: GeoPoint) {
+        match self {
+            Self::Marker(marker) => marker.set_point(point),
+            Self::Building(building) => building.set_position(point),
+            Self::Text(text) => text.set_point(point),
+            Self::Particle(particle) => {
+                particle.lon = point.longitude;
+                particle.lat = point.latitude;
+            }
+            Self::Line(line) => {
+                let Some(first) = line.points.first().copied() else {
+                    return;
+                };
+                let Ok(offset) = point.local_offset(GeoPoint::new(first[0], first[1])) else {
+                    return;
+                };
+                offset_points(&mut line.points, offset.east_meters, offset.north_meters);
+            }
+        }
+    }
+
+    pub fn set_rotation_axis(&mut self, axis: usize, value: f64) {
+        match self {
+            Self::Marker(marker) => match axis {
+                0 => marker.rot_x = value,
+                1 => marker.rot_y = value,
+                _ => marker.rot_z = value,
+            },
+            Self::Building(building) => match axis {
+                0 => building.rot_x = value,
+                1 => building.rot_y = value,
+                _ => building.rot_z = value,
+            },
+            _ => {}
+        }
+    }
+
+    pub fn set_scale(&mut self, scale: [f64; 3]) {
+        let scale = scale.map(|value| value.max(MIN_MARKER_SCALE));
+        match self {
+            Self::Marker(marker) => {
+                marker.scale_x = scale[0];
+                marker.scale_y = scale[1];
+                marker.scale_z = scale[2];
+            }
+            Self::Building(building) => {
+                building.scale_x = scale[0];
+                building.scale_y = scale[1];
+                building.scale_z = scale[2];
+            }
+            _ => {}
         }
     }
 }
@@ -469,7 +829,10 @@ pub enum DragState {
         start_screen: egui::Pos2,
     },
     Rotate {
-        originals: Vec<(ObjectKey, f64)>,
+        axis: EditorGizmoAxis,
+        /// Original `[rot_x, rot_y, rot_z]` per selected marker.
+        originals: Vec<(ObjectKey, [f64; 3])>,
+        center_screen: egui::Pos2,
         start_angle: f32,
     },
     Scale {
@@ -509,6 +872,8 @@ pub struct EditorState {
     pub deleted: Vec<(ObjectType, Uuid)>,
     pub selected: BTreeSet<ObjectKey>,
     pub tool: EditorTool,
+    /// Primitive created by the Shape tool.
+    pub active_shape: EditorShapeKind,
     pub next_key: ObjectKey,
     pub dirty: bool,
     pub undo: Vec<SceneSnapshot>,
@@ -519,9 +884,11 @@ pub struct EditorState {
     pub snap_meters: f32,
     pub show_grid: bool,
     pub labels_visible: bool,
-    pub show_assets: bool,
     pub show_console: bool,
-    pub bottom_tab: usize,
+    /// Left panel tab: 0 = Scene, 1 = Assets (server models + textures).
+    pub left_tab: usize,
+    /// Viewport shading for imported models (Texture/Solid/Wireframe).
+    pub model_shading: EditorModelShading,
     pub confirm_close: bool,
     pub confirm_reload: bool,
     pub draft_screen: Vec<egui::Pos2>,
@@ -529,10 +896,39 @@ pub struct EditorState {
     pub console: Vec<String>,
     pub preview: bool,
     pub visible: VisibleLayers,
-    pub active_unit: usize,
+    /// Server asset models resolved from the offline cache, keyed by asset UUID.
+    pub marker_models: BTreeMap<String, MarkerAssetModel>,
+    /// Image asset paths (offline cache or server URL), keyed by asset UUID.
+    pub texture_paths: BTreeMap<String, String>,
+    /// Filesystem paths of cached image assets, used by the Inspector preview.
+    pub texture_files: BTreeMap<String, String>,
+    /// Cached egui textures for shape previews, keyed by file path.
+    pub texture_previews: BTreeMap<String, egui::TextureHandle>,
+    /// Imported local textures as `(reference, display name)`.
+    pub local_textures: Vec<(String, String)>,
+    /// Set when the local texture folder changed and must be rescanned.
+    pub local_textures_dirty: bool,
+    /// Server base URL used to resolve `/uploads/...` texture references.
+    pub base_url: String,
+    /// Source file of texture uploads in flight, keyed by object.
+    pub pending_texture_uploads: BTreeMap<ObjectKey, PathBuf>,
+    /// Uploaded textures whose preview is downloading in the background.
+    pub texture_downloads: BTreeSet<String>,
+    /// Uploaded textures whose preview download failed; avoids retry loops.
+    pub texture_download_failed: BTreeSet<String>,
+    /// Finished preview downloads from background threads.
+    pub texture_download_results: textures::PreviewDownloads,
+    /// `(asset id, version)` of the asset list the models were built from.
+    pub marker_model_signature: Vec<(Uuid, i64)>,
+    /// Set while an asset card is being dragged onto the map.
+    pub asset_drag: Option<AssetMarkerDraft>,
+    /// Asks the shell to sync the offline cache with the server manifest.
+    pub requested_asset_sync: bool,
     pub last_click: Option<(f64, egui::Pos2)>,
     pub scenario_center: GeoPoint,
     pub indoor: bool,
+    /// `map_mode` of the loaded scenario, unaffected by the Indoor display toggle.
+    pub scenario_indoor: bool,
     pub floor_plan: bool,
     pub grid_spacing: f32,
     pub grid_extent: f32,
@@ -543,6 +939,8 @@ pub struct EditorState {
     pub render_revision: u64,
     pub projected: Vec<(ObjectKey, ObjectType, Vec<egui::Pos2>, bool)>,
     pub labels: Vec<(egui::Pos2, String, [f32; 4])>,
+    /// Screen-space text objects (content), shown in the editor and in Play.
+    pub text_overlays: Vec<(egui::Pos2, String, [f32; 4], f32)>,
     pub viewport_rect: egui::Rect,
     pub cursor_world: Option<Vec3>,
     pub hover_key: Option<ObjectKey>,
@@ -559,9 +957,22 @@ pub struct EditorState {
     pub requested_north: bool,
     pub requested_geocode: bool,
     pub base_layer: BaseLayer,
+    /// RTS play mode state, rebuilt every time Play starts.
+    pub play: PlayState,
+    /// Screen-space ground rings for the RTS selection overlay, rebuilt every
+    /// frame in [`super::input`].
+    pub play_rings: Vec<(ObjectKey, Vec<egui::Pos2>)>,
     pub save_pending: usize,
     pub save_error: Option<String>,
     pub last_save: Option<String>,
+    /// True while the scenario camera view is being persisted.
+    pub saving_view: bool,
+    /// Time of the last successful camera-view save.
+    pub view_saved_at: Option<String>,
+    /// Camera view last persisted to (or loaded from) the server.
+    pub saved_view: Option<MapCameraState>,
+    /// Base layer that belongs to `saved_view`.
+    pub saved_base_layer: Option<BaseLayer>,
     pub jobs: Vec<super::api::EditorJob>,
 }
 
@@ -585,6 +996,7 @@ impl EditorState {
             deleted: Vec::new(),
             selected: BTreeSet::new(),
             tool: EditorTool::Select,
+            active_shape: EditorShapeKind::Box,
             next_key: 1,
             dirty: false,
             undo: Vec::new(),
@@ -595,9 +1007,9 @@ impl EditorState {
             snap_meters: 0.0,
             show_grid: false,
             labels_visible: true,
-            show_assets: true,
             show_console: true,
-            bottom_tab: 0,
+            left_tab: 0,
+            model_shading: EditorModelShading::Textured,
             confirm_close: false,
             confirm_reload: false,
             draft_screen: Vec::new(),
@@ -605,10 +1017,24 @@ impl EditorState {
             console: Vec::new(),
             preview: false,
             visible: VisibleLayers::all(),
-            active_unit: 0,
+            marker_models: BTreeMap::new(),
+            texture_paths: BTreeMap::new(),
+            texture_files: BTreeMap::new(),
+            texture_previews: BTreeMap::new(),
+            local_textures: Vec::new(),
+            local_textures_dirty: true,
+            base_url: String::new(),
+            pending_texture_uploads: BTreeMap::new(),
+            texture_downloads: BTreeSet::new(),
+            texture_download_failed: BTreeSet::new(),
+            texture_download_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            marker_model_signature: Vec::new(),
+            asset_drag: None,
+            requested_asset_sync: false,
             last_click: None,
             scenario_center: MapCameraState::default().center,
             indoor: false,
+            scenario_indoor: false,
             floor_plan: false,
             grid_spacing: 1.0,
             grid_extent: 400.0,
@@ -619,6 +1045,7 @@ impl EditorState {
             render_revision: 1,
             projected: Vec::new(),
             labels: Vec::new(),
+            text_overlays: Vec::new(),
             viewport_rect: egui::Rect::NOTHING,
             cursor_world: None,
             hover_key: None,
@@ -635,9 +1062,15 @@ impl EditorState {
             requested_north: false,
             requested_geocode: false,
             base_layer: BaseLayer::OpenStreetMap,
+            play: PlayState::default(),
+            play_rings: Vec::new(),
             save_pending: 0,
             save_error: None,
             last_save: None,
+            saving_view: false,
+            view_saved_at: None,
+            saved_view: None,
+            saved_base_layer: None,
             jobs: Vec::new(),
         }
     }
@@ -656,6 +1089,26 @@ impl EditorState {
         self.redo.clear();
         self.next_key = 1;
         self.dirty = false;
+        self.touch();
+    }
+
+    /// True when the live camera and base layer still match the view stored
+    /// on the server (or the one loaded with the scenario).
+    pub fn view_is_saved(&self) -> bool {
+        let (Some(saved), Some(layer)) = (self.saved_view, self.saved_base_layer) else {
+            return false;
+        };
+        layer == self.base_layer && same_camera(saved, self.map_state)
+    }
+
+    pub fn set_tool(&mut self, tool: EditorTool) {
+        if self.tool == tool {
+            return;
+        }
+        self.tool = tool;
+        self.draft.clear();
+        // The transform gizmo depends on the tool, so the scene must be rebuilt
+        // immediately instead of on the next unrelated change.
         self.touch();
     }
 
@@ -696,6 +1149,18 @@ impl EditorState {
         })
     }
 
+    /// First selected object that supports the transform gizmo, with a copy of
+    /// its transform values.
+    pub fn primary_transform(&self) -> Option<(ObjectKey, ObjectTransform)> {
+        self.selected.iter().find_map(|key| {
+            let object = self.object(*key)?;
+            if !object.visible {
+                return None;
+            }
+            object.kind.transform().map(|transform| (*key, transform))
+        })
+    }
+
     pub fn select_only(&mut self, key: ObjectKey) {
         self.selected.clear();
         self.selected.insert(key);
@@ -720,6 +1185,228 @@ impl EditorState {
             self.selected.clear();
             self.touch();
         }
+    }
+
+    /// Flies the camera to an object (pan + zoom) so clicking a row in the
+    /// Scene tree always brings the 3D model into view.
+    pub fn focus_object(&mut self, key: ObjectKey) {
+        let Some(object) = self.object(key) else {
+            return;
+        };
+        let Some(center) = object.kind.focus_point() else {
+            return;
+        };
+        let extent = object.kind.focus_extent_meters().max(1.0);
+        let viewport_height = if self.viewport_rect.height() > 100.0 {
+            self.viewport_rect.height()
+        } else {
+            720.0
+        };
+        // Frame the object at roughly a fifth of the viewport height, clamped
+        // so very small/huge windows still get a sensible distance.
+        let target_pixels = (viewport_height * 0.22).clamp(90.0, 220.0);
+        let desired_mpp = extent / f64::from(target_pixels);
+        let current_mpp = self.map_state.meters_per_pixel().max(1.0e-9);
+        let zoom_delta = (current_mpp / desired_mpp).log2();
+        let zoom = (f64::from(self.map_state.zoom) + zoom_delta)
+            .clamp(f64::from(twg_map::MIN_ZOOM), f64::from(twg_map::MAX_ZOOM))
+            as f32;
+        let mut target = self.map_state;
+        target.center = center;
+        target.zoom = zoom;
+        self.requested_flight = Some(target);
+    }
+
+    // ------------------------------------------------------------- play mode
+
+    /// Builds the RTS play state: animated asset markers become movable units,
+    /// every other visible marker becomes a static obstacle.
+    pub fn start_play(&mut self) {
+        self.play = PlayState {
+            active: true,
+            ..PlayState::default()
+        };
+        self.selected.clear();
+        if !self.visible.allows(ObjectType::Marker) {
+            return;
+        }
+        for object in &self.objects {
+            if !object.visible {
+                continue;
+            }
+            let EditorKind::Marker(marker) = &object.kind else {
+                continue;
+            };
+            let Some(point) = object.point() else {
+                continue;
+            };
+            let animated = self
+                .marker_models
+                .get(&marker.unit_id)
+                .is_some_and(|model| model.animated && model.animation_path.is_some());
+            let footprint = marker.scale_x.abs().max(marker.scale_z.abs()).max(0.5);
+            let radius = (1.4 * footprint).clamp(0.8, 12.0);
+            if animated {
+                self.play.units.insert(
+                    object.key,
+                    PlayUnit {
+                        position: point,
+                        target: None,
+                        // Bearing (clockwise from north) that matches the
+                        // marker's authored Y rotation when Play starts.
+                        heading_deg: 180.0 - marker.rot_y as f32,
+                        speed: play_speed(&marker.kategori),
+                        radius,
+                    },
+                );
+            } else {
+                self.play.obstacles.push(PlayObstacle {
+                    center: point,
+                    radius,
+                });
+            }
+        }
+    }
+
+    /// Leaves Play mode. Marker authoring positions were never modified.
+    pub fn stop_play(&mut self) {
+        self.play = PlayState::default();
+        self.selected.clear();
+    }
+
+    /// Advances every moving unit, steering around static obstacles.
+    pub fn play_tick(&mut self, delta_seconds: f64) {
+        if !self.play.active {
+            return;
+        }
+        let dt = delta_seconds.clamp(0.0, 0.1);
+        if dt <= 0.0 {
+            return;
+        }
+        for unit in self.play.units.values_mut() {
+            let Some(target) = unit.target else {
+                continue;
+            };
+            let Ok(to_target) = target.local_offset(unit.position) else {
+                unit.target = None;
+                continue;
+            };
+            let distance = to_target.east_meters.hypot(to_target.north_meters);
+            if distance <= PLAY_ARRIVE_METERS {
+                unit.position = target;
+                unit.target = None;
+                continue;
+            }
+            let (east, north) = play_steer(to_target, unit.position, &self.play.obstacles);
+            unit.heading_deg = east.atan2(north).to_degrees() as f32;
+            let step = unit.speed * dt;
+            let Ok(mut candidate) =
+                GeoPoint::from_local_offset(unit.position, east * step, north * step)
+            else {
+                continue;
+            };
+            // Push the candidate out of any obstacle it still intersects, so a
+            // sharp turn cannot clip through a static model.
+            for obstacle in &self.play.obstacles {
+                let Ok(relative) = obstacle.center.local_offset(candidate) else {
+                    continue;
+                };
+                let gap = relative.east_meters.hypot(relative.north_meters);
+                let minimum = obstacle.radius + PLAY_UNIT_RADIUS;
+                if gap >= minimum || gap <= 1.0e-6 {
+                    continue;
+                }
+                let push = minimum - gap;
+                if let Ok(pushed) = GeoPoint::from_local_offset(
+                    candidate,
+                    -relative.east_meters / gap * push,
+                    -relative.north_meters / gap * push,
+                ) {
+                    candidate = pushed;
+                }
+            }
+            unit.position = candidate;
+        }
+    }
+
+    /// Sends the selected units to `target` in a grid formation (rows grow
+    /// toward the camera). A single unit goes straight to the click point.
+    pub fn play_move_selected(&mut self, target: GeoPoint) {
+        if !self.play.active {
+            return;
+        }
+        let keys = self
+            .selected
+            .iter()
+            .copied()
+            .filter(|key| self.play.units.contains_key(key))
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return;
+        }
+        let count = keys.len();
+        let columns = (count as f64).sqrt().ceil() as usize;
+        let columns = columns.max(1);
+        let rows = count.div_ceil(columns);
+        for (index, key) in keys.into_iter().enumerate() {
+            let row = index / columns;
+            let column = index % columns;
+            let east = (column as f64 - (columns as f64 - 1.0) / 2.0) * PLAY_FORMATION_SPACING;
+            let north = ((rows as f64 - 1.0) / 2.0 - row as f64) * PLAY_FORMATION_SPACING;
+            let slot = GeoPoint::from_local_offset(target, east, north).unwrap_or(target);
+            if let Some(unit) = self.play.units.get_mut(&key) {
+                unit.target = Some(slot);
+            }
+        }
+    }
+
+    /// Returns the animated unit under a screen point, if any.
+    pub fn play_pick(&self, position: egui::Pos2) -> Option<ObjectKey> {
+        let mut best: Option<(f32, ObjectKey)> = None;
+        for (key, kind, points, _) in &self.projected {
+            if !matches!(kind, ObjectType::Marker) || !self.play.units.contains_key(key) {
+                continue;
+            }
+            let Some(point) = points.first() else {
+                continue;
+            };
+            let distance = point.distance(position);
+            if distance <= 26.0 && best.is_none_or(|(nearest, _)| distance < nearest) {
+                best = Some((distance, *key));
+            }
+        }
+        best.map(|(_, key)| key)
+    }
+
+    /// Selection changes in Play never call `touch()`: the selection marker is
+    /// drawn by egui, so the glTF scene must not be rebuilt.
+    pub fn play_select_only(&mut self, key: ObjectKey) {
+        self.selected.clear();
+        self.selected.insert(key);
+    }
+
+    pub fn play_toggle_selected(&mut self, key: ObjectKey) {
+        if !self.selected.insert(key) {
+            self.selected.remove(&key);
+        }
+    }
+
+    pub fn play_box_select(&mut self, rect: egui::Rect, additive: bool) {
+        if !additive {
+            self.selected.clear();
+        }
+        for (key, kind, points, _) in &self.projected {
+            if !matches!(kind, ObjectType::Marker) || !self.play.units.contains_key(key) {
+                continue;
+            }
+            if points.first().is_some_and(|point| rect.contains(*point)) {
+                self.selected.insert(*key);
+            }
+        }
+    }
+
+    pub fn play_clear_selection(&mut self) {
+        self.selected.clear();
     }
 
     pub fn push_undo(&mut self) {
@@ -816,6 +1503,42 @@ impl EditorState {
         self.touch();
     }
 
+    /// Adds a marker backed by a server asset. The asset UUID is stored in
+    /// `unit_id`, so reloading the scenario re-resolves the cached model file.
+    pub fn add_asset_marker(&mut self, draft: &AssetMarkerDraft, point: GeoPoint) {
+        self.push_undo();
+        let key = self.alloc_key();
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name: draft.name.clone(),
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Marker(MarkerObject {
+                unit: unit_for_uuid(&draft.unit_id),
+                unit_id: draft.unit_id.clone(),
+                lon: point.longitude,
+                lat: point.latitude,
+                // New asset markers start flat on the ground and unrotated;
+                // the inspector/gizmo is used to orient them.
+                rot_x: 0.0,
+                rot_y: 0.0,
+                rot_z: 0.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                scale_z: 1.0,
+                altitude: 0.0,
+                jumlah: 1,
+                kategori: "personel".to_owned(),
+                keterangan: String::new(),
+            }),
+        });
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+    }
+
     pub fn add_text(&mut self, point: GeoPoint) {
         self.push_undo();
         let key = self.alloc_key();
@@ -829,6 +1552,7 @@ impl EditorState {
                 text: "Teks baru".to_owned(),
                 lon: point.longitude,
                 lat: point.latitude,
+                altitude: 0.0,
                 color: "#ffffff".to_owned(),
                 font_size: 18.0,
                 align: "center".to_owned(),
@@ -842,14 +1566,6 @@ impl EditorState {
     }
 
     pub fn add_line(&mut self, points: Vec<GeoPoint>) {
-        self.add_polyline(points, false);
-    }
-
-    pub fn add_polygon(&mut self, points: Vec<GeoPoint>) {
-        self.add_polyline(points, true);
-    }
-
-    fn add_polyline(&mut self, points: Vec<GeoPoint>, polygon: bool) {
         if points.len() < 2 {
             return;
         }
@@ -859,32 +1575,56 @@ impl EditorState {
             .iter()
             .map(|point| [point.longitude, point.latitude])
             .collect::<Vec<_>>();
-        let kind = if polygon {
-            EditorKind::Building(BuildingObject {
-                points: coordinates,
-                color: "#ff9f43".to_owned(),
-                height: 12.0,
-                keterangan: String::new(),
-            })
-        } else {
-            EditorKind::Line(LineObject {
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name: format!("Garis {key}"),
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Line(LineObject {
                 points: coordinates,
                 color: "#00b8ff".to_owned(),
                 width: 4.0,
                 alpha: 0.9,
-            })
-        };
+            }),
+        });
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+    }
+
+    pub fn add_polygon(&mut self, points: Vec<GeoPoint>) {
+        if points.len() < 3 {
+            return;
+        }
+        self.push_undo();
+        let key = self.alloc_key();
         self.objects.push(EditorObject {
             key,
             server_id: None,
-            name: if polygon {
-                format!("Bangunan {key}")
-            } else {
-                format!("Garis {key}")
-            },
+            name: format!("Custom mesh {key}"),
             visible: true,
             dirty: true,
-            kind,
+            kind: EditorKind::Building(BuildingObject::custom(points)),
+        });
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+    }
+
+    /// Creates a primitive shape (box, cylinder, sphere, cone, plane, custom).
+    pub fn add_shape(&mut self, shape: EditorShapeKind, point: GeoPoint) {
+        self.push_undo();
+        let key = self.alloc_key();
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name: format!("{} {key}", shape.label()),
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Building(BuildingObject::primitive(shape, point)),
         });
         self.selected.clear();
         self.selected.insert(key);
@@ -965,6 +1705,114 @@ impl EditorState {
             .unwrap_or(point)
     }
 
+    /// Resolves an asset id or a `local:` reference to the path the renderer
+    /// should load for a shape texture.
+    pub fn texture_source(&self, reference: &str) -> Option<String> {
+        if textures::is_uploaded_reference(reference) {
+            let base = self.base_url.trim_end_matches('/');
+            (!base.is_empty()).then(|| format!("{base}{reference}"))
+        } else if reference.starts_with(textures::LOCAL_TEXTURE_PREFIX) {
+            textures::local_texture_asset_path(reference)
+        } else {
+            self.texture_paths.get(reference).cloned()
+        }
+    }
+
+    /// Cached egui preview for a shape texture, or `None` when the image is
+    /// not available locally (remote URL, missing upload, web build).
+    pub fn texture_preview(
+        &mut self,
+        ctx: &egui::Context,
+        reference: &str,
+    ) -> Option<egui::TextureHandle> {
+        self.poll_texture_downloads();
+        let path = if textures::is_uploaded_reference(reference) {
+            textures::uploaded_texture_file(reference)
+        } else if reference.starts_with(textures::LOCAL_TEXTURE_PREFIX) {
+            textures::local_texture_file(reference)
+        } else {
+            self.texture_files.get(reference).map(PathBuf::from)
+        };
+        let Some(path) = path else {
+            #[cfg(not(target_arch = "wasm32"))]
+            if textures::is_uploaded_reference(reference) {
+                self.start_texture_download(reference);
+            }
+            return None;
+        };
+        let cache_key = path.display().to_string();
+        if let Some(handle) = self.texture_previews.get(&cache_key) {
+            return Some(handle.clone());
+        }
+        let handle = textures::load_preview(ctx, &path)?;
+        self.texture_previews.insert(cache_key, handle.clone());
+        Some(handle)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_texture_download(&mut self, reference: &str) {
+        if self.base_url.is_empty()
+            || self.texture_downloads.contains(reference)
+            || self.texture_download_failed.contains(reference)
+        {
+            return;
+        }
+        if textures::download_uploaded_texture(
+            reference,
+            &self.base_url,
+            &self.texture_download_results,
+        ) {
+            self.texture_downloads.insert(reference.to_owned());
+        }
+    }
+
+    fn poll_texture_downloads(&mut self) {
+        let results = self
+            .texture_download_results
+            .lock()
+            .map(|mut results| std::mem::take(&mut *results))
+            .unwrap_or_default();
+        for (reference, path) in results {
+            self.texture_downloads.remove(&reference);
+            if path.is_none() {
+                self.texture_download_failed.insert(reference);
+            }
+        }
+    }
+
+    /// Rescans the local texture folder when it may have changed.
+    pub fn refresh_local_textures(&mut self) {
+        if !self.local_textures_dirty {
+            return;
+        }
+        self.local_textures = textures::scan_local_textures();
+        self.local_textures_dirty = false;
+    }
+
+    /// Applies the server URL returned by the image upload endpoint and keeps
+    /// a local copy for the Inspector preview.
+    pub fn apply_uploaded_texture(&mut self, key: ObjectKey, url: &str, source: Option<&Path>) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(source) = source {
+            textures::cache_uploaded_texture(url, source);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = source;
+        if self.object(key).is_none() {
+            return;
+        }
+        self.push_undo();
+        if let Some(object) = self.object_mut(key)
+            && let EditorKind::Building(building) = &mut object.kind
+        {
+            building.texture = Some(url.to_owned());
+            building.use_texture = true;
+            object.dirty = true;
+        }
+        self.dirty = true;
+        self.touch();
+    }
+
     pub fn build_scene(&self) -> EditorScene {
         let mut objects = Vec::new();
         for object in &self.objects {
@@ -978,9 +1826,38 @@ impl EditorState {
             let kind = match &object.kind {
                 EditorKind::Marker(marker) => {
                     let entry = UNIT_CATALOG[marker.unit.min(UNIT_CATALOG.len() - 1)];
+                    let asset_model = self.marker_models.get(&marker.unit_id);
+                    // In Play mode an animated asset is shown with its animated
+                    // file so the walk clip can loop while the unit moves. The
+                    // editor viewport keeps using the idle file.
+                    let animated_model = if self.preview {
+                        asset_model.filter(|model| model.animated && model.animation_path.is_some())
+                    } else {
+                        None
+                    };
+                    let play_idle = if animated_model.is_some() {
+                        asset_model.map(|model| EditorPlayModel {
+                            model: model.path.clone(),
+                            draco: model.draco,
+                        })
+                    } else {
+                        None
+                    };
+                    let model = animated_model
+                        .and_then(|model| model.animation_path.clone())
+                        .or_else(|| asset_model.map(|model| model.path.clone()))
+                        .unwrap_or_else(|| entry.model.to_owned());
+                    let draco = animated_model.map_or_else(
+                        || asset_model.is_some_and(|model| model.draco),
+                        |model| model.animation_draco,
+                    );
                     EditorSceneKind::Marker {
-                        model: entry.model.to_owned(),
-                        base_scale: entry.base_scale,
+                        model,
+                        base_scale: asset_model.map_or(entry.base_scale, |model| model.base_scale),
+                        normalize_height: None,
+                        draco,
+                        scene_asset: asset_model.is_some(),
+                        play_idle,
                         rotation_deg: [
                             marker.rot_x as f32,
                             marker.rot_y as f32,
@@ -1001,11 +1878,34 @@ impl EditorState {
                     color: parse_hex_color(&line.color),
                     alpha: line.alpha as f32,
                 },
-                EditorKind::Building(building) => EditorSceneKind::Building {
-                    points: building.points.clone(),
-                    height: building.height as f32,
-                    color: parse_hex_color(&building.color),
-                },
+                EditorKind::Building(building) => {
+                    let texture = if building.use_texture {
+                        building
+                            .texture
+                            .as_ref()
+                            .and_then(|reference| self.texture_source(reference))
+                    } else {
+                        None
+                    };
+                    EditorSceneKind::Building {
+                        shape: building.shape,
+                        points: building.points.clone(),
+                        height: building.render_height() as f32,
+                        color: parse_hex_color(&building.color),
+                        rotation_deg: [
+                            building.rot_x as f32,
+                            building.rot_y as f32,
+                            building.rot_z as f32,
+                        ],
+                        scale: [
+                            building.scale_x as f32,
+                            building.scale_y as f32,
+                            building.scale_z as f32,
+                        ],
+                        altitude: building.altitude as f32,
+                        texture,
+                    }
+                }
                 EditorKind::Text(text) => EditorSceneKind::Text {
                     color: parse_hex_color(&text.color),
                     font_size: text.font_size as f32,
@@ -1040,16 +1940,33 @@ impl EditorState {
             None
         };
 
-        let gizmo = if self.preview {
+        // Select mode shows only the selection outline (see the viewport
+        // overlay); the transform gizmo belongs to Move/Rotate/Scale so the two
+        // modes are no longer confusable.
+        let gizmo = if self.preview || !self.tool.changes_gizmo() {
             None
         } else {
-            self.primary_marker().map(|marker| EditorGizmo {
-                lon: marker.lon,
-                lat: marker.lat,
-                altitude: marker.altitude as f32,
-                active_axis: self.hover_axis,
-                show_rotate: self.tool == EditorTool::Rotate,
-                show_scale: self.tool == EditorTool::Scale,
+            self.primary_transform().and_then(|(key, transform)| {
+                let mode = match self.tool {
+                    EditorTool::Rotate => EditorGizmoMode::Rotate,
+                    EditorTool::Scale => EditorGizmoMode::Scale,
+                    _ => EditorGizmoMode::Move,
+                };
+                // Text has no rotation/scale: its size is controlled by Font.
+                let is_text = matches!(
+                    self.object(key).map(|object| &object.kind),
+                    Some(EditorKind::Text(_))
+                );
+                if is_text && mode != EditorGizmoMode::Move {
+                    return None;
+                }
+                Some(EditorGizmo {
+                    lon: transform.lon,
+                    lat: transform.lat,
+                    altitude: transform.altitude as f32,
+                    mode,
+                    active_axis: self.hover_axis,
+                })
             })
         };
 
@@ -1059,8 +1976,118 @@ impl EditorState {
             objects,
             grid,
             gizmo,
+            // Playback always shows textures, even if the editor is in solid or
+            // wireframe shading.
+            model_shading: if self.preview {
+                EditorModelShading::Textured
+            } else {
+                self.model_shading
+            },
         }
     }
+}
+
+/// Compares camera views with tolerances small enough that float noise from
+/// the camera flight does not flip the Inspector status back to unsaved.
+fn same_camera(a: MapCameraState, b: MapCameraState) -> bool {
+    const POSITION_EPSILON: f64 = 1e-7;
+    const ZOOM_EPSILON: f32 = 0.005;
+    const ANGLE_EPSILON: f32 = 0.05;
+    (a.center.longitude - b.center.longitude).abs() <= POSITION_EPSILON
+        && (a.center.latitude - b.center.latitude).abs() <= POSITION_EPSILON
+        && (a.zoom - b.zoom).abs() <= ZOOM_EPSILON
+        && (a.pitch_degrees - b.pitch_degrees).abs() <= ANGLE_EPSILON
+        && (a.bearing_degrees - b.bearing_degrees).abs() <= ANGLE_EPSILON
+}
+
+fn points_centroid(points: &[[f64; 2]]) -> Option<GeoPoint> {
+    if points.is_empty() {
+        return None;
+    }
+    let count = points.len() as f64;
+    let longitude = points.iter().map(|point| point[0]).sum::<f64>() / count;
+    let latitude = points.iter().map(|point| point[1]).sum::<f64>() / count;
+    Some(GeoPoint::new(longitude, latitude))
+}
+
+fn centroid_of(points: &[GeoPoint]) -> Option<GeoPoint> {
+    if points.is_empty() {
+        return None;
+    }
+    let count = points.len() as f64;
+    let longitude = points.iter().map(|point| point.longitude).sum::<f64>() / count;
+    let latitude = points.iter().map(|point| point.latitude).sum::<f64>() / count;
+    Some(GeoPoint::new(longitude, latitude))
+}
+
+/// Full span (meters) of the footprint, used for the focus zoom.
+fn points_extent(points: &[[f64; 2]]) -> f64 {
+    let Some(first) = points.first() else {
+        return 0.0;
+    };
+    let origin = GeoPoint::new(first[0], first[1]);
+    let mut max_east = 0.0_f64;
+    let mut max_north = 0.0_f64;
+    for point in points {
+        let Ok(offset) = GeoPoint::new(point[0], point[1]).local_offset(origin) else {
+            continue;
+        };
+        max_east = max_east.max(offset.east_meters.abs());
+        max_north = max_north.max(offset.north_meters.abs());
+    }
+    (max_east.max(max_north) * 2.0).max(0.0)
+}
+
+fn play_speed(kategori: &str) -> f64 {
+    match kategori {
+        "personel" => 3.5,
+        "kendaraan" => 9.0,
+        _ => 5.0,
+    }
+}
+
+/// Steering direction (east, north unit vector) toward the target, deflected
+/// sideways when a static obstacle is ahead. Once the obstacle is passed the
+/// next tick steers straight at the target again.
+fn play_steer(
+    to_target: twg_map::LocalPoint,
+    position: GeoPoint,
+    obstacles: &[PlayObstacle],
+) -> (f64, f64) {
+    let distance = to_target.east_meters.hypot(to_target.north_meters);
+    if distance <= 1.0e-6 {
+        return (0.0, 0.0);
+    }
+    let mut east = to_target.east_meters / distance;
+    let mut north = to_target.north_meters / distance;
+    for obstacle in obstacles {
+        let Ok(relative) = obstacle.center.local_offset(position) else {
+            continue;
+        };
+        let center_distance = relative
+            .east_meters
+            .hypot(relative.north_meters)
+            .max(1.0e-6);
+        let surface = center_distance - obstacle.radius - PLAY_UNIT_RADIUS;
+        if surface > PLAY_LOOKAHEAD_METERS {
+            continue;
+        }
+        // Only steer around obstacles that are in front of the unit.
+        if relative.east_meters * east + relative.north_meters * north <= 0.0 {
+            continue;
+        }
+        let strength = (1.0 - surface / PLAY_LOOKAHEAD_METERS).clamp(0.0, 1.0) * 1.8;
+        let cross = east * relative.north_meters - north * relative.east_meters;
+        let (side_east, side_north) = if cross >= 0.0 {
+            (north, -east)
+        } else {
+            (-north, east)
+        };
+        east += side_east * strength;
+        north += side_north * strength;
+    }
+    let length = east.hypot(north).max(1.0e-6);
+    (east / length, north / length)
 }
 
 pub fn offset_object(kind: &mut EditorKind, east_meters: f64, north_meters: f64) {
@@ -1073,9 +2100,7 @@ pub fn offset_object(kind: &mut EditorKind, east_meters: f64, north_meters: f64)
             }
         }
         EditorKind::Line(line) => offset_points(&mut line.points, east_meters, north_meters),
-        EditorKind::Building(building) => {
-            offset_points(&mut building.points, east_meters, north_meters)
-        }
+        EditorKind::Building(building) => building.translate(east_meters, north_meters),
         EditorKind::Text(text) => {
             if let Ok(point) = GeoPoint::from_local_offset(text.point(), east_meters, north_meters)
             {
@@ -1146,6 +2171,96 @@ mod tests {
     }
 
     #[test]
+    fn play_mode_forces_textured_shading() {
+        let mut editor = editor();
+        assert_eq!(
+            editor.build_scene().model_shading,
+            EditorModelShading::Textured
+        );
+        editor.model_shading = EditorModelShading::Wireframe;
+        assert_eq!(
+            editor.build_scene().model_shading,
+            EditorModelShading::Wireframe
+        );
+        editor.preview = true;
+        assert_eq!(
+            editor.build_scene().model_shading,
+            EditorModelShading::Textured
+        );
+    }
+
+    #[test]
+    fn asset_markers_resolve_the_cached_model_by_unit_id() {
+        let mut editor = editor();
+        let unit_id = Uuid::new_v4().to_string();
+        editor.marker_models.insert(
+            unit_id.clone(),
+            MarkerAssetModel {
+                name: "Truk Logistik".to_owned(),
+                path: format!("twg-cache://{unit_id}/static/original.glb"),
+                base_scale: 1.0,
+                draco: false,
+                animated: false,
+                animation_path: None,
+                animation_draco: false,
+            },
+        );
+        editor.add_asset_marker(
+            &AssetMarkerDraft {
+                unit_id: unit_id.clone(),
+                name: "Truk Logistik".to_owned(),
+            },
+            GeoPoint::new(115.225, -8.648),
+        );
+        let scene = editor.build_scene();
+        match &scene.objects[0].kind {
+            EditorSceneKind::Marker {
+                model,
+                normalize_height,
+                scene_asset,
+                ..
+            } => {
+                assert_eq!(model, &format!("twg-cache://{unit_id}/static/original.glb"));
+                assert_eq!(*normalize_height, None);
+                assert!(*scene_asset);
+            }
+            other => panic!("expected marker, got {other:?}"),
+        }
+        let EditorKind::Marker(marker) = &editor.objects[0].kind else {
+            panic!("expected marker");
+        };
+        assert_eq!(marker.unit_id, unit_id);
+        assert_eq!(marker.rot_x, 0.0);
+        assert_eq!(marker.altitude, 0.0);
+    }
+
+    #[test]
+    fn asset_marker_without_cached_model_falls_back_to_the_catalog() {
+        let mut editor = editor();
+        editor.add_asset_marker(
+            &AssetMarkerDraft {
+                unit_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+                name: "Belum disinkron".to_owned(),
+            },
+            GeoPoint::new(115.225, -8.648),
+        );
+        let scene = editor.build_scene();
+        match &scene.objects[0].kind {
+            EditorSceneKind::Marker {
+                model,
+                normalize_height,
+                scene_asset,
+                ..
+            } => {
+                assert_eq!(model, UNIT_CATALOG[0].model);
+                assert_eq!(*normalize_height, None);
+                assert!(!*scene_asset);
+            }
+            other => panic!("expected marker, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn add_marker_can_be_undone_and_redone() {
         let mut editor = editor();
         editor.add_marker(GeoPoint::new(115.225, -8.648), 0);
@@ -1197,12 +2312,21 @@ mod tests {
     }
 
     #[test]
-    fn selected_marker_emits_a_gizmo() {
+    fn selected_marker_emits_a_gizmo_only_for_transform_tools() {
         let mut editor = editor();
         editor.add_marker(GeoPoint::new(115.225, -8.648), 0);
-        let scene = editor.build_scene();
-        assert_eq!(scene.objects.len(), 1);
-        assert!(scene.gizmo.is_some());
+        // Select shows only the selection outline.
+        assert!(editor.build_scene().gizmo.is_none());
+        for (tool, mode) in [
+            (EditorTool::Move, EditorGizmoMode::Move),
+            (EditorTool::Rotate, EditorGizmoMode::Rotate),
+            (EditorTool::Scale, EditorGizmoMode::Scale),
+        ] {
+            editor.set_tool(tool);
+            let scene = editor.build_scene();
+            assert_eq!(scene.objects.len(), 1);
+            assert_eq!(scene.gizmo.as_ref().map(|gizmo| gizmo.mode), Some(mode));
+        }
     }
 
     #[test]
@@ -1229,5 +2353,391 @@ mod tests {
     #[test]
     fn parse_hex_color_reads_rgb() {
         assert_eq!(parse_hex_color("#ff8000"), [1.0, 128.0 / 255.0, 0.0, 1.0]);
+    }
+
+    fn animated_asset(id: &str) -> MarkerAssetModel {
+        MarkerAssetModel {
+            name: "Unit Animasi".to_owned(),
+            path: format!("twg-cache://{id}/idle/original.glb"),
+            base_scale: 1.0,
+            draco: false,
+            animated: true,
+            animation_path: Some(format!("twg-cache://{id}/animated/original.glb")),
+            animation_draco: false,
+        }
+    }
+
+    fn add_animated_marker(editor: &mut EditorState, id: &str, point: GeoPoint) -> ObjectKey {
+        editor.add_marker(point, 0);
+        let key = *editor.selected.iter().next().expect("new marker selected");
+        if let Some(object) = editor.object_mut(key)
+            && let EditorKind::Marker(marker) = &mut object.kind
+        {
+            marker.unit_id = id.to_owned();
+        }
+        editor
+            .marker_models
+            .insert(id.to_owned(), animated_asset(id));
+        key
+    }
+
+    #[test]
+    fn play_mode_units_are_animated_asset_markers_only() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        add_animated_marker(&mut editor, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", base);
+        editor.add_marker(GeoPoint::new(115.226, -8.649), 0);
+
+        editor.start_play();
+
+        assert!(editor.play.active);
+        assert_eq!(editor.play.units.len(), 1);
+        assert_eq!(editor.play.obstacles.len(), 1);
+        let unit = editor.play.units.values().next().unwrap();
+        assert_eq!(unit.position, base);
+    }
+
+    #[test]
+    fn play_formation_gives_each_selected_unit_its_own_target() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        for index in 0..4 {
+            let point = GeoPoint::from_local_offset(base, f64::from(index) * 4.0, 0.0).unwrap();
+            add_animated_marker(
+                &mut editor,
+                &format!("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa{index}"),
+                point,
+            );
+        }
+        editor.start_play();
+        editor.selected = editor.play.units.keys().copied().collect();
+        let target = GeoPoint::from_local_offset(base, 40.0, 25.0).unwrap();
+        editor.play_move_selected(target);
+
+        let targets = editor
+            .play
+            .units
+            .values()
+            .filter_map(|unit| unit.target)
+            .collect::<Vec<_>>();
+        assert_eq!(targets.len(), 4);
+        for (index, first) in targets.iter().enumerate() {
+            for second in &targets[index + 1..] {
+                assert_ne!(first, second);
+            }
+        }
+    }
+
+    #[test]
+    fn play_units_go_around_static_markers_and_reach_the_target() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        add_animated_marker(&mut editor, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", base);
+        let obstacle = GeoPoint::from_local_offset(base, 25.0, 0.0).unwrap();
+        editor.add_marker(obstacle, 0);
+        let target = GeoPoint::from_local_offset(base, 50.0, 0.0).unwrap();
+
+        editor.start_play();
+        editor.selected = editor.play.units.keys().copied().collect();
+        editor.play_move_selected(target);
+        let blocked = editor.play.obstacles[0];
+        let key = *editor.play.units.keys().next().unwrap();
+        let mut closest = f64::MAX;
+        for _ in 0..1200 {
+            editor.play_tick(1.0 / 60.0);
+            let unit = &editor.play.units[&key];
+            let offset = blocked.center.local_offset(unit.position).unwrap();
+            closest = closest.min(offset.east_meters.hypot(offset.north_meters));
+        }
+
+        assert!(
+            closest >= blocked.radius,
+            "unit clipped the obstacle: {closest} m"
+        );
+        let unit = &editor.play.units[&key];
+        let remaining = target.local_offset(unit.position).unwrap();
+        assert!(
+            remaining.east_meters.hypot(remaining.north_meters) < 1.0,
+            "unit did not reach the target"
+        );
+    }
+
+    #[test]
+    fn play_mode_shows_the_animated_scene_and_returns_to_idle() {
+        let mut editor = editor();
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        add_animated_marker(&mut editor, id, GeoPoint::new(115.225, -8.648));
+
+        editor.preview = true;
+        let scene = editor.build_scene();
+        match &scene.objects[0].kind {
+            EditorSceneKind::Marker {
+                model,
+                play_idle,
+                scene_asset,
+                ..
+            } => {
+                assert_eq!(model, &format!("twg-cache://{id}/animated/original.glb"));
+                assert!(*scene_asset);
+                let idle = play_idle.as_ref().expect("idle scene available");
+                assert_eq!(idle.model, format!("twg-cache://{id}/idle/original.glb"));
+            }
+            _ => panic!("expected marker scene"),
+        }
+
+        editor.preview = false;
+        let scene = editor.build_scene();
+        match &scene.objects[0].kind {
+            EditorSceneKind::Marker {
+                model, play_idle, ..
+            } => {
+                assert_eq!(model, &format!("twg-cache://{id}/idle/original.glb"));
+                assert!(play_idle.is_none());
+            }
+            _ => panic!("expected marker scene"),
+        }
+    }
+
+    #[test]
+    fn shape_objects_support_the_transform_gizmo() {
+        let mut editor = editor();
+        editor.add_shape(EditorShapeKind::Cylinder, GeoPoint::new(115.225, -8.648));
+        let key = *editor.selected.iter().next().expect("shape selected");
+        let object = editor.object_mut(key).expect("shape object");
+
+        let transform = object.kind.transform().expect("shape transform");
+        assert_eq!(transform.scale, [4.0, 3.0, 4.0]);
+        object.kind.set_rotation_axis(1, 90.0);
+        object.kind.set_scale([2.0, 2.0, 2.0]);
+        let transform = object.kind.transform().expect("shape transform");
+        assert_eq!(transform.rot, [0.0, 90.0, 0.0]);
+        assert_eq!(transform.scale, [2.0, 2.0, 2.0]);
+        // Primitive shapes expose a square outline for picking/selection.
+        assert_eq!(object.kind.points().len(), 4);
+    }
+
+    #[test]
+    fn text_supports_move_and_altitude_but_not_rotate_or_scale() {
+        let mut editor = editor();
+        editor.add_text(GeoPoint::new(115.225, -8.648));
+        let key = *editor.selected.iter().next().expect("text selected");
+
+        editor.set_tool(EditorTool::Move);
+        let scene = editor.build_scene();
+        assert_eq!(
+            scene.gizmo.as_ref().map(|gizmo| gizmo.mode),
+            Some(EditorGizmoMode::Move)
+        );
+
+        editor.set_tool(EditorTool::Rotate);
+        assert!(editor.build_scene().gizmo.is_none());
+        editor.set_tool(EditorTool::Scale);
+        assert!(editor.build_scene().gizmo.is_none());
+
+        editor
+            .object_mut(key)
+            .expect("text object")
+            .kind
+            .set_altitude(12.0);
+        assert_eq!(
+            editor
+                .object(key)
+                .and_then(|object| object.kind.transform())
+                .map(|transform| transform.altitude),
+            Some(12.0)
+        );
+    }
+
+    #[test]
+    fn set_position_is_absolute_not_accumulated() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        editor.add_marker(base, 0);
+        let key = *editor.selected.iter().next().expect("marker selected");
+        let target = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("target point");
+
+        // Drag updates run every frame with the same target; the object must
+        // stay put instead of drifting further east each call.
+        for _ in 0..5 {
+            editor
+                .object_mut(key)
+                .expect("marker object")
+                .kind
+                .set_position(target);
+        }
+
+        let point = editor
+            .object(key)
+            .and_then(|object| object.point())
+            .unwrap();
+        let delta = point.local_offset(base).expect("move offset");
+        assert!(
+            (delta.east_meters - 10.0).abs() < 0.01,
+            "east was {}",
+            delta.east_meters
+        );
+    }
+
+    #[test]
+    fn set_position_keeps_a_custom_shape_footprint_aligned() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let points = vec![
+            base,
+            GeoPoint::from_local_offset(base, 5.0, 0.0).expect("east point"),
+            GeoPoint::from_local_offset(base, 5.0, 5.0).expect("corner point"),
+            GeoPoint::from_local_offset(base, 0.0, 5.0).expect("north point"),
+        ];
+        editor.add_polygon(points);
+        let key = *editor.selected.iter().next().expect("shape selected");
+        let before_centre = editor
+            .object(key)
+            .and_then(|object| object.point())
+            .expect("shape centre");
+        let target = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("target point");
+
+        editor
+            .object_mut(key)
+            .expect("shape object")
+            .kind
+            .set_position(target);
+
+        let object = editor.object(key).expect("shape object");
+        let centre = object.point().expect("shape centre");
+        let delta = centre.local_offset(base).expect("move offset");
+        assert!(
+            (delta.east_meters - 10.0).abs() < 0.01,
+            "east was {}",
+            delta.east_meters
+        );
+        let outline = object.kind.points();
+        assert_eq!(outline.len(), 4);
+        // The footprint keeps its shape: every vertex moves with the centre.
+        let shift = target.local_offset(before_centre).expect("shape shift");
+        let first = outline[0];
+        let corner = first.local_offset(base).expect("corner offset");
+        assert!((corner.east_meters - shift.east_meters).abs() < 0.01);
+        assert!((corner.north_meters - shift.north_meters).abs() < 0.01);
+    }
+
+    #[test]
+    fn uploaded_textures_resolve_against_the_server_base_url() {
+        let mut editor = editor();
+        editor.base_url = "http://127.0.0.1:8010/".to_owned();
+        editor.add_shape(EditorShapeKind::Box, GeoPoint::new(115.225, -8.648));
+        let key = *editor.selected.iter().next().expect("shape selected");
+        let object = editor.object_mut(key).expect("shape object");
+        let EditorKind::Building(building) = &mut object.kind else {
+            panic!("expected building");
+        };
+        building.use_texture = true;
+        building.texture = Some("/uploads/123-bukit.png".to_owned());
+
+        assert_eq!(
+            editor.texture_source("/uploads/123-bukit.png").as_deref(),
+            Some("http://127.0.0.1:8010/uploads/123-bukit.png")
+        );
+        let scene = editor.build_scene();
+        match &scene.objects[0].kind {
+            EditorSceneKind::Building { texture, .. } => assert_eq!(
+                texture.as_deref(),
+                Some("http://127.0.0.1:8010/uploads/123-bukit.png")
+            ),
+            _ => panic!("expected building scene"),
+        }
+    }
+
+    #[test]
+    fn moving_a_custom_shape_moves_its_footprint() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let points = vec![
+            base,
+            GeoPoint::from_local_offset(base, 5.0, 0.0).expect("east point"),
+            GeoPoint::from_local_offset(base, 5.0, 5.0).expect("corner point"),
+            GeoPoint::from_local_offset(base, 0.0, 5.0).expect("north point"),
+        ];
+        editor.add_polygon(points);
+        let key = *editor.selected.iter().next().expect("shape selected");
+        let before = editor
+            .object(key)
+            .and_then(|object| object.point())
+            .unwrap();
+
+        offset_object(&mut editor.object_mut(key).unwrap().kind, 10.0, 0.0);
+
+        let object = editor.object(key).expect("shape object");
+        let after = object.point().expect("shape centre");
+        let delta = after.local_offset(before).expect("move offset");
+        assert!((delta.east_meters - 10.0).abs() < 0.01);
+        assert_eq!(object.kind.points().len(), 4);
+    }
+
+    #[test]
+    fn focusing_a_marker_pans_and_zooms_to_it() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.2265, -8.6495);
+        editor.add_marker(point, 0);
+        let key = *editor.selected.iter().next().expect("marker selected");
+        editor.map_state.zoom = 13.0;
+        editor.requested_flight = None;
+
+        editor.focus_object(key);
+
+        let target = editor.requested_flight.expect("focus flight requested");
+        assert_eq!(target.center, point);
+        assert!(target.zoom > 13.0, "camera should zoom in");
+        assert!(target.zoom <= twg_map::MAX_ZOOM);
+    }
+
+    #[test]
+    fn focusing_a_line_centres_on_its_middle() {
+        let mut editor = editor();
+        let start = GeoPoint::new(115.2250, -8.6480);
+        let end = GeoPoint::new(115.2260, -8.6490);
+        editor.add_line(vec![start, end]);
+        let key = *editor.selected.iter().next().expect("line selected");
+
+        editor.focus_object(key);
+
+        let target = editor.requested_flight.expect("focus flight requested");
+        let expected = points_centroid(&[
+            [start.longitude, start.latitude],
+            [end.longitude, end.latitude],
+        ])
+        .expect("centroid");
+        assert!((target.center.longitude - expected.longitude).abs() < 1.0e-9);
+        assert!((target.center.latitude - expected.latitude).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn play_selection_does_not_rebuild_the_scene() {
+        let mut editor = editor();
+        let key = add_animated_marker(
+            &mut editor,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            GeoPoint::new(115.225, -8.648),
+        );
+        editor.start_play();
+        let revision = editor.render_revision;
+        editor.play_select_only(key);
+        editor.play_toggle_selected(key);
+        assert_eq!(editor.render_revision, revision);
+    }
+
+    #[test]
+    fn camera_view_stays_saved_until_the_view_or_layer_changes() {
+        let mut editor = editor();
+        let view = editor.map_state;
+        editor.saved_view = Some(view);
+        editor.saved_base_layer = Some(editor.base_layer);
+        assert!(editor.view_is_saved());
+
+        editor.map_state.zoom += 0.5;
+        assert!(!editor.view_is_saved());
+
+        editor.map_state = view;
+        editor.base_layer = BaseLayer::ArcGisImagery;
+        assert!(!editor.view_is_saved());
     }
 }

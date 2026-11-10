@@ -21,35 +21,46 @@ impl GeoAnchor {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn update_geo_anchors(
     state: Res<MapCameraResource>,
     mut last_center: Local<Option<GeoPoint>>,
-    anchors: Query<(&GeoAnchor, &mut Transform)>,
-    added: Query<(), Added<GeoAnchor>>,
+    mut anchors: ParamSet<(
+        Query<(&GeoAnchor, &mut Transform)>,
+        Query<(&GeoAnchor, &mut Transform), Changed<GeoAnchor>>,
+    )>,
 ) {
-    // Panning is the only operation that moves existing anchors. New markers
-    // also need one pass in case they spawned after the input system moved the
-    // camera in the same frame. Skipping idle frames keeps the 10.000-marker
-    // benchmark from paying for a no-op query.
+    // Panning is the only camera operation that moves every anchor. When the
+    // camera is idle only anchors that changed themselves (RTS units moving or
+    // newly spawned markers) are recomputed, so a scenario with thousands of
+    // static markers does not pay a full pass every frame.
     let center_changed = last_center.as_ref() != Some(&state.0.center);
-    if !center_changed && added.is_empty() {
-        return;
-    }
-    *last_center = Some(state.0.center);
-
     let Ok(center) = state.0.center.mercator() else {
         return;
     };
     let scale = state.0.mercator_ground_scale();
-    for (anchor, mut transform) in anchors {
-        let x = ((anchor.mercator.x - center.x) * scale) as f32;
-        let z = (-(anchor.mercator.y - center.y) * scale) as f32;
-        if (transform.translation.x - x).abs() > 0.001
-            || (transform.translation.z - z).abs() > 0.001
-        {
-            transform.translation.x = x;
-            transform.translation.z = z;
+    if center_changed {
+        *last_center = Some(state.0.center);
+        for (anchor, mut transform) in &mut anchors.p0() {
+            place_anchor(anchor, &mut transform, center, scale);
         }
+        return;
+    }
+    let mut changed = anchors.p1();
+    if changed.is_empty() {
+        return;
+    }
+    for (anchor, mut transform) in &mut changed {
+        place_anchor(anchor, &mut transform, center, scale);
+    }
+}
+
+fn place_anchor(anchor: &GeoAnchor, transform: &mut Transform, center: MercatorPoint, scale: f64) {
+    let x = ((anchor.mercator.x - center.x) * scale) as f32;
+    let z = (-(anchor.mercator.y - center.y) * scale) as f32;
+    if (transform.translation.x - x).abs() > 0.001 || (transform.translation.z - z).abs() > 0.001 {
+        transform.translation.x = x;
+        transform.translation.z = z;
     }
 }
 

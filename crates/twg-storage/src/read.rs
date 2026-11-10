@@ -177,7 +177,7 @@ impl ReadStore {
             return Ok(Vec::new());
         };
         let rows = sqlx::query_as::<_, TextMarkerRow>(
-            "SELECT id, text, color, font_size, align, wrap_text, pos_x, pos_y,
+            "SELECT id, text, color, font_size, align, wrap_text, pos_x, pos_y, altitude,
                     created_at, updated_at
              FROM text_markers
              WHERE skenario_id = $1
@@ -803,6 +803,7 @@ struct TextMarkerRow {
     wrap_text: Option<bool>,
     pos_x: Option<f64>,
     pos_y: Option<f64>,
+    altitude: Option<f64>,
     created_at: Option<NaiveDateTime>,
     updated_at: Option<NaiveDateTime>,
 }
@@ -820,6 +821,7 @@ impl TextMarkerRow {
             wrap_text: self.wrap_text.unwrap_or(false),
             pos_x: self.pos_x.unwrap_or(0.0),
             pos_y: self.pos_y.unwrap_or(0.0),
+            altitude: self.altitude.unwrap_or(0.0),
             created_at: wita(self.created_at),
             updated_at: wita(self.updated_at),
         }

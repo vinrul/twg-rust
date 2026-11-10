@@ -1,23 +1,34 @@
 use serde_json::Value;
+use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 use twg_client::api::{ApiError, ApiHandle, ApiResponse, HttpMethod};
 use twg_client::session::{NavItem, Screen};
+#[cfg(not(target_arch = "wasm32"))]
+use twg_contracts::assets::AssetSourceSlot;
+use twg_contracts::assets::{AssetCategory, AssetModelKind};
 use twg_contracts::geocode::GeocodeResult;
 use twg_contracts::map::{
     Building, BuildingCreateRequest, BuildingGeomUpdateRequest, BuildingUpdateRequest, Line,
     LineCreateRequest, LineGeomUpdateRequest, LineUpdateRequest, Marker, MarkerCreateRequest,
-    MarkerGeomRequest, MarkerNameRequest, MarkerScaleRequest, TextMarker, TextMarkerCreateRequest,
-    TextMarkerGeomUpdateRequest, TextMarkerUpdateRequest,
+    MarkerGeomRequest, MarkerNameRequest, MarkerScaleRequest, MarkerUnitRequest, TextMarker,
+    TextMarkerCreateRequest, TextMarkerGeomUpdateRequest, TextMarkerUpdateRequest,
 };
 use twg_contracts::scenarios::Scenario;
 use twg_domain::{BaseLayer as DomainBaseLayer, MapMode};
 use twg_map::{BaseLayer, GeoPoint, MapCameraState};
+use twg_render::EditorShapeKind;
+#[cfg(not(target_arch = "wasm32"))]
+use twg_render::cache_asset_path;
 use uuid::Uuid;
 
 use crate::state::{ClientUi, ToastKind};
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::model::MarkerAssetModel;
 use super::model::{
-    BuildingObject, EditorKind, EditorObject, LineObject, MarkerObject, ObjectKey, ObjectType,
-    ParticleObject, TextObject, unit_for_uuid,
+    BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, LineObject,
+    MarkerObject, ObjectKey, ObjectType, ParticleObject, TextObject, unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +46,8 @@ pub enum EditorJobKind {
     Update,
     Delete,
     Geocode,
+    SaveView,
+    UploadTexture,
 }
 
 pub struct EditorJob {
@@ -60,6 +73,8 @@ impl ClientUi {
         self.editor.scenario_id = scenario_id;
         self.state.nav = NavItem::Preview;
         self.state.screen = Screen::MapEditor;
+        self.refresh_assets();
+        self.sync_editor_marker_models();
 
         let Some(scenario_id) = scenario_id else {
             self.editor.loaded = true;
@@ -114,10 +129,175 @@ impl ClientUi {
         self.editor.requested_layer = Some(BaseLayer::OpenStreetMap);
     }
 
+    /// Rebuilds the editor's `unit_id -> cached model file` map from the server
+    /// asset list. Called when the list changes and once per editor frame; the
+    /// signature check keeps it cheap.
+    pub fn sync_editor_marker_models(&mut self) {
+        let signature = self
+            .assets
+            .iter()
+            .map(|asset| (asset.id, asset.version))
+            .collect::<Vec<_>>();
+        if signature == self.editor.marker_model_signature {
+            return;
+        }
+        self.editor.marker_model_signature = signature;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (models, textures, texture_files) = {
+            let mut models = BTreeMap::new();
+            let mut textures = BTreeMap::new();
+            let mut texture_files = BTreeMap::new();
+            if let (Some(cache), Some(root)) = (&self.asset_cache, self.asset_cache_root()) {
+                let cache = cache.lock().expect("asset cache poisoned");
+                let root = Path::new(&root);
+                let base = self.base_url.trim_end_matches('/');
+                for asset in &self.assets {
+                    if asset.category.is_image() {
+                        let Some(source) = asset.sources.first() else {
+                            continue;
+                        };
+                        let resolved = cache.resolve(asset, source.slot, false);
+                        let path = resolved
+                            .as_ref()
+                            .and_then(|(_, path)| cache_asset_path(root, path))
+                            .unwrap_or_else(|| format!("{base}{}", source.file.url));
+                        if let Some((_, file)) = resolved {
+                            texture_files.insert(asset.id.to_string(), file.display().to_string());
+                        }
+                        textures.insert(asset.id.to_string(), path);
+                        continue;
+                    }
+                    if asset.category != AssetCategory::Model {
+                        continue;
+                    }
+                    // Markers use the unanimated file (or the idle pose of an
+                    // animated model) and load it as a full glTF scene so its
+                    // own materials and textures are kept.
+                    let Some(source) = asset.sources.iter().find(|source| {
+                        matches!(source.slot, AssetSourceSlot::Static | AssetSourceSlot::Idle)
+                    }) else {
+                        continue;
+                    };
+                    let Some((_, path)) = cache.resolve(asset, source.slot, false) else {
+                        continue;
+                    };
+                    let resolved_path = path.clone();
+                    let Some(path) = cache_asset_path(root, &path) else {
+                        continue;
+                    };
+                    let animated = asset.model_kind == Some(AssetModelKind::Animated)
+                        || asset
+                            .sources
+                            .iter()
+                            .any(|source| source.slot == AssetSourceSlot::Animated);
+                    // Play mode swaps to the animated file so the walk clip can
+                    // loop while the unit moves.
+                    let animation = if animated {
+                        asset
+                            .sources
+                            .iter()
+                            .find(|source| source.slot == AssetSourceSlot::Animated)
+                            .and_then(|source| {
+                                let (_, path) = cache.resolve(asset, source.slot, false)?;
+                                let path = cache_asset_path(root, &path)?;
+                                Some((path, source.has_draco))
+                            })
+                    } else {
+                        None
+                    };
+                    // Normalise the model to a usable size from the glTF
+                    // POSITION bounds, so markers do not come out microscopic
+                    // or huge depending on the exporter's units.
+                    let base_scale = match model_height(&resolved_path) {
+                        Some(height) if height > 1.0e-3 => {
+                            super::model::ASSET_MARKER_HEIGHT / height
+                        }
+                        _ => 1.0,
+                    };
+                    models.insert(
+                        asset.id.to_string(),
+                        MarkerAssetModel {
+                            name: asset.name.clone(),
+                            path,
+                            base_scale,
+                            draco: source.has_draco,
+                            animated,
+                            animation_path: animation.as_ref().map(|(path, _)| path.clone()),
+                            animation_draco: animation.is_some_and(|(_, draco)| draco),
+                        },
+                    );
+                }
+            }
+            (models, textures, texture_files)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let models = BTreeMap::new();
+        #[cfg(target_arch = "wasm32")]
+        let texture_files = BTreeMap::new();
+        #[cfg(target_arch = "wasm32")]
+        let textures = self
+            .assets
+            .iter()
+            .filter(|asset| asset.category.is_image())
+            .filter_map(|asset| {
+                let source = asset.sources.first()?;
+                Some((
+                    asset.id.to_string(),
+                    format!("{}{}", self.base_url.trim_end_matches('/'), source.file.url),
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        self.editor.marker_models = models;
+        self.editor.texture_paths = textures;
+        self.editor.texture_files = texture_files;
+        self.editor.texture_previews.clear();
+        self.editor.touch();
+    }
+
+    /// Server models shown in the editor's Assets tab.
+    pub fn editor_asset_rows(&self) -> Vec<EditorAssetRow> {
+        self.assets
+            .iter()
+            .filter(|asset| asset.category == AssetCategory::Model)
+            .map(|asset| EditorAssetRow {
+                unit_id: asset.id.to_string(),
+                name: asset.name.clone(),
+                kind_label: match asset.model_kind {
+                    Some(AssetModelKind::Animated) => "Animasi".to_owned(),
+                    _ => "Static".to_owned(),
+                },
+                cached: self
+                    .editor
+                    .marker_models
+                    .contains_key(&asset.id.to_string()),
+            })
+            .collect()
+    }
+
+    /// Image assets available as shape textures in the Inspector.
+    pub fn editor_texture_rows(&self) -> Vec<EditorTextureRow> {
+        let mut rows = self
+            .assets
+            .iter()
+            .filter(|asset| asset.category.is_image())
+            .map(|asset| EditorTextureRow {
+                id: asset.id.to_string(),
+                name: asset.name.clone(),
+                available: self
+                    .editor
+                    .texture_paths
+                    .contains_key(&asset.id.to_string()),
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        rows
+    }
+
     pub fn close_editor(&mut self) {
         self.state.screen = Screen::Workspace;
         self.state.nav = NavItem::Scenarios;
         self.editor.preview = false;
+        self.editor.stop_play();
         self.editor.touch();
     }
 
@@ -188,6 +368,66 @@ impl ClientUi {
         }
     }
 
+    /// Persists the current camera (center, zoom, bearing, pitch) and base layer
+    /// as the scenario default, so a reload, Play session, or exercise reopens
+    /// the same view.
+    pub fn editor_save_view(&mut self) {
+        if self.editor.saving_view {
+            return;
+        }
+        if !self.role().is_admin_like() {
+            self.toast(
+                "Hanya admin yang dapat menyimpan tampilan kamera.",
+                ToastKind::Error,
+            );
+            return;
+        }
+        if self.editor.loading {
+            self.toast("Tunggu pemuatan skenario selesai.", ToastKind::Info);
+            return;
+        }
+        let Some(scenario_id) = self.editor.scenario_id else {
+            self.toast(
+                "Pilih skenario sebelum menyimpan tampilan.",
+                ToastKind::Error,
+            );
+            return;
+        };
+        let camera = self.editor.map_state;
+        // Indoor/floor-plan scenarios keep their server-side base layer: the
+        // editor only has OSM/satellite tiles and must not overwrite it.
+        let base_layer = if self.editor.scenario_indoor || self.editor.floor_plan {
+            String::new()
+        } else {
+            match self.editor.base_layer {
+                BaseLayer::ArcGisImagery => "satellite".to_owned(),
+                BaseLayer::OpenStreetMap => "osm".to_owned(),
+            }
+        };
+        let body = serde_json::json!({
+            "center_x": camera.center.longitude,
+            "center_y": camera.center.latitude,
+            "zoom": f64::from(camera.zoom),
+            "pitch": f64::from(camera.pitch_degrees),
+            "bearing": f64::from(camera.bearing_degrees),
+            "map_mode": "",
+            "base_layer": base_layer,
+        });
+        self.editor.saving_view = true;
+        self.editor.save_error = None;
+        let handle = self.api.request(
+            HttpMethod::Put,
+            format!("/admin/skenarios/{scenario_id}"),
+            Some(body),
+        );
+        self.editor.log("Menyimpan tampilan kamera...");
+        self.editor.jobs.push(EditorJob {
+            kind: EditorJobKind::SaveView,
+            key: None,
+            handle,
+        });
+    }
+
     pub fn editor_geocode(&mut self) {
         let query = self.editor.geocode_query.trim().to_owned();
         if query.len() < 2 {
@@ -202,6 +442,32 @@ impl ClientUi {
             key: None,
             handle,
         });
+    }
+
+    pub fn editor_upload_texture(&mut self, key: ObjectKey, path: std::path::PathBuf) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match super::textures::multipart_image_body(&path) {
+                Ok((content_type, body)) => {
+                    self.editor.pending_texture_uploads.insert(key, path);
+                    let handle = self.api.upload("/private/upload-image", content_type, body);
+                    self.editor.jobs.push(EditorJob {
+                        kind: EditorJobKind::UploadTexture,
+                        key: Some(key),
+                        handle,
+                    });
+                    self.editor.log("Mengunggah tekstur ke server...");
+                }
+                Err(error) => {
+                    self.editor.log(error);
+                    self.toast("Gagal menyiapkan tekstur.", ToastKind::Error);
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (key, path);
+        }
     }
 
     pub fn tick_editor_jobs(&mut self) {
@@ -311,11 +577,61 @@ impl ClientUi {
                     response.data::<TextMarker>().map(|text| text.id)
                 });
             }
+            EditorJobKind::UploadTexture => {
+                let source = key.and_then(|key| self.editor.pending_texture_uploads.remove(&key));
+                match result.and_then(|response| response.data::<String>()) {
+                    Ok(url) => {
+                        if let Some(key) = key {
+                            self.editor
+                                .apply_uploaded_texture(key, &url, source.as_deref());
+                        }
+                        self.editor.log(format!("Tekstur diunggah: {url}"));
+                        self.toast(
+                            "Tekstur diunggah ke server. Simpan skenario agar bisa dilihat di komputer lain.",
+                            ToastKind::Success,
+                        );
+                    }
+                    Err(error) => {
+                        let message = format!("Gagal mengunggah tekstur: {}", error.message);
+                        self.editor.log(message.clone());
+                        self.toast(message, ToastKind::Error);
+                    }
+                }
+            }
             EditorJobKind::Update | EditorJobKind::Delete => {
                 if let Err(error) = result {
                     self.editor.save_error = Some(error.message);
                 }
                 self.editor_save_done();
+            }
+            EditorJobKind::SaveView => {
+                self.editor.saving_view = false;
+                match result.and_then(|response| response.data::<Scenario>()) {
+                    Ok(scenario) => {
+                        self.editor.scenario_center =
+                            GeoPoint::new(scenario.center_x, scenario.center_y);
+                        self.editor.saved_view = Some(MapCameraState {
+                            center: self.editor.scenario_center,
+                            zoom: scenario.zoom as f32,
+                            pitch_degrees: scenario.pitch as f32,
+                            bearing_degrees: scenario.bearing as f32,
+                        });
+                        self.editor.saved_base_layer = Some(self.editor.base_layer);
+                        let time = chrono::Local::now().format("%H:%M:%S").to_string();
+                        self.editor.view_saved_at = Some(time.clone());
+                        self.editor.last_save = Some(time);
+                        self.editor.log("Tampilan kamera tersimpan.");
+                        self.toast("Tampilan kamera skenario tersimpan.", ToastKind::Success);
+                        self.editor.touch();
+                    }
+                    Err(error) => {
+                        self.editor.save_error = Some(error.message.clone());
+                        self.toast(
+                            format!("Simpan tampilan gagal: {}", error.message),
+                            ToastKind::Error,
+                        );
+                    }
+                }
             }
             EditorJobKind::Geocode => {
                 self.editor.geocode_pending = false;
@@ -346,6 +662,7 @@ impl ClientUi {
         self.editor.scenario_name = scenario.name.clone();
         self.editor.scenario_center = GeoPoint::new(scenario.center_x, scenario.center_y);
         self.editor.indoor = scenario.map_mode == MapMode::Indoor;
+        self.editor.scenario_indoor = self.editor.indoor;
         self.editor.floor_plan = matches!(scenario.base_layer, DomainBaseLayer::FloorPlan)
             || scenario.indoor_config["floor_plan_url"]
                 .as_str()
@@ -364,16 +681,23 @@ impl ClientUi {
                 .unwrap_or(60.0)
                 .clamp(1.0, 10_000.0) as f32,
         ];
-        self.editor.requested_layer = Some(match scenario.base_layer {
+        let layer = match scenario.base_layer {
             DomainBaseLayer::Satellite => BaseLayer::ArcGisImagery,
             _ => BaseLayer::OpenStreetMap,
-        });
-        self.editor.requested_flight = Some(MapCameraState {
+        };
+        let view = MapCameraState {
             center: GeoPoint::new(scenario.center_x, scenario.center_y),
             zoom: scenario.zoom as f32,
             pitch_degrees: scenario.pitch as f32,
             bearing_degrees: scenario.bearing as f32,
-        });
+        };
+        self.editor.requested_layer = Some(layer);
+        self.editor.requested_flight = Some(view);
+        // The camera just loaded is what the server currently stores, so the
+        // Inspector reports "Tersimpan" until the user moves the view.
+        self.editor.saved_view = Some(view);
+        self.editor.saved_base_layer = Some(layer);
+        self.editor.view_saved_at = None;
         self.editor
             .log(format!("Skenario '{}' dimuat.", scenario.name));
     }
@@ -454,6 +778,72 @@ impl ClientUi {
     }
 }
 
+/// Height (meters) of the meshes in a glTF/GLB file, read from the POSITION
+/// accessor bounds. Only the JSON chunk of a GLB is read.
+#[cfg(not(target_arch = "wasm32"))]
+fn model_height(path: &Path) -> Option<f32> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header).ok()?;
+    let json = if &header[0..4] == b"glTF" {
+        let mut chunk = [0u8; 8];
+        file.read_exact(&mut chunk).ok()?;
+        let length = u32::from_le_bytes(chunk[0..4].try_into().ok()?) as usize;
+        let kind = u32::from_le_bytes(chunk[4..8].try_into().ok()?);
+        // "JSON" chunk type.
+        if kind != 0x4E4F_534A || length == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u8; length.min(16 * 1024 * 1024)];
+        file.read_exact(&mut buffer).ok()?;
+        buffer
+    } else {
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).ok()?;
+        buffer
+    };
+    let value: serde_json::Value = serde_json::from_slice(&json).ok()?;
+    let accessors = value.get("accessors")?.as_array()?;
+    let meshes = value.get("meshes")?.as_array()?;
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for mesh in meshes {
+        let Some(primitives) = mesh.get("primitives").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for primitive in primitives {
+            let Some(index) = primitive
+                .pointer("/attributes/POSITION")
+                .and_then(|value| value.as_u64())
+            else {
+                continue;
+            };
+            let Some(accessor) = accessors.get(index as usize) else {
+                continue;
+            };
+            let Some(low) = accessor
+                .get("min")
+                .and_then(|value| value.get(1))
+                .and_then(|value| value.as_f64())
+            else {
+                continue;
+            };
+            let Some(high) = accessor
+                .get("max")
+                .and_then(|value| value.get(1))
+                .and_then(|value| value.as_f64())
+            else {
+                continue;
+            };
+            min = min.min(low as f32);
+            max = max.max(high as f32);
+        }
+    }
+    (min.is_finite() && max.is_finite() && max > min).then_some(max - min)
+}
+
 fn marker_object(marker: Marker) -> EditorObject {
     let unit_id = marker.unit_id.clone();
     let unit = unit_for_uuid(&unit_id);
@@ -499,6 +889,36 @@ fn line_object(line: Line) -> EditorObject {
 }
 
 fn building_object(building: Building) -> EditorObject {
+    let points = parse_geom(&building.geom);
+    let meta = shape_meta(&building.keterangan);
+    let (shape, center, rotation, scale, texture, use_texture, keterangan) = match meta {
+        Some(meta) => {
+            let center = meta
+                .lon
+                .zip(meta.lat)
+                .map(|(lon, lat)| GeoPoint::new(lon, lat))
+                .or_else(|| points_centroid_geo(&points))
+                .unwrap_or(GeoPoint::new(0.0, 0.0));
+            (
+                EditorShapeKind::from_key(&meta.shape),
+                center,
+                meta.rot,
+                meta.scale,
+                meta.texture,
+                meta.use_texture,
+                meta.note,
+            )
+        }
+        None => (
+            EditorShapeKind::Custom,
+            points_centroid_geo(&points).unwrap_or(GeoPoint::new(0.0, 0.0)),
+            [0.0; 3],
+            [1.0; 3],
+            None,
+            false,
+            building.keterangan,
+        ),
+    };
     EditorObject {
         key: 0,
         server_id: Some(building.id),
@@ -506,12 +926,111 @@ fn building_object(building: Building) -> EditorObject {
         visible: true,
         dirty: false,
         kind: EditorKind::Building(BuildingObject {
-            points: parse_geom(&building.geom),
+            shape,
+            lon: center.longitude,
+            lat: center.latitude,
+            altitude: 0.0,
+            rot_x: rotation[0],
+            rot_y: rotation[1],
+            rot_z: rotation[2],
+            scale_x: scale[0],
+            scale_y: scale[1],
+            scale_z: scale[2],
             color: building.color,
+            use_texture,
+            texture,
+            points,
             height: building.height,
-            keterangan: building.keterangan,
+            keterangan,
         }),
     }
+}
+
+/// Shape metadata stored in the legacy `buildings.keterangan` column.
+struct ShapeMeta {
+    shape: String,
+    lon: Option<f64>,
+    lat: Option<f64>,
+    rot: [f64; 3],
+    scale: [f64; 3],
+    texture: Option<String>,
+    use_texture: bool,
+    note: String,
+}
+
+fn shape_meta(keterangan: &str) -> Option<ShapeMeta> {
+    let value: Value = serde_json::from_str(keterangan).ok()?;
+    let shape = value.get("shape")?.as_str()?.trim().to_owned();
+    if shape.is_empty() {
+        return None;
+    }
+    Some(ShapeMeta {
+        shape,
+        lon: value.get("lon").and_then(Value::as_f64),
+        lat: value.get("lat").and_then(Value::as_f64),
+        rot: value_array3(value.get("rot"), [0.0; 3]),
+        scale: value_array3(value.get("scale"), [1.0; 3]),
+        texture: value
+            .get("texture")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        use_texture: value
+            .get("use_texture")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        note: value
+            .get("note")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    })
+}
+
+fn value_array3(value: Option<&Value>, default: [f64; 3]) -> [f64; 3] {
+    let Some(values) = value.and_then(Value::as_array) else {
+        return default;
+    };
+    let mut result = default;
+    for (index, value) in values.iter().take(3).enumerate() {
+        if let Some(number) = value.as_f64() {
+            result[index] = number;
+        }
+    }
+    result
+}
+
+fn points_centroid_geo(points: &[[f64; 2]]) -> Option<GeoPoint> {
+    if points.is_empty() {
+        return None;
+    }
+    let count = points.len() as f64;
+    Some(GeoPoint::new(
+        points.iter().map(|point| point[0]).sum::<f64>() / count,
+        points.iter().map(|point| point[1]).sum::<f64>() / count,
+    ))
+}
+
+fn building_meta_json(building: &BuildingObject) -> String {
+    serde_json::json!({
+        "shape": building.shape.key(),
+        "lon": building.lon,
+        "lat": building.lat,
+        "rot": [building.rot_x, building.rot_y, building.rot_z],
+        "scale": [building.scale_x, building.scale_y, building.scale_z],
+        "texture": building.texture,
+        "use_texture": building.use_texture,
+        "note": building.keterangan,
+    })
+    .to_string()
+}
+
+fn building_geom_json(building: &BuildingObject) -> String {
+    let points = building
+        .outline()
+        .iter()
+        .map(|point| [point.longitude, point.latitude])
+        .collect::<Vec<_>>();
+    geom_json(&points)
 }
 
 fn text_object(text: TextMarker) -> EditorObject {
@@ -525,6 +1044,7 @@ fn text_object(text: TextMarker) -> EditorObject {
             text: text.text,
             lon: text.pos_x,
             lat: text.pos_y,
+            altitude: text.altitude,
             color: text.color,
             font_size: text.font_size,
             align: match text.align {
@@ -607,9 +1127,9 @@ fn create_request(
                 operasi_id: operation_id.to_string(),
                 skenario_id: scenario_id.to_string(),
                 color: building.color.clone(),
-                geom: geom_json(&building.points),
-                height: building.height,
-                keterangan: building.keterangan.clone(),
+                geom: building_geom_json(building),
+                height: building.render_height(),
+                keterangan: building_meta_json(building),
             })
             .ok()?,
         ),
@@ -625,6 +1145,7 @@ fn create_request(
                 wrap_text: text.wrap_text,
                 pos_x: text.lon,
                 pos_y: text.lat,
+                altitude: text.altitude,
             })
             .ok()?,
         ),
@@ -709,6 +1230,16 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                 kind: EditorJobKind::Update,
                 key: Some(object.key),
                 method: HttpMethod::Put,
+                path: format!("/private/markers/unit/{id}"),
+                body: serde_json::to_value(MarkerUnitRequest {
+                    unit_id: marker.unit_id.clone(),
+                })
+                .ok(),
+            });
+            requests.push(EditorRequest {
+                kind: EditorJobKind::Update,
+                key: Some(object.key),
+                method: HttpMethod::Put,
                 path: format!("/private/markers/scale/{id}"),
                 body: serde_json::to_value(MarkerScaleRequest {
                     scale: marker.scale_x,
@@ -762,8 +1293,8 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                 body: serde_json::to_value(BuildingUpdateRequest {
                     name: object.name.clone(),
                     color: building.color.clone(),
-                    keterangan: building.keterangan.clone(),
-                    height: building.height,
+                    keterangan: building_meta_json(building),
+                    height: building.render_height(),
                 })
                 .ok(),
             });
@@ -773,7 +1304,7 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                 method: HttpMethod::Put,
                 path: format!("/private/buildings/geom/{id}"),
                 body: serde_json::to_value(BuildingGeomUpdateRequest {
-                    geom: geom_json(&building.points),
+                    geom: building_geom_json(building),
                 })
                 .ok(),
             });
@@ -801,6 +1332,7 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                 body: serde_json::to_value(TextMarkerGeomUpdateRequest {
                     pos_x: text.lon,
                     pos_y: text.lat,
+                    altitude: text.altitude,
                 })
                 .ok(),
             });
@@ -851,4 +1383,39 @@ pub fn assign_keys(editor: &mut super::model::EditorState) {
         next += 1;
     }
     editor.next_key = next;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn reads_the_height_of_a_cached_glb() {
+        let path = Path::new("../../assets/models/polwan_airud_idle_lod2.glb");
+        let height = model_height(path).expect("GLB height");
+        assert!(height > 0.01 && height < 100_000.0, "height {height}");
+    }
+
+    #[test]
+    fn shape_metadata_round_trips_through_keterangan() {
+        let mut building =
+            BuildingObject::primitive(EditorShapeKind::Cylinder, GeoPoint::new(115.2, -8.6));
+        building.rot_y = 45.0;
+        building.scale_x = 3.0;
+        building.use_texture = true;
+        building.texture = Some("asset-id".to_owned());
+        building.keterangan = "catatan".to_owned();
+
+        let meta = shape_meta(&building_meta_json(&building)).expect("shape metadata");
+
+        assert_eq!(meta.shape, "cylinder");
+        assert_eq!(meta.rot[1], 45.0);
+        assert_eq!(meta.scale[0], 3.0);
+        assert_eq!(meta.texture.as_deref(), Some("asset-id"));
+        assert!(meta.use_texture);
+        assert_eq!(meta.note, "catatan");
+        let geom = building_geom_json(&building);
+        assert!(geom.starts_with("[[") && geom.ends_with("]]"));
+    }
 }

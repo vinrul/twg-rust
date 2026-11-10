@@ -284,7 +284,9 @@ Deteksi saat upload (per source):
 Bila file unggahan sudah memenuhi target, konversi tidak dijalankan dan varian
 menunjuk ke source file (`reused: true`) — misalnya upload yang sudah Draco+LOD2
 lalu menekan convert Draco+LOD2. Setiap perubahan metadata atau varian menaikkan
-`version`, sehingga client bisa mendeteksi asset yang perlu disinkronkan.
+`version`, sehingga client bisa mendeteksi asset yang perlu disinkronkan. Satu
+pengecualian: **rename** tidak menaikkan `version`, karena file tidak berubah dan
+desktop tidak perlu mengunduh ulang asset besar hanya karena namanya diganti.
 
 Endpoint (unggah/ubah/hapus hanya role `admin`; baca untuk semua sesi login):
 
@@ -292,6 +294,7 @@ Endpoint (unggah/ubah/hapus hanya role `admin`; baca untuk semua sesi login):
 |---|---|---|
 | POST | `/admin/assets` | multipart `name`, `category`; model juga `model_kind` (`static`/`animated`), lalu `file` atau `idle`+`animated` |
 | PUT | `/admin/assets/{id}` | `{"name", "category"}` (kategori hanya bisa berpindah antara texture/icon) |
+| POST | `/admin/assets/{id}/source` | multipart `slot` (`static`/`idle`/`animated`) + `file`: ganti file satu slot pada asset yang sudah ada; varian slot itu dihapus dan `version` naik |
 | DELETE | `/admin/assets/{id}` | hapus baris + file |
 | POST | `/admin/assets/{id}/convert` | `{"target":"draco"}`, `{"target":"lod2"}`, `{"target":"draco_lod2"}`, `{"target":"resize","size":512}`; tambahkan `"slot"` untuk model animasi dan `force: true` untuk konversi ulang |
 | GET | `/private/assets` | daftar, filter `?category=` dan `?search=` |
@@ -306,16 +309,43 @@ membutuhkan CMake untuk build `draco_decoder` (lihat
 memakai crate `image`. File disimpan di `ASSETS_DIR` (default `asset-store`)
 dengan satu direktori per id asset.
 
-### Aset di desktop (offline)
+Upload dan hasil konversi dinormalisasi: bila gambar di dalam GLB sebenarnya
+PNG/WebP/KTX2 tetapi `mimeType`-nya salah (misalnya `image/jpeg`), server
+memperbaiki field itu dari magic bytes. Untuk asset lama yang diunggah sebelum
+perbaikan ini, jalankan sekali dari root project:
 
-Menu **Aset** tersedia di `twg-desktop` untuk semua role; unggah, konversi, dan
-hapus hanya muncul untuk role `admin`.
+```sh
+cargo run -p twg-server-app -- --repair-assets
+# atau tanpa menimpa binary server yang sedang berjalan:
+cargo run -p twg-server --example repair_assets -- asset-store
+```
+
+Perintah ini memperbaiki file GLB, memperbarui `size_bytes`/`sha256` di database,
+menaikkan `version` asset, dan membuat client menyinkronkan ulang cache offline.
+
+### Aset di desktop (preview server + cache offline)
+
+Menu **Aset** tersedia di `twg-desktop` untuk semua role; unggah, edit, konversi,
+dan hapus hanya muncul untuk role `admin`.
 
 - **Upload**: tarik & lepas file ke jendela aplikasi. Pilih kategori (Model /
   Texture / Icon) dan, untuk model, `Static` (1 file) atau `Animasi` (2 file:
   `idle` + file animasi). Nama terisi otomatis dari nama file.
-- **Preview**: texture/icon menampilkan gambar dari cache offline; model
-  menampilkan source, varian, ukuran, serta status Draco/LOD.
+- **Edit nama**: ubah isian **Nama aset** di panel detail lalu tekan **Simpan
+  nama** (atau Enter). Tombol **Batal** mengembalikan isian ke nama saat ini.
+- **Ganti file**: tombol **Ganti file** pada kartu source (mis. `Idle`, `Animasi`,
+  `Static`) — setelah itu tarik file baru ke jendela aplikasi. File lama beserta
+  varian slot tersebut diganti, `version` naik, dan preview otomatis dimuat
+  ulang. Tombol **Batal** membatalkan penantian file. Id asset tidak berubah,
+  jadi skenario/editor yang memakai asset ini tetap valid.
+- **Preview**: file preview selalu diambil dari **server**, bukan dari cache
+  offline. Texture/icon dimuat lewat asset HTTP Bevy; model dirender sebagai
+  preview 3D offscreen dari URL server (auto-fit ke bounding box, layer render
+  sendiri), lengkap dengan source, varian, ukuran, serta status Draco/LOD.
+  Model animasi menampilkan dua preview — **Idle** dan **Animasi** — dan klip
+  animasi pertama diputar berulang otomatis. Preview model bisa diputar dengan
+  drag mouse; saat tidak di-drag model berputar perlahan secara otomatis.
+  Preview mengikuti opsi "Gunakan hasil convert" bila varian tersedia.
 - **Konversi**: tombol Draco / LOD2 / Draco+LOD2 per slot (model) dan
   Resize 512/256/128 (gambar). Target yang sudah terpenuhi ditandai `✓` dan
   tidak dikonversi ulang.
@@ -326,8 +356,11 @@ hapus hanya muncul untuk role `admin`.
 
 Sinkronisasi offline:
 
-- Setelah login dan setiap kali akan membuka **Peta**, desktop memanggil
-  `/private/assets/manifest` lebih dulu (overlay "Sinkronisasi aset").
+- Saat `twg-desktop` dijalankan dengan sesi tersimpan (atau setelah login),
+  desktop langsung memanggil `/private/assets/manifest` di latar belakang.
+  Tambahan/perubahan aset diunduh ke cache offline sebelum editor/game dipakai.
+- Setiap kali akan membuka **Peta**, manifest dicek lagi (overlay "Sinkronisasi
+  aset") supaya cache tidak stale.
 - Hanya file yang `version`-nya berubah atau belum ada yang diunduh; setiap file
   diverifikasi dengan `sha256`, ditulis atomik, dan `manifest.json` baru ditulis
   setelah semua file sukses.
@@ -336,8 +369,12 @@ Sinkronisasi offline:
   dibatalkan agar tidak memakai aset yang belum pasti.
 - Lokasi cache: `TWG_ASSET_CACHE` (default `~/Library/Caches/twg/assets` di macOS,
   `%LOCALAPPDATA%\twg\assets` di Windows, `$XDG_CACHE_HOME/twg/assets` di Linux).
-- Build web tidak memiliki cache offline; melihat katalog tetap bisa, sedangkan
-  tombol **Gunakan** menampilkan info bahwa cache hanya tersedia di desktop.
+- Build web tidak memiliki cache offline; katalog tetap bisa dilihat,
+  sedangkan tombol **Gunakan** dan preview server hanya aktif di desktop.
+
+Cache offline hanya dipakai oleh editor/game/latihan/simulasi. Layar **Aset**
+selalu membaca file preview dari server supaya admin melihat versi terbaru,
+kendati file tersebut sudah ada di cache.
 
 **Pemakaian di runtime**
 
@@ -350,8 +387,9 @@ Sinkronisasi offline:
 - `TWG_ACTIVE_ASSET=<uuid>` menjalankan aplikasi dengan aset tertentu yang
   sudah ada di cache (berguna untuk memulai simulasi tanpa memilih manual).
 - Tombol **Lepas** menghapus pilihan dan mengembalikan model bawaan.
-- Editor peta tetap memakai katalog unit bawaan (`assets/models/...`, sudah
-  lokal); model aset terpilih dipakai oleh renderer marker/simulasi.
+- Editor peta memakai **tab Assets** untuk daftar model server: nama diambil dari
+  server, file dari cache offline. Tab **Katalog lokal** sudah dihapus — semua
+  model 3D sekarang ditambahkan lewat Assets.
 
 ### Online admin (desktop)
 
@@ -384,10 +422,139 @@ cargo run -p twg-online-admin
 
 Menu **Peta** membuka editor bergaya Godot/Unity: menu bar, toolbar, dock
 Scene/Layers, viewport, Inspector, Assets/Console, dan status bar. `Q/W/E/R`
-memilih Select/Move/Rotate/Scale, `1..5` membuat Marker/Line/Polygon/Text/
-Measure, `Ctrl+S` menyimpan, `Ctrl+Z` undo, dan `Ctrl+D` menduplikasi objek.
-Mode **Play** menyembunyikan dock. Di web, `?scenario=<uuid>` membuka skenario
-tersebut langsung di editor. Detail ada di [laporan Fase 9](docs/PHASE9_REPORT.md).
+memilih Select/Move/Rotate/Scale, `1..4` memilih Bentuk/Line/Text/Measure,
+`Ctrl+S` menyimpan, `Ctrl+Z` undo, dan `Ctrl+D` menduplikasi objek. Marker 3D
+ditambahkan dari tab **Assets** (tombol **Tambah** atau drag ke peta); tool
+Marker terpisah sudah dihapus. Klik baris di panel **Scene → Layers** akan
+memilih objek sekaligus menerbangkan kamera (pan + zoom) ke objek tersebut,
+sehingga marker/model 3D langsung terlihat. Mode **Play** menyembunyikan dock.
+Di web, `?scenario=<uuid>` membuka skenario tersebut langsung di editor. Detail
+ada di [laporan Fase 9](docs/PHASE9_REPORT.md).
+
+**Tab Assets (model server)**
+
+Panel kiri punya dua tab: **Scene** dan **Assets**; dock bawah hanya berisi
+**Console**. Tab **Assets** menampilkan model 3D (`glb`/`gltf`) dan tekstur
+gambar dari server:
+
+- Datanya dari `GET /private/assets` (kategori `model`); file model dibaca dari
+  cache offline (`twg-cache://<asset-id>/<slot>/original.glb`), bukan diunduh
+  ulang dari server. Kartu menampilkan nama, jenis (Static/Animasi), dan status
+  `siap offline` / `belum diunduh`; ada tombol **Sinkronkan** bila cache belum
+  lengkap.
+- **Tambah** menaruh marker di tengah peta. Model juga bisa **ditarik dari kartu
+  ke viewport**; posisinya diambil dari titik tanah di bawah kursor (mengikuti
+  snap grid). Selama drag, peta tidak ikut ter-klik.
+- Model dimuat sebagai **scene glTF utuh**, jadi material dan tekstur bawaan file
+  tetap dipakai (bukan warna solid). Rotasi X dan altitude default **0**; ukurannya
+  dinormalisasi dari batas `POSITION` di file glTF (target tinggi 2 m) lalu bisa
+  diubah lewat Scale.
+- Marker dari aset menyimpan UUID aset di `markers.unit_id` (kolom yang sama
+  dengan katalog unit), jadi setelah **Simpan** dan **Muat ulang** model yang
+  sama dimuat lagi dari cache. Bila aset sudah dihapus/belum tersinkron, marker
+  kembali ke model katalog pertama sehingga tetap terlihat.
+- Model aset otomatis dinormalisasi tingginya (≈2 m) saat mesh selesai dimuat,
+  karena satuan ekspor GLB tidak diketahui; ukuran akhir tetap bisa diatur lewat
+  Scale di Inspector.
+- Model aset otomatis dinormalisasi tingginya (≈2 m) dari batas mesh di file
+  glTF, karena satuan ekspor GLB tidak diketahui; ukuran akhir tetap bisa diatur
+  lewat Scale di Inspector.
+- Inspector marker punya dropdown model dari daftar *Aset server*. Perubahan
+  model disimpan lewat `PUT /private/markers/unit/{id}`.
+
+**Bentuk 3D (primitive & custom mesh)**
+
+Tool **Bentuk** (`1`) membuat objek 3D di titik klik. Dropdown **Bentuk** di
+toolbar memilih jenisnya: **Kubus/Kotak**, **Silinder**, **Bola**, **Circle**,
+**Ground**, dan **Custom mesh**. Semua bentuk bisa dipindah, diputar, dan
+diskalakan lewat gizmo Move/Rotate/Scale atau field Transform di Inspector.
+
+- **Custom mesh**: titik footprint digambar dengan klik berurutan (Enter/klik
+ganda untuk selesai). Bentuknya bisa diedit lagi dari Inspector — ubah offset
+East/North tiap titik, tambah titik, atau hapus titik (minimal 3).
+- **Material**: pilih **Solid color** dengan color picker, atau **Texture** yang
+diambil dari aset gambar (kategori Texture/Icon). Tekstur diunggah lewat menu
+**Aset**; bila file belum ada di cache, editor memakai URL server, dan bila
+tidak tersedia sama sekali material kembali ke warna solid.
+- Objek bentuk disimpan sebagai record `buildings` dengan metadata bentuk,
+rotasi, skala, dan tekstur di kolom `keterangan`, sehingga tetap dimuat ulang
+dengan bentuk yang sama.
+
+**Toolbar dan gizmo transform**
+
+Tombol **Select / Move / Rotate / Scale** berupa ikon (tooltip berisi nama dan
+shortcut) dan disorot dengan warna aksen saat aktif. Gizmo di peta mengikuti
+tool yang dipilih:
+
+- **Select**: tanpa gizmo — objek terpilih ditandai cincin kuning dan bisa
+digeser langsung dengan drag. Gizmo transform baru muncul saat memilih
+Move/Rotate/Scale, jadi tidak lagi tertukar dengan Select.
+- **Move**: tiga panah X/Y/Z (X/Z menggeser di permukaan, Y mengubah
+  ketinggian).
+- **Rotate**: tiga cincin X/Y/Z; drag cincin untuk memutar pada sumbu itu.
+- **Scale**: handle kubus X/Y/Z untuk skala per sumbu, plus **ring kecil di
+  tengah** untuk skala seragam (X, Y, Z sekaligus; drag ke kanan/atas
+  memperbesar).
+
+Arahkan kursor ke handle sampai tersorot, lalu drag. Perpindahan tool lewat
+toolbar atau `Q/W/E/R` langsung membangun ulang gizmo tanpa menunggu perubahan
+lain.
+
+Field angka di Inspector (Lon, Lat, Alt, Rot X/Y/Z, Scale, Lebar, Alpha,
+Tinggi, Font, Jumlah) bisa **diketik**, **di-drag**, atau diubah dengan tombol
+**▲/▼** di sebelahnya (tooltip menunjukkan besar langkahnya, mis. `+1°` untuk
+rotasi). Scale memakai tiga desimal dan bisa diperkecil sampai `0.001` (batas
+minimum yang sama berlaku untuk gizmo Scale).
+
+Input peta hanya aktif di dalam viewport: roda mouse (zoom) dan drag tombol
+tengah/kanan diabaikan saat kursor berada di atas panel, dock, atau panel
+Inspector, sehingga scrollbar panel bisa di-scroll tanpa ikut men-zoom peta.
+
+**Tampilan kamera skenario**
+
+Inspector (saat tidak ada objek terpilih) punya bagian **Tampilan kamera** yang
+menampilkan pusat (lat/lon), zoom, bearing, pitch, dan base layer aktif. Tombol
+**Simpan tampilan** (khusus admin) menyimpan nilai tersebut ke skenario lewat
+`PUT /admin/skenarios/{id}`, sehingga reload editor, Play, simulasi, dan latihan
+membuka kamera yang sama. Status berubah menjadi `Tersimpan HH:MM:SS` selama
+kamera tidak berubah dan kembali `Belum disimpan` setelah kamera digeser.
+Skenario indoor/floor plan mempertahankan base layer server-nya.
+
+**Mode tampilan model**
+
+Dropdown **Model** di toolbar mengatur shading model glTF di viewport editor:
+**Texture** (default), **Solid**, dan **Wireframe**. Mode ini hanya berlaku di
+editor — **Play** (dan game/simulasi/taktikal) selalu menampilkan tekstur, dan
+marker dari katalog lokal tetap memakai warna kategori.
+
+**Mode Play (RTS)**
+
+Tombol **▶ Play** menjalankan skenario sebagai simulasi RTS sederhana di
+viewport editor:
+
+- Label objek disembunyikan. Kamera tetap bisa di-orbit (klik kanan tahan) dan
+  di-pan (tombol tengah) seperti biasa.
+- Marker dengan aset model **Animasi** menjadi unit yang bisa dipilih dan
+  digerakkan. Marker statis — termasuk aset static berbentuk kubus, silinder,
+  bola, atau cone — menjadi penghalang dan tidak bisa dipilih.
+- Klik unit untuk memilih, **Shift/Ctrl+klik** menambah/mengurangi pilihan, dan
+  seret di tanah kosong untuk memilih banyak unit (marquee). Unit terpilih
+  ditandai ring hijau yang mengikuti bidang tanah/peta (bukan lingkaran layar)
+  seperti game RTS.
+- **Klik kanan** di tanah memerintahkan unit bergerak. Bila beberapa unit
+  dipilih, mereka otomatis membentuk formasi grid di sekitar titik tujuan.
+- Unit memutar arah mengikuti gerakan dan memutar klip animasi (file
+  `animated`) hanya selagi bergerak. Saat berhenti atau sampai tujuan, model
+  kembali ke tampilan **idle** (file `idle`), bukan animasi yang di-pause.
+  Hanya satu scene yang di-instansiasi per unit: scene idle diganti scene
+  animasi saat mulai bergerak, lalu diganti balik saat berhenti. Scene lama
+  masuk ke pool terbatas untuk dipakai ulang, dan pembuatan scene baru dibatasi
+  per frame agar perubahan status banyak unit sekaligus tidak menyebabkan
+  hitch.
+- Unit yang akan melewati marker statis berbelok menghindar, lalu kembali
+  menuju titik tujuan setelah penghalang terlewati.
+- Posisi selama Play tidak mengubah posisi marker di skenario. **Stop**
+  mengembalikan editor ke tampilan authoring semula.
 
 Web:
 

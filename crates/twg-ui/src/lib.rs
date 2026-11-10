@@ -2,12 +2,16 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::window::FileDragAndDrop;
-use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
+use bevy_egui::{
+    EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, EguiTextureHandle,
+    PrimaryEguiContext,
+};
 use std::path::PathBuf;
 use twg_client::{ApiClient, WsTransport};
 use twg_contracts::assets::{AssetSourceSlot, AssetVariantKind};
 use twg_render::{
-    MapUpdateSet, MarkerModelOverride, MarkerModelPath, MarkerModelReload, UiPointerState,
+    AssetPreview, AssetPreviewRequest, MapUpdateSet, MarkerModelOverride, MarkerModelPath,
+    MarkerModelReload, PREVIEW_SLOTS, PreviewOrbitInput, PreviewOrbitInputs, UiPointerState,
     cache_asset_path,
 };
 
@@ -61,8 +65,15 @@ impl Default for TacticalUiPlugin {
 impl Plugin for TacticalUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default());
+        // The preview camera renders to an offscreen texture. Do not let
+        // bevy_egui attach the UI context to it just because it is one of the
+        // first cameras in the world.
+        if let Some(mut settings) = app.world_mut().get_resource_mut::<EguiGlobalSettings>() {
+            settings.auto_create_primary_context = false;
+        }
         app.init_resource::<editor::input::EditorInputFocus>();
         app.init_resource::<ActiveAsset>();
+        app.add_systems(PostStartup, attach_primary_egui_context);
         if let Some(backend) = &self.backend {
             app.insert_resource(ClientUi::new(
                 backend.api.clone(),
@@ -75,6 +86,7 @@ impl Plugin for TacticalUiPlugin {
                     editor::input::sync_editor_mode,
                     editor::input::editor_input,
                     collect_file_drops,
+                    publish_preview_request,
                     sync_active_asset,
                 )
                     .chain()
@@ -109,21 +121,77 @@ fn apply_theme(mut contexts: EguiContexts, mut applied: Local<bool>) -> Result {
     Ok(())
 }
 
+/// Attaches the egui primary context to the camera that renders to the window.
+/// The preview camera renders to an offscreen image and must never receive it.
+fn attach_primary_egui_context(
+    mut commands: Commands,
+    map_camera: Query<Entity, With<twg_render::MapCamera>>,
+) {
+    if let Some(entity) = map_camera.iter().next() {
+        commands.entity(entity).insert(PrimaryEguiContext);
+    } else {
+        commands.spawn((Camera2d, PrimaryEguiContext));
+    }
+}
+
 fn track_ui_pointer(
     mut contexts: EguiContexts,
     mut state: ResMut<UiPointerState>,
+    client: Option<Res<ClientUi>>,
     mut focus: ResMut<editor::input::EditorInputFocus>,
 ) -> Result {
     let context = contexts.ctx_mut()?;
-    state.over_ui = context.egui_wants_pointer_input() || context.egui_is_using_pointer();
+    let mut over_ui = context.egui_wants_pointer_input() || context.egui_is_using_pointer();
+    // The scenario editor lays its dock panels out as plain `Ui`s, which egui's
+    // area hit test does not see. Anything outside the map viewport counts as
+    // UI so wheel/drag input does not leak through to the map.
+    if let Some(client) = client
+        && client.state.screen == twg_client::session::Screen::MapEditor
+        && let Some(position) = context.input(|input| input.pointer.latest_pos())
+        && !client.editor.viewport_rect.contains(position)
+    {
+        over_ui = true;
+    }
+    state.over_ui = over_ui;
     focus.keyboard = context.text_edit_focused();
     Ok(())
 }
 
-fn draw_client_shell(mut contexts: EguiContexts, mut client: ResMut<ClientUi>) -> Result {
-    let context = contexts.ctx_mut()?;
+fn draw_client_shell(
+    mut contexts: EguiContexts,
+    mut client: ResMut<ClientUi>,
+    preview: Option<Res<AssetPreview>>,
+    orbit: Option<ResMut<PreviewOrbitInputs>>,
+) -> Result {
     client.poll();
+    if let Some(preview) = preview {
+        let mut panels = Vec::with_capacity(PREVIEW_SLOTS);
+        for (slot, preview_slot) in preview.slots.iter().enumerate() {
+            let texture = preview_slot
+                .image
+                .as_ref()
+                .map(|image| contexts.add_image(EguiTextureHandle::Weak(image.id())));
+            panels.push(state::PreviewPanelUi {
+                slot,
+                asset_id: preview_slot.asset_id,
+                phase: preview_slot.phase,
+                error: preview_slot.error.clone(),
+                texture,
+                dimensions: preview_slot.dimensions,
+                label: preview_slot.label.clone(),
+                is_model: preview_slot.is_model(),
+            });
+        }
+        client.preview.panels = panels;
+    } else {
+        client.preview.panels.clear();
+    }
+    let context = contexts.ctx_mut()?;
     screens::draw(context, &mut client);
+    if let Some(mut orbit) = orbit {
+        orbit.0 = client.preview_orbit;
+        client.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];
+    }
     Ok(())
 }
 
@@ -133,6 +201,19 @@ fn collect_file_drops(mut events: MessageReader<FileDragAndDrop>, mut client: Re
         if let FileDragAndDrop::DroppedFile { path_buf, .. } = event {
             client.push_dropped_file(path_buf.clone());
         }
+    }
+}
+
+/// Hands the selected asset's server URL to the renderer that draws the
+/// preview. The offline cache is deliberately not used here.
+fn publish_preview_request(client: Res<ClientUi>, mut request: ResMut<AssetPreviewRequest>) {
+    let wanted = if client.state.nav == twg_client::session::NavItem::Assets {
+        client.preview_wanted.clone()
+    } else {
+        std::array::from_fn(|_| None)
+    };
+    if request.0 != wanted {
+        request.0 = wanted;
     }
 }
 

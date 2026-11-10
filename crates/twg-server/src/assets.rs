@@ -17,6 +17,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 
 use sha2::{Digest, Sha256};
 use twg_contracts::assets::{AssetSourceSlot, AssetVariantKind, ConvertTarget};
@@ -24,6 +25,7 @@ use uuid::Uuid;
 
 const GLB_MAGIC: &[u8; 4] = b"glTF";
 const CHUNK_JSON: u32 = 0x4E4F_534A; // "JSON"
+const CHUNK_BIN: u32 = 0x004E_4942; // "BIN\0"
 const GLB_HEADER_LEN: usize = 12;
 const CHUNK_HEADER_LEN: usize = 8;
 const JSON_CHUNK_PADDING: u8 = b' ';
@@ -120,6 +122,19 @@ impl AssetFiles {
         filename: &str,
     ) -> io::Result<Vec<u8>> {
         tokio::fs::read(self.path(asset_id, slot, filename)).await
+    }
+
+    pub async fn remove_file(
+        &self,
+        asset_id: Uuid,
+        slot: AssetSourceSlot,
+        filename: &str,
+    ) -> io::Result<()> {
+        match tokio::fs::remove_file(self.path(asset_id, slot, filename)).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn remove_asset_dir(&self, asset_id: Uuid) -> io::Result<()> {
@@ -222,6 +237,268 @@ pub fn stamp_glb_metadata(bytes: &[u8], lod: Option<u16>, draco: bool) -> Result
     let json_bytes =
         serde_json::to_vec(&value).map_err(|error| format!("gagal serialisasi JSON: {error}"))?;
     rebuild_glb(&chunks, json_index, &json_bytes)
+}
+
+/// What a repair pass changed in the asset store.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AssetRepairReport {
+    pub scanned: usize,
+    pub repaired: usize,
+    pub failed: usize,
+    pub metadata_updated: usize,
+    pub files: Vec<AssetFileScan>,
+}
+
+/// Metadata of one GLB found while scanning the asset store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetFileScan {
+    pub asset_id: Uuid,
+    pub slot: AssetSourceSlot,
+    pub filename: String,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub repaired: bool,
+}
+
+/// Some exporters embed PNG/WebP/KTX2 bytes in a GLB but leave the glTF
+/// `mimeType` as `image/jpeg`. Bevy's glTF loader trusts that field and refuses
+/// the file, so normalize it from the actual image magic bytes.
+///
+/// Returns `None` when the file is not a GLB or already has correct mime types.
+pub fn normalize_glb_image_mime_types(bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    if !bytes.starts_with(GLB_MAGIC) {
+        return Ok(None);
+    }
+    let chunks = parse_glb_chunks(bytes)?;
+    let json_index = chunks
+        .iter()
+        .position(|chunk| chunk.kind == CHUNK_JSON)
+        .ok_or_else(|| "GLB tanpa chunk JSON".to_owned())?;
+    let bin = chunks
+        .iter()
+        .find(|chunk| chunk.kind == CHUNK_BIN)
+        .map(|chunk| chunk.data);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(trimmed_json(chunks[json_index].data))
+            .map_err(|error| format!("JSON glTF tidak valid: {error}"))?;
+
+    let mut fixes = Vec::new();
+    {
+        let Some(images) = value.get("images").and_then(serde_json::Value::as_array) else {
+            return Ok(None);
+        };
+        let Some(buffer_views) = value
+            .get("bufferViews")
+            .and_then(serde_json::Value::as_array)
+        else {
+            return Ok(None);
+        };
+        let Some(buffers) = value.get("buffers").and_then(serde_json::Value::as_array) else {
+            return Ok(None);
+        };
+        let Some(bin) = bin else {
+            return Ok(None);
+        };
+        // GLB embeds its binary payload in buffer 0 without a URI.
+        let Some(buffer) = buffers.first() else {
+            return Ok(None);
+        };
+        if buffer.get("uri").is_some() {
+            return Ok(None);
+        }
+
+        for (index, image) in images.iter().enumerate() {
+            let Some(view_index) = image
+                .get("bufferView")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+            else {
+                continue;
+            };
+            let Some(view) = buffer_views.get(view_index) else {
+                continue;
+            };
+            let view_buffer = view
+                .get("buffer")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            if view_buffer != 0 {
+                continue;
+            }
+            let offset = view
+                .get("byteOffset")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
+            let length = view
+                .get("byteLength")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
+            let Some(data) = offset
+                .checked_add(length)
+                .and_then(|end| bin.get(offset..end))
+            else {
+                continue;
+            };
+            let Some(mime) = sniff_image_mime(data) else {
+                continue;
+            };
+            if image.get("mimeType").and_then(serde_json::Value::as_str) != Some(mime) {
+                fixes.push((index, mime));
+            }
+        }
+    }
+
+    if fixes.is_empty() {
+        return Ok(None);
+    }
+    let Some(images) = value
+        .get_mut("images")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(None);
+    };
+    for (index, mime) in fixes {
+        if let Some(image) = images
+            .get_mut(index)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            image.insert(
+                "mimeType".to_owned(),
+                serde_json::Value::String(mime.to_owned()),
+            );
+        }
+    }
+
+    let json_bytes =
+        serde_json::to_vec(&value).map_err(|error| format!("gagal serialisasi JSON: {error}"))?;
+    rebuild_glb(&chunks, json_index, &json_bytes).map(Some)
+}
+
+fn sniff_image_mime(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if data.starts_with(&[
+        0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
+    ]) {
+        Some("image/ktx2")
+    } else {
+        None
+    }
+}
+
+/// Repairs embedded image mime types for every GLB in the asset store. Called
+/// at server startup so assets uploaded by older versions work without a
+/// re-upload.
+pub fn repair_asset_store(directory: &Path) -> AssetRepairReport {
+    let mut report = AssetRepairReport::default();
+    let mut stack = vec![directory.to_path_buf()];
+    while let Some(folder) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let is_glb = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"));
+            if !is_glb {
+                continue;
+            }
+            report.scanned += 1;
+            let Ok(bytes) = std::fs::read(&path) else {
+                report.failed += 1;
+                tracing::warn!(path = %path.display(), "failed to read asset");
+                continue;
+            };
+            let (bytes, repaired) = match normalize_glb_image_mime_types(&bytes) {
+                Ok(Some(fixed)) => {
+                    if let Err(error) = std::fs::write(&path, &fixed) {
+                        report.failed += 1;
+                        tracing::warn!(path = %path.display(), %error, "failed to repair asset");
+                        continue;
+                    }
+                    report.repaired += 1;
+                    (fixed, true)
+                }
+                Ok(None) => (bytes, false),
+                Err(error) => {
+                    report.failed += 1;
+                    tracing::warn!(path = %path.display(), %error, "failed to inspect asset");
+                    continue;
+                }
+            };
+            if let Some((asset_id, slot, filename)) = asset_file_identity(directory, &path) {
+                report.files.push(AssetFileScan {
+                    asset_id,
+                    slot,
+                    filename,
+                    size_bytes: bytes.len() as i64,
+                    sha256: sha256_hex(&bytes),
+                    repaired,
+                });
+            }
+        }
+    }
+    report
+}
+
+fn asset_file_identity(root: &Path, path: &Path) -> Option<(Uuid, AssetSourceSlot, String)> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = relative.components();
+    let asset_id = Uuid::parse_str(components.next()?.as_os_str().to_str()?).ok()?;
+    let slot = AssetSourceSlot::from_str(components.next()?.as_os_str().to_str()?).ok()?;
+    let filename = components.next()?.as_os_str().to_str()?.to_owned();
+    if components.next().is_some() {
+        return None;
+    }
+    Some((asset_id, slot, filename))
+}
+
+/// Repairs the GLB files and synchronizes their size/sha256 metadata in the
+/// asset database. Existing client caches then see a new asset version and
+/// re-download the fixed files.
+pub async fn repair_asset_store_with_metadata(
+    directory: &Path,
+    store: &twg_storage::AssetStore,
+) -> AssetRepairReport {
+    let mut report = repair_asset_store(directory);
+    for file in &report.files {
+        match store
+            .sync_file_metadata(
+                file.asset_id,
+                file.slot,
+                &file.filename,
+                file.size_bytes,
+                &file.sha256,
+            )
+            .await
+        {
+            Ok(true) => report.metadata_updated += 1,
+            Ok(false) => {}
+            Err(error) => {
+                report.failed += 1;
+                tracing::warn!(
+                    asset_id = %file.asset_id,
+                    slot = %file.slot,
+                    filename = %file.filename,
+                    %error,
+                    "failed to update asset metadata"
+                );
+            }
+        }
+    }
+    report
 }
 
 /// Runs the requested glTF conversion. Blocking; call from `spawn_blocking`.
@@ -484,8 +761,8 @@ fn has_external_resources(value: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GltfProbe, lod_from_filename, probe_gltf, rebuild_glb, resize_image, sha256_hex,
-        stamp_glb_metadata,
+        GltfProbe, lod_from_filename, normalize_glb_image_mime_types, probe_gltf, rebuild_glb,
+        resize_image, sha256_hex, stamp_glb_metadata,
     };
     use serde_json::json;
 
@@ -604,6 +881,44 @@ mod tests {
         assert!(stamped.ends_with(&[9, 9, 9, 9]));
         assert!(!probe_gltf(&stamped, "x.glb").unwrap().external_resources);
         let _ = rebuild_glb(&[], 0, &[]);
+    }
+
+    #[test]
+    fn repairs_embedded_image_mime_types_from_magic_bytes() {
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
+        let glb = build_glb(
+            &json!({
+                "asset": {"version": "2.0"},
+                "buffers": [{"byteLength": png.len()}],
+                "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": png.len()}],
+                "images": [{"name": "tex.jpg", "bufferView": 0, "mimeType": "image/jpeg"}]
+            }),
+            &png,
+        );
+        let normalized = normalize_glb_image_mime_types(&glb)
+            .expect("normalize should parse")
+            .expect("mime type should change");
+        assert_ne!(normalized, glb);
+
+        let chunks = super::parse_glb_chunks(&normalized).unwrap();
+        let json_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.kind == super::CHUNK_JSON)
+            .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(super::trimmed_json(json_chunk.data)).unwrap();
+        assert_eq!(
+            value
+                .pointer("/images/0/mimeType")
+                .and_then(serde_json::Value::as_str),
+            Some("image/png")
+        );
+        assert!(normalized.ends_with(&png));
+        assert!(
+            normalize_glb_image_mime_types(&normalized)
+                .expect("second pass should parse")
+                .is_none()
+        );
     }
 
     #[test]

@@ -68,6 +68,13 @@ fn main() {
         || cli.probe_draco
         || cli.memory_probe
         || std::env::var_os("TWG_DEMO").is_some();
+    if demo {
+        bevy::log::warn!(
+            "twg-desktop: demo map mode (TWG_DEMO or stress flag); login/dashboard shell is disabled"
+        );
+    } else {
+        bevy::log::info!("twg-desktop: client shell mode; login/dashboard enabled");
+    }
     let ui = if demo {
         TacticalUiPlugin::map_demo()
     } else {

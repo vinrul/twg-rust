@@ -25,9 +25,31 @@ async fn main() -> anyhow::Result<()> {
         "loaded server configuration"
     );
 
+    // Older uploads may contain embedded images whose glTF `mimeType` does not
+    // match the actual bytes (for example PNG data labelled image/jpeg). Bevy's
+    // glTF loader rejects those, so this maintenance command repairs the store
+    // and synchronizes the database metadata. Run it once after upgrading, or
+    // whenever assets come from an older server.
+    let repair_only = std::env::args().any(|argument| argument == "--repair-assets");
+
     let storage = StorageConfig::new(config.database_url.clone());
     let pool = twg_storage::connect(&storage).await?;
     twg_storage::run_migrations(&pool).await?;
+
+    if repair_only {
+        let asset_store = twg_storage::AssetStore::new(pool);
+        let report =
+            twg_server::assets::repair_asset_store_with_metadata(&config.assets_dir, &asset_store)
+                .await;
+        tracing::info!(
+            scanned = report.scanned,
+            repaired = report.repaired,
+            metadata_updated = report.metadata_updated,
+            failed = report.failed,
+            "asset store repair complete"
+        );
+        return Ok(());
+    }
 
     let store: Arc<dyn AuthStore> = Arc::new(PgAuthStore::new(pool.clone()));
     let auth = AuthService::new(store, config.auth.clone());

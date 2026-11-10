@@ -18,6 +18,8 @@ pub struct TextMarker {
     pub wrap_text: bool,
     pub pos_x: f64,
     pub pos_y: f64,
+    #[serde(default)]
+    pub altitude: f64,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -34,6 +36,8 @@ pub struct TextMarkerCreateRequest {
     pub wrap_text: bool,
     pub pos_x: f64,
     pub pos_y: f64,
+    #[serde(default)]
+    pub altitude: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,4 +54,6 @@ pub struct TextMarkerUpdateRequest {
 pub struct TextMarkerGeomUpdateRequest {
     pub pos_x: f64,
     pub pos_y: f64,
+    #[serde(default)]
+    pub altitude: f64,
 }

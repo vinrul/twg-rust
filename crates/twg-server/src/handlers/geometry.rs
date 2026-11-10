@@ -157,6 +157,7 @@ pub async fn create_text_marker(
             request.wrap_text,
             request.pos_x,
             request.pos_y,
+            request.altitude,
         )
         .await?;
     Ok((StatusCode::CREATED, Json(SingleResponse::success(marker))))
@@ -186,7 +187,7 @@ pub async fn update_text_marker_geom(
     Json(request): Json<TextMarkerGeomUpdateRequest>,
 ) -> Result<Json<SingleResponse<TextMarker>>, ApiError> {
     let marker = write_store(&state)?
-        .update_text_marker_geom(id, request.pos_x, request.pos_y)
+        .update_text_marker_geom(id, request.pos_x, request.pos_y, request.altitude)
         .await?;
     Ok(Json(SingleResponse::success(marker)))
 }
