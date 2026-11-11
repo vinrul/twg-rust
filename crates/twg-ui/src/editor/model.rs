@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 
 use bevy::prelude::Vec3;
 use bevy_egui::egui;
+use twg_contracts::assets::AssetMoveMode;
+use twg_contracts::map::ParticleKind;
 use twg_map::{BaseLayer, GeoPoint, MapCameraState};
 use twg_render::{
-    EditorGizmo, EditorGizmoAxis, EditorGizmoMode, EditorGrid, EditorModelShading, EditorPlayModel,
-    EditorScene, EditorSceneKind, EditorSceneObject, EditorShapeKind,
+    EditorGizmo, EditorGizmoAxis, EditorGizmoMode, EditorGrid, EditorModelShading,
+    EditorParticleKind, EditorParticleSettings, EditorPlayModel, EditorScene, EditorSceneKind,
+    EditorSceneObject, EditorShapeKind,
 };
 use uuid::Uuid;
 
@@ -72,10 +75,15 @@ pub struct MarkerAssetModel {
     /// Bevy asset path, e.g. `twg-cache://<id>/static/original.glb`.
     pub path: String,
     pub base_scale: f32,
+    /// Half diagonal of the model's XZ bounds, in model units before
+    /// `base_scale`. Used for Play collision radius.
+    pub footprint_radius: f32,
     /// The file uses Draco compression and must skip glTF validation.
     pub draco: bool,
     /// The asset was uploaded as an animated model (idle + animation slots).
     pub animated: bool,
+    /// Play move behaviour configured on the asset.
+    pub move_mode: AssetMoveMode,
     /// Cached path of the animated file, used in Play mode while moving.
     pub animation_path: Option<String>,
     pub animation_draco: bool,
@@ -116,7 +124,6 @@ pub const MIN_MARKER_SCALE: f64 = 0.001;
 
 /// RTS play mode tuning.
 const PLAY_ARRIVE_METERS: f64 = 0.6;
-const PLAY_UNIT_RADIUS: f64 = 0.9;
 const PLAY_FORMATION_SPACING: f64 = 2.6;
 const PLAY_LOOKAHEAD_METERS: f64 = 6.0;
 
@@ -130,21 +137,44 @@ pub struct PlayUnit {
     pub heading_deg: f32,
     /// Metres per second.
     pub speed: f64,
-    /// Footprint radius used for the selection ring on the ground.
+    /// Radius used for the selection ring on the ground.
     pub radius: f64,
+    /// When false, other units can pass through this unit.
+    pub obstacle: bool,
+    /// Height the unit keeps while moving.
+    pub altitude: f32,
+    /// Animated units use their walk clip. Static movable units only turn
+    /// toward their movement direction.
+    pub animated: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct PlayObstacle {
     pub center: GeoPoint,
     pub radius: f64,
+    /// Set when the obstacle is a movable `Limited` asset, so its obstacle
+    /// circle can follow the gizmo.
+    pub key: Option<ObjectKey>,
+}
+
+/// A static asset with `Limited` move mode. It does not receive move orders;
+/// the player drags it with the 3D gizmo instead.
+#[derive(Debug, Clone, Copy)]
+pub struct PlayLimitedUnit {
+    pub position: GeoPoint,
+    pub radius: f64,
+    /// Runtime height, adjustable with the Y handle of the Play gizmo.
+    pub altitude: f32,
 }
 
 /// RTS play mode state: movable animated markers plus static obstacles.
 #[derive(Debug, Clone, Default)]
 pub struct PlayState {
     pub active: bool,
+    /// Units moved with an order (animated assets and `Free` static assets).
     pub units: BTreeMap<ObjectKey, PlayUnit>,
+    /// Static assets with `Limited` move mode: selected and moved with a gizmo.
+    pub limited: BTreeMap<ObjectKey, PlayLimitedUnit>,
     pub obstacles: Vec<PlayObstacle>,
     /// Screen-space marquee while dragging on empty ground.
     pub marquee: Option<(egui::Pos2, egui::Pos2)>,
@@ -161,11 +191,12 @@ pub enum EditorTool {
     Shape,
     Line,
     Text,
+    Particle,
     Measure,
 }
 
 impl EditorTool {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Select,
         Self::Move,
         Self::Rotate,
@@ -173,6 +204,7 @@ impl EditorTool {
         Self::Shape,
         Self::Line,
         Self::Text,
+        Self::Particle,
         Self::Measure,
     ];
 
@@ -185,6 +217,7 @@ impl EditorTool {
             Self::Shape => "Bentuk",
             Self::Line => "Line",
             Self::Text => "Text",
+            Self::Particle => "Particle",
             Self::Measure => "Measure",
         }
     }
@@ -198,6 +231,7 @@ impl EditorTool {
             Self::Shape => "B",
             Self::Line => "L",
             Self::Text => "T",
+            Self::Particle => "P",
             Self::Measure => "D",
         }
     }
@@ -211,6 +245,7 @@ impl EditorTool {
             Self::Shape => "1",
             Self::Line => "2",
             Self::Text => "3",
+            Self::Particle => "5",
             Self::Measure => "4",
         }
     }
@@ -275,6 +310,8 @@ pub struct MarkerObject {
     pub jumlah: i32,
     pub kategori: String,
     pub keterangan: String,
+    /// When false, Play units can pass through this marker.
+    pub obstacle: bool,
 }
 
 impl MarkerObject {
@@ -296,6 +333,7 @@ impl MarkerObject {
             jumlah: 1,
             kategori: entry.category.to_owned(),
             keterangan: String::new(),
+            obstacle: true,
         }
     }
 
@@ -358,6 +396,8 @@ pub struct BuildingObject {
     /// Extrusion height for `Custom` (primitives use `scale_y`).
     pub height: f64,
     pub keterangan: String,
+    /// When false, Play units can pass through this shape.
+    pub obstacle: bool,
 }
 
 impl BuildingObject {
@@ -384,6 +424,7 @@ impl BuildingObject {
             points: Vec::new(),
             height: scale_y,
             keterangan: String::new(),
+            obstacle: true,
         }
     }
 
@@ -409,6 +450,7 @@ impl BuildingObject {
                 .collect(),
             height: 12.0,
             keterangan: String::new(),
+            obstacle: true,
         }
     }
 
@@ -515,18 +557,119 @@ impl TextObject {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParticleSettings {
+    /// Overall puff/droplet size multiplier.
+    pub size: f64,
+    /// Number of puffs/droplets multiplier.
+    pub density: f64,
+    /// Flame plume height, smoke rise, or fountain height multiplier.
+    pub height: f64,
+    /// Swirl radius, smoke wind drift, or fountain width multiplier.
+    pub spread: f64,
+    /// Animation speed multiplier.
+    pub speed: f64,
+    /// Brightness/thickness multiplier.
+    pub opacity: f64,
+}
+
+impl Default for ParticleSettings {
+    fn default() -> Self {
+        Self {
+            size: 1.0,
+            density: 1.0,
+            height: 1.0,
+            spread: 1.0,
+            speed: 1.0,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl ParticleSettings {
+    pub const SIZE_RANGE: std::ops::RangeInclusive<f64> = 0.25..=4.0;
+    pub const DENSITY_RANGE: std::ops::RangeInclusive<f64> = 0.25..=3.0;
+    pub const HEIGHT_RANGE: std::ops::RangeInclusive<f64> = 0.25..=3.0;
+    pub const SPREAD_RANGE: std::ops::RangeInclusive<f64> = 0.25..=3.0;
+    pub const SPEED_RANGE: std::ops::RangeInclusive<f64> = 0.25..=3.0;
+    pub const OPACITY_RANGE: std::ops::RangeInclusive<f64> = 0.1..=2.0;
+
+    /// Reads the effect settings stored in the particle `data` column. Missing
+    /// or legacy fields fall back to 1.0, so old rows keep the default effect.
+    pub fn from_json(data: &str) -> Self {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+            return Self::default();
+        };
+        let get = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1.0)
+        };
+        Self {
+            size: get("size"),
+            density: get("density"),
+            height: get("height"),
+            spread: get("spread"),
+            speed: get("speed"),
+            opacity: get("opacity"),
+        }
+        .clamped()
+    }
+
+    pub fn to_json(self) -> String {
+        serde_json::json!({
+            "size": self.size,
+            "density": self.density,
+            "height": self.height,
+            "spread": self.spread,
+            "speed": self.speed,
+            "opacity": self.opacity,
+        })
+        .to_string()
+    }
+
+    pub fn clamped(self) -> Self {
+        Self {
+            size: self
+                .size
+                .clamp(*Self::SIZE_RANGE.start(), *Self::SIZE_RANGE.end()),
+            density: self
+                .density
+                .clamp(*Self::DENSITY_RANGE.start(), *Self::DENSITY_RANGE.end()),
+            height: self
+                .height
+                .clamp(*Self::HEIGHT_RANGE.start(), *Self::HEIGHT_RANGE.end()),
+            spread: self
+                .spread
+                .clamp(*Self::SPREAD_RANGE.start(), *Self::SPREAD_RANGE.end()),
+            speed: self
+                .speed
+                .clamp(*Self::SPEED_RANGE.start(), *Self::SPEED_RANGE.end()),
+            opacity: self
+                .opacity
+                .clamp(*Self::OPACITY_RANGE.start(), *Self::OPACITY_RANGE.end()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ParticleObject {
     pub lon: f64,
     pub lat: f64,
-    pub tipe: String,
-    pub data: String,
-    pub is_spawn: i32,
+    pub altitude: f64,
+    pub kind: ParticleKind,
+    pub settings: ParticleSettings,
 }
 
 impl ParticleObject {
     pub fn point(&self) -> GeoPoint {
         GeoPoint::new(self.lon, self.lat)
+    }
+
+    pub fn set_point(&mut self, point: GeoPoint) {
+        self.lon = point.longitude;
+        self.lat = point.latitude;
     }
 }
 
@@ -648,6 +791,13 @@ impl EditorKind {
                 rot: [0.0; 3],
                 scale: [1.0; 3],
             }),
+            Self::Particle(particle) => Some(ObjectTransform {
+                lon: particle.lon,
+                lat: particle.lat,
+                altitude: particle.altitude,
+                rot: [0.0; 3],
+                scale: [1.0; 3],
+            }),
             _ => None,
         }
     }
@@ -657,6 +807,7 @@ impl EditorKind {
             Self::Marker(marker) => marker.altitude = altitude,
             Self::Building(building) => building.altitude = altitude,
             Self::Text(text) => text.altitude = altitude,
+            Self::Particle(particle) => particle.altitude = altitude,
             _ => {}
         }
     }
@@ -847,6 +998,16 @@ pub enum DragState {
         start_world: Vec3,
         start_screen: egui::Pos2,
     },
+    /// Drags a `Limited` static asset during Play. The authored position is
+    /// untouched; only the Play position/altitude moves.
+    PlayGizmo {
+        axis: EditorGizmoAxis,
+        key: ObjectKey,
+        original: GeoPoint,
+        original_altitude: f32,
+        start_world: Vec3,
+        start_screen: egui::Pos2,
+    },
     PointDrag {
         axis: EditorGizmoAxis,
         key: ObjectKey,
@@ -909,6 +1070,8 @@ pub struct EditorState {
     pub tool: EditorTool,
     /// Primitive created by the Shape tool.
     pub active_shape: EditorShapeKind,
+    /// Particle type created by the Particle tool.
+    pub active_particle: ParticleKind,
     pub next_key: ObjectKey,
     pub dirty: bool,
     pub undo: Vec<SceneSnapshot>,
@@ -921,6 +1084,8 @@ pub struct EditorState {
     pub snap_meters: f32,
     pub show_grid: bool,
     pub labels_visible: bool,
+    /// Editor-only particle animation toggle. Play/simulation always animates.
+    pub particle_preview: bool,
     pub show_console: bool,
     /// Left panel tab: 0 = Scene, 1 = Assets (server models + textures).
     pub left_tab: usize,
@@ -955,8 +1120,10 @@ pub struct EditorState {
     pub texture_download_failed: BTreeSet<String>,
     /// Finished preview downloads from background threads.
     pub texture_download_results: textures::PreviewDownloads,
-    /// `(asset id, version)` of the asset list the models were built from.
-    pub marker_model_signature: Vec<(Uuid, i64)>,
+    /// `(asset id, version, move mode)` of the asset list the models were built
+    /// from. The move mode is included because changing it must refresh Play
+    /// behaviour without bumping the file version.
+    pub marker_model_signature: Vec<(Uuid, i64, AssetMoveMode)>,
     /// Set while an asset card is being dragged onto the map.
     pub asset_drag: Option<AssetMarkerDraft>,
     /// Asks the shell to sync the offline cache with the server manifest.
@@ -1034,6 +1201,7 @@ impl EditorState {
             selected: BTreeSet::new(),
             tool: EditorTool::Select,
             active_shape: EditorShapeKind::Box,
+            active_particle: ParticleKind::Fire,
             next_key: 1,
             dirty: false,
             undo: Vec::new(),
@@ -1045,6 +1213,7 @@ impl EditorState {
             snap_meters: 0.0,
             show_grid: false,
             labels_visible: true,
+            particle_preview: true,
             show_console: true,
             left_tab: 0,
             model_shading: EditorModelShading::Textured,
@@ -1272,51 +1441,103 @@ impl EditorState {
 
     // ------------------------------------------------------------- play mode
 
-    /// Builds the RTS play state: animated asset markers become movable units,
-    /// every other visible marker becomes a static obstacle.
+    /// Builds the RTS play state from the asset move mode:
+    ///
+    /// - animated assets become `PlayUnit`s that play their walk clip;
+    /// - `Free` static assets become `PlayUnit`s without animation;
+    /// - `Limited` static assets are kept apart and moved with the 3D gizmo;
+    /// - `None` assets are non-pickable obstacles;
+    /// - 3D shapes (except the flat ground plate) block movement as well.
     pub fn start_play(&mut self) {
         self.play = PlayState {
             active: true,
             ..PlayState::default()
         };
+        self.drag = DragState::None;
+        self.hover_axis = None;
         self.selected.clear();
-        if !self.visible.allows(ObjectType::Marker) {
-            return;
-        }
         for object in &self.objects {
-            if !object.visible {
+            if !object.visible || !self.visible.allows(object.object_type()) {
                 continue;
             }
-            let EditorKind::Marker(marker) = &object.kind else {
-                continue;
-            };
             let Some(point) = object.point() else {
                 continue;
             };
-            let animated = self
-                .marker_models
-                .get(&marker.unit_id)
-                .is_some_and(|model| model.animated && model.animation_path.is_some());
-            let footprint = marker.scale_x.abs().max(marker.scale_z.abs()).max(0.5);
-            let radius = (1.4 * footprint).clamp(0.8, 12.0);
-            if animated {
-                self.play.units.insert(
-                    object.key,
-                    PlayUnit {
-                        position: point,
-                        target: None,
-                        // Bearing (clockwise from north) that matches the
-                        // marker's authored Y rotation when Play starts.
-                        heading_deg: 180.0 - marker.rot_y as f32,
-                        speed: play_speed(&marker.kategori),
-                        radius,
-                    },
-                );
-            } else {
-                self.play.obstacles.push(PlayObstacle {
-                    center: point,
-                    radius,
-                });
+            match &object.kind {
+                EditorKind::Marker(marker) => {
+                    let model = self.marker_models.get(&marker.unit_id);
+                    let animated =
+                        model.is_some_and(|model| model.animated && model.animation_path.is_some());
+                    let move_mode = model.map(|model| model.move_mode).unwrap_or_default();
+                    let scale = marker.scale_x.abs().max(marker.scale_z.abs()).max(0.5);
+                    // Use the actual model footprint when it is known; a large
+                    // vehicle must not overlap another unit just because the
+                    // marker actor scale is 1.0.
+                    let radius = model
+                        .filter(|model| model.footprint_radius > 0.01)
+                        .map(|model| {
+                            (model.footprint_radius as f64
+                                * model.base_scale as f64
+                                * marker.scale_x.abs().max(marker.scale_z.abs()))
+                            .clamp(0.8, 12.0)
+                        })
+                        .unwrap_or_else(|| (1.4 * scale).clamp(0.8, 12.0));
+                    if animated || move_mode == AssetMoveMode::Free {
+                        self.play.units.insert(
+                            object.key,
+                            PlayUnit {
+                                position: point,
+                                target: None,
+                                // Bearing (clockwise from north) that matches the
+                                // marker's authored Y rotation when Play starts.
+                                heading_deg: 180.0 - marker.rot_y as f32,
+                                speed: play_speed(&marker.kategori),
+                                radius,
+                                obstacle: marker.obstacle,
+                                altitude: marker.altitude as f32,
+                                animated,
+                            },
+                        );
+                    } else if move_mode == AssetMoveMode::Limited {
+                        self.play.limited.insert(
+                            object.key,
+                            PlayLimitedUnit {
+                                position: point,
+                                radius,
+                                altitude: marker.altitude as f32,
+                            },
+                        );
+                        // Limited assets still block free-moving units; the
+                        // obstacle circle follows the asset when its gizmo is
+                        // dragged.
+                        if marker.obstacle {
+                            self.play.obstacles.push(PlayObstacle {
+                                center: point,
+                                radius,
+                                key: Some(object.key),
+                            });
+                        }
+                    } else if marker.obstacle {
+                        self.play.obstacles.push(PlayObstacle {
+                            center: point,
+                            radius,
+                            key: None,
+                        });
+                    }
+                }
+                // Every 3D primitive and custom mesh blocks movement unless the
+                // object is explicitly marked as passable. The flat ground
+                // plate is walkable in any case.
+                EditorKind::Building(building)
+                    if building.shape != EditorShapeKind::Ground && building.obstacle =>
+                {
+                    self.play.obstacles.push(PlayObstacle {
+                        center: point,
+                        radius: building_obstacle_radius(building),
+                        key: None,
+                    });
+                }
+                _ => {}
             }
         }
     }
@@ -1336,7 +1557,22 @@ impl EditorState {
         if dt <= 0.0 {
             return;
         }
-        for unit in self.play.units.values_mut() {
+        // Units are obstacles too, so columns do not walk through each other.
+        // Snapshotting once per tick keeps the borrow simple and avoids
+        // allocating a list per unit.
+        let mut obstacles = self.play.obstacles.clone();
+        obstacles.extend(
+            self.play
+                .units
+                .iter()
+                .filter(|(_, unit)| unit.obstacle)
+                .map(|(key, unit)| PlayObstacle {
+                    center: unit.position,
+                    radius: unit.radius,
+                    key: Some(*key),
+                }),
+        );
+        for (key, unit) in self.play.units.iter_mut() {
             let Some(target) = unit.target else {
                 continue;
             };
@@ -1350,7 +1586,7 @@ impl EditorState {
                 unit.target = None;
                 continue;
             }
-            let (east, north) = play_steer(to_target, unit.position, &self.play.obstacles);
+            let (east, north) = play_steer(to_target, unit.position, &obstacles, *key, unit.radius);
             unit.heading_deg = east.atan2(north).to_degrees() as f32;
             let step = unit.speed * dt;
             let Ok(mut candidate) =
@@ -1359,13 +1595,16 @@ impl EditorState {
                 continue;
             };
             // Push the candidate out of any obstacle it still intersects, so a
-            // sharp turn cannot clip through a static model.
-            for obstacle in &self.play.obstacles {
+            // sharp turn cannot clip through a static model or another unit.
+            for obstacle in &obstacles {
+                if obstacle.key == Some(*key) {
+                    continue;
+                }
                 let Ok(relative) = obstacle.center.local_offset(candidate) else {
                     continue;
                 };
                 let gap = relative.east_meters.hypot(relative.north_meters);
-                let minimum = obstacle.radius + PLAY_UNIT_RADIUS;
+                let minimum = obstacle.radius + unit.radius;
                 if gap >= minimum || gap <= 1.0e-6 {
                     continue;
                 }
@@ -1413,11 +1652,14 @@ impl EditorState {
         }
     }
 
-    /// Returns the animated unit under a screen point, if any.
+    /// Returns the pickable unit under a screen point, if any. Limited static
+    /// assets are pickable too so their move gizmo can be shown.
     pub fn play_pick(&self, position: egui::Pos2) -> Option<ObjectKey> {
         let mut best: Option<(f32, ObjectKey)> = None;
         for (key, kind, points, _) in &self.projected {
-            if !matches!(kind, ObjectType::Marker) || !self.play.units.contains_key(key) {
+            if !matches!(kind, ObjectType::Marker)
+                || (!self.play.units.contains_key(key) && !self.play.limited.contains_key(key))
+            {
                 continue;
             }
             let Some(point) = points.first() else {
@@ -1436,6 +1678,28 @@ impl EditorState {
     pub fn play_select_only(&mut self, key: ObjectKey) {
         self.selected.clear();
         self.selected.insert(key);
+    }
+
+    /// Selects a `Limited` static asset. The next scene build draws its move
+    /// gizmo at the current Play position.
+    pub fn play_select_limited(&mut self, key: ObjectKey) {
+        self.selected.clear();
+        self.selected.insert(key);
+    }
+
+    /// Key, ground position, and runtime altitude of the limited asset whose
+    /// gizmo should be visible. Only a single selected limited asset shows a
+    /// gizmo.
+    pub fn play_gizmo_target(&self) -> Option<(ObjectKey, GeoPoint, f32)> {
+        if !self.preview || !self.play.active {
+            return None;
+        }
+        let key = *self
+            .selected
+            .iter()
+            .find(|key| self.play.limited.contains_key(key))?;
+        let unit = self.play.limited.get(&key)?;
+        Some((key, unit.position, unit.altitude))
     }
 
     pub fn play_toggle_selected(&mut self, key: ObjectKey) {
@@ -1584,6 +1848,7 @@ impl EditorState {
                 jumlah: 1,
                 kategori: "personel".to_owned(),
                 keterangan: String::new(),
+                obstacle: true,
             }),
         });
         self.selected.clear();
@@ -1686,6 +1951,31 @@ impl EditorState {
         self.touch();
     }
 
+    /// Creates an animated particle effect (fire/smoke/water).
+    pub fn add_particle(&mut self, point: GeoPoint) {
+        self.push_undo();
+        let key = self.alloc_key();
+        let kind = self.active_particle;
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name: format!("{} {key}", particle_kind_label(kind)),
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Particle(ParticleObject {
+                lon: point.longitude,
+                lat: point.latitude,
+                altitude: 0.0,
+                kind,
+                settings: ParticleSettings::default(),
+            }),
+        });
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+    }
+
     pub fn delete_selected(&mut self) {
         if self.selected.is_empty() {
             return;
@@ -1700,9 +1990,6 @@ impl EditorState {
         let selected = self.selected.clone();
         for key in &selected {
             if let Some(index) = self.objects.iter().position(|object| object.key == *key) {
-                if self.objects[index].object_type() == ObjectType::Particle {
-                    continue;
-                }
                 let object = self.objects.remove(index);
                 if let Some(id) = object.server_id {
                     self.deleted.push((object.object_type(), id));
@@ -1722,9 +2009,7 @@ impl EditorState {
         let originals = self
             .objects
             .iter()
-            .filter(|object| {
-                self.selected.contains(&object.key) && object.object_type() != ObjectType::Particle
-            })
+            .filter(|object| self.selected.contains(&object.key))
             .cloned()
             .collect::<Vec<_>>();
         let mut new_selection = BTreeSet::new();
@@ -2150,6 +2435,19 @@ impl EditorState {
             let Some(point) = object.point() else {
                 continue;
             };
+            // Play moves markers at runtime without touching the authored
+            // position. Rebuilds during Play (selection changes) must therefore
+            // use the current Play position instead of snapping back.
+            let point = if self.preview {
+                self.play
+                    .units
+                    .get(&object.key)
+                    .map(|unit| unit.position)
+                    .or_else(|| self.play.limited.get(&object.key).map(|unit| unit.position))
+                    .unwrap_or(point)
+            } else {
+                point
+            };
             let selected = self.selected.contains(&object.key);
             let kind = match &object.kind {
                 EditorKind::Marker(marker) => {
@@ -2240,8 +2538,9 @@ impl EditorState {
                     font_size: text.font_size as f32,
                 },
                 EditorKind::Particle(particle) => EditorSceneKind::Particle {
-                    color: parse_hex_color(particle_color(particle)),
-                    radius: 1.2,
+                    kind: scene_particle_kind(particle.kind),
+                    altitude: particle.altitude as f32,
+                    settings: scene_particle_settings(particle.settings),
                 },
             };
             objects.push(EditorSceneObject {
@@ -2272,7 +2571,20 @@ impl EditorState {
         // Select mode shows only the selection outline (see the viewport
         // overlay); the transform gizmo belongs to Move/Rotate/Scale so the two
         // modes are no longer confusable.
-        let gizmo = if self.preview || !self.tool.changes_gizmo() {
+        let gizmo = if self.preview {
+            // Play mode shows a move gizmo for the selected limited asset,
+            // including the Y handle so it can be lifted.
+            self.play_gizmo_target()
+                .map(|(key, point, altitude)| EditorGizmo {
+                    lon: point.longitude,
+                    lat: point.latitude,
+                    altitude,
+                    mode: EditorGizmoMode::Move,
+                    active_axis: self.hover_axis,
+                    show_y: true,
+                    play_key: Some(key),
+                })
+        } else if !self.tool.changes_gizmo() {
             None
         } else {
             self.gizmo_target().and_then(|(key, transform)| {
@@ -2281,13 +2593,15 @@ impl EditorState {
                     EditorTool::Scale => EditorGizmoMode::Scale,
                     _ => EditorGizmoMode::Move,
                 };
-                // Text has no rotation/scale: its size is controlled by Font.
-                let is_text = matches!(
+                // Text and particles have no rotation/scale control: text size
+                // comes from Font and a particle effect is billboarded. Only the
+                // Move gizmo applies to them.
+                let is_flat = matches!(
                     self.object(key).map(|object| &object.kind),
-                    Some(EditorKind::Text(_))
+                    Some(EditorKind::Text(_) | EditorKind::Particle(_))
                 );
                 let is_point_edit = self.point_edit.is_some();
-                if (is_text || is_point_edit) && mode != EditorGizmoMode::Move {
+                if (is_flat || is_point_edit) && mode != EditorGizmoMode::Move {
                     return None;
                 }
                 Some(EditorGizmo {
@@ -2297,6 +2611,7 @@ impl EditorState {
                     mode,
                     active_axis: self.hover_axis,
                     show_y: !is_point_edit || self.point_edit_allows_altitude(),
+                    play_key: None,
                 })
             })
         };
@@ -2377,13 +2692,44 @@ fn play_speed(kategori: &str) -> f64 {
     }
 }
 
+/// Ground-plane radius of a 3D shape used for Play obstacle avoidance. Custom
+/// meshes use the farthest footprint vertex, so the circle encloses the whole
+/// outline and units cannot clip through a corner.
+fn building_obstacle_radius(building: &BuildingObject) -> f64 {
+    let radius = if building.shape == EditorShapeKind::Custom && !building.points.is_empty() {
+        building
+            .points
+            .iter()
+            .filter_map(|point| {
+                let offset = GeoPoint::new(point[0], point[1])
+                    .local_offset(building.point())
+                    .ok()?;
+                Some(offset.east_meters.hypot(offset.north_meters))
+            })
+            .fold(0.0f64, f64::max)
+    } else {
+        let (x, z) = (building.scale_x.abs(), building.scale_z.abs());
+        match building.shape {
+            // Round cross-sections keep the scale as their diameter.
+            EditorShapeKind::Cylinder | EditorShapeKind::Sphere | EditorShapeKind::Cone => {
+                x.max(z) * 0.5
+            }
+            // A rotated box can expose its corners, so use the half diagonal.
+            _ => (x.hypot(z)) * 0.5,
+        }
+    };
+    radius.max(0.5)
+}
+
 /// Steering direction (east, north unit vector) toward the target, deflected
-/// sideways when a static obstacle is ahead. Once the obstacle is passed the
-/// next tick steers straight at the target again.
+/// sideways when an obstacle is ahead. `self_key` skips the moving unit's own
+/// entry in the combined static + unit obstacle list.
 fn play_steer(
     to_target: twg_map::LocalPoint,
     position: GeoPoint,
     obstacles: &[PlayObstacle],
+    self_key: ObjectKey,
+    unit_radius: f64,
 ) -> (f64, f64) {
     let distance = to_target.east_meters.hypot(to_target.north_meters);
     if distance <= 1.0e-6 {
@@ -2392,6 +2738,9 @@ fn play_steer(
     let mut east = to_target.east_meters / distance;
     let mut north = to_target.north_meters / distance;
     for obstacle in obstacles {
+        if obstacle.key == Some(self_key) {
+            continue;
+        }
         let Ok(relative) = obstacle.center.local_offset(position) else {
             continue;
         };
@@ -2399,7 +2748,7 @@ fn play_steer(
             .east_meters
             .hypot(relative.north_meters)
             .max(1.0e-6);
-        let surface = center_distance - obstacle.radius - PLAY_UNIT_RADIUS;
+        let surface = center_distance - obstacle.radius - unit_radius;
         if surface > PLAY_LOOKAHEAD_METERS {
             continue;
         }
@@ -2442,8 +2791,7 @@ pub fn offset_object(kind: &mut EditorKind, east_meters: f64, north_meters: f64)
             if let Ok(point) =
                 GeoPoint::from_local_offset(particle.point(), east_meters, north_meters)
             {
-                particle.lon = point.longitude;
-                particle.lat = point.latitude;
+                particle.set_point(point);
             }
         }
     }
@@ -2468,11 +2816,38 @@ pub fn marker_color(category: &str) -> &'static str {
     }
 }
 
+pub fn particle_kind_label(kind: ParticleKind) -> &'static str {
+    match kind {
+        ParticleKind::Fire => "Api",
+        ParticleKind::Smoke => "Asap",
+        ParticleKind::Water => "Air Mancur",
+    }
+}
+
+pub fn scene_particle_kind(kind: ParticleKind) -> EditorParticleKind {
+    match kind {
+        ParticleKind::Fire => EditorParticleKind::Fire,
+        ParticleKind::Smoke => EditorParticleKind::Smoke,
+        ParticleKind::Water => EditorParticleKind::Water,
+    }
+}
+
+pub fn scene_particle_settings(settings: ParticleSettings) -> EditorParticleSettings {
+    EditorParticleSettings {
+        size: settings.size as f32,
+        density: settings.density as f32,
+        height: settings.height as f32,
+        spread: settings.spread as f32,
+        speed: settings.speed as f32,
+        opacity: settings.opacity as f32,
+    }
+}
+
 pub fn particle_color(particle: &ParticleObject) -> &'static str {
-    if particle.data.contains("fire") || particle.tipe.contains("fire") {
-        "#ff7043"
-    } else {
-        "#ce93d8"
+    match particle.kind {
+        ParticleKind::Fire => "#ff7043",
+        ParticleKind::Smoke => "#b0bec5",
+        ParticleKind::Water => "#4fc3f7",
     }
 }
 
@@ -2530,8 +2905,10 @@ mod tests {
                 name: "Truk Logistik".to_owned(),
                 path: format!("twg-cache://{unit_id}/static/original.glb"),
                 base_scale: 1.0,
+                footprint_radius: 0.0,
                 draco: false,
                 animated: false,
+                move_mode: AssetMoveMode::None,
                 animation_path: None,
                 animation_draco: false,
             },
@@ -2589,6 +2966,56 @@ mod tests {
             }
             other => panic!("expected marker, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn particle_uses_the_selected_kind_and_can_be_deleted() {
+        let mut editor = editor();
+        editor.active_particle = ParticleKind::Water;
+        editor.add_particle(GeoPoint::new(115.225, -8.648));
+
+        let scene = editor.build_scene();
+        match &scene.objects[0].kind {
+            EditorSceneKind::Particle {
+                kind,
+                altitude,
+                settings,
+            } => {
+                assert_eq!(*kind, EditorParticleKind::Water);
+                assert_eq!(*altitude, 0.0);
+                assert_eq!(*settings, EditorParticleSettings::default());
+            }
+            other => panic!("expected particle, got {other:?}"),
+        }
+        let EditorKind::Particle(particle) = &editor.objects[0].kind else {
+            panic!("expected particle");
+        };
+        assert_eq!(particle.kind, ParticleKind::Water);
+        assert!(editor.objects[0].name.starts_with("Air Mancur"));
+
+        editor.delete_selected();
+        assert!(editor.objects.is_empty());
+    }
+
+    #[test]
+    fn particle_settings_round_trip_and_clamp() {
+        let settings = ParticleSettings {
+            size: 1.75,
+            density: 0.5,
+            height: 2.25,
+            spread: 1.2,
+            speed: 1.8,
+            opacity: 0.7,
+        };
+        assert_eq!(ParticleSettings::from_json(&settings.to_json()), settings);
+
+        let clamped = ParticleSettings::from_json("{\"size\":99,\"density\":0}");
+        assert_eq!(*ParticleSettings::SIZE_RANGE.end(), clamped.size);
+        assert_eq!(*ParticleSettings::DENSITY_RANGE.start(), clamped.density);
+        assert_eq!(
+            ParticleSettings::from_json("not json"),
+            ParticleSettings::default()
+        );
     }
 
     #[test]
@@ -2691,11 +3118,46 @@ mod tests {
             name: "Unit Animasi".to_owned(),
             path: format!("twg-cache://{id}/idle/original.glb"),
             base_scale: 1.0,
+            footprint_radius: 0.0,
             draco: false,
             animated: true,
+            move_mode: AssetMoveMode::Free,
             animation_path: Some(format!("twg-cache://{id}/animated/original.glb")),
             animation_draco: false,
         }
+    }
+
+    fn static_asset(id: &str, move_mode: AssetMoveMode) -> MarkerAssetModel {
+        MarkerAssetModel {
+            name: "Model Statis".to_owned(),
+            path: format!("twg-cache://{id}/static/original.glb"),
+            base_scale: 1.0,
+            footprint_radius: 0.0,
+            draco: false,
+            animated: false,
+            move_mode,
+            animation_path: None,
+            animation_draco: false,
+        }
+    }
+
+    fn add_static_marker(
+        editor: &mut EditorState,
+        id: &str,
+        point: GeoPoint,
+        move_mode: AssetMoveMode,
+    ) -> ObjectKey {
+        editor.add_marker(point, 0);
+        let key = *editor.selected.iter().next().expect("new marker selected");
+        if let Some(object) = editor.object_mut(key)
+            && let EditorKind::Marker(marker) = &mut object.kind
+        {
+            marker.unit_id = id.to_owned();
+        }
+        editor
+            .marker_models
+            .insert(id.to_owned(), static_asset(id, move_mode));
+        key
     }
 
     fn add_animated_marker(editor: &mut EditorState, id: &str, point: GeoPoint) -> ObjectKey {
@@ -2713,7 +3175,7 @@ mod tests {
     }
 
     #[test]
-    fn play_mode_units_are_animated_asset_markers_only() {
+    fn play_mode_uses_the_asset_move_mode() {
         let mut editor = editor();
         let base = GeoPoint::new(115.225, -8.648);
         add_animated_marker(&mut editor, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", base);
@@ -2724,8 +3186,156 @@ mod tests {
         assert!(editor.play.active);
         assert_eq!(editor.play.units.len(), 1);
         assert_eq!(editor.play.obstacles.len(), 1);
+        assert!(editor.play.limited.is_empty());
         let unit = editor.play.units.values().next().unwrap();
         assert_eq!(unit.position, base);
+        assert!(unit.animated);
+    }
+
+    #[test]
+    fn free_static_marker_becomes_a_play_unit() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.225, -8.648);
+        let key = add_static_marker(
+            &mut editor,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            point,
+            AssetMoveMode::Free,
+        );
+        editor.start_play();
+
+        assert_eq!(editor.play.units.len(), 1);
+        assert!(editor.play.obstacles.is_empty());
+        let unit = editor.play.units.get(&key).expect("free static unit");
+        assert!(!unit.animated);
+    }
+
+    #[test]
+    fn limited_static_marker_gets_a_play_gizmo_instead_of_an_order_unit() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.225, -8.648);
+        let key = add_static_marker(
+            &mut editor,
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            point,
+            AssetMoveMode::Limited,
+        );
+        editor.preview = true;
+        editor.start_play();
+
+        assert!(editor.play.units.is_empty());
+        assert_eq!(editor.play.obstacles.len(), 1);
+        assert_eq!(
+            editor.play.limited.get(&key).map(|unit| unit.position),
+            Some(point)
+        );
+        // Not selected yet: no gizmo.
+        assert!(editor.build_scene().gizmo.is_none());
+        editor.play_select_limited(key);
+        let scene = editor.build_scene();
+        let gizmo = scene.gizmo.expect("limited asset shows a move gizmo");
+        assert_eq!(gizmo.mode, EditorGizmoMode::Move);
+        assert_eq!(gizmo.play_key, Some(key));
+        assert!(gizmo.show_y);
+    }
+
+    #[test]
+    fn play_mode_adds_3d_shapes_as_obstacles() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        editor.add_shape(twg_render::EditorShapeKind::Sphere, base);
+        let cylinder = GeoPoint::from_local_offset(base, 10.0, 0.0).unwrap();
+        editor.add_shape(twg_render::EditorShapeKind::Cylinder, cylinder);
+        let cone = GeoPoint::from_local_offset(base, 20.0, 0.0).unwrap();
+        editor.add_shape(twg_render::EditorShapeKind::Cone, cone);
+        editor.add_polygon(vec![
+            GeoPoint::from_local_offset(base, 30.0, 0.0).unwrap(),
+            GeoPoint::from_local_offset(base, 34.0, 0.0).unwrap(),
+            GeoPoint::from_local_offset(base, 34.0, 4.0).unwrap(),
+            GeoPoint::from_local_offset(base, 30.0, 4.0).unwrap(),
+        ]);
+        let ground = GeoPoint::from_local_offset(base, 40.0, 0.0).unwrap();
+        editor.add_shape(twg_render::EditorShapeKind::Ground, ground);
+
+        editor.start_play();
+
+        // Sphere, cylinder, cone, and custom mesh block movement; the ground
+        // plate stays walkable.
+        assert_eq!(editor.play.obstacles.len(), 4);
+        assert!(
+            editor
+                .play
+                .obstacles
+                .iter()
+                .all(|obstacle| obstacle.radius > 0.5)
+        );
+        assert!(
+            editor
+                .play
+                .obstacles
+                .iter()
+                .any(|obstacle| (obstacle.radius - 2.0).abs() < 0.01),
+            "primitive sphere radius comes from its scale"
+        );
+    }
+
+    #[test]
+    fn play_ignores_objects_marked_as_non_obstacle() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker = add_static_marker(
+            &mut editor,
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            base,
+            AssetMoveMode::None,
+        );
+        let EditorKind::Marker(marker_object) = &mut editor.object_mut(marker).unwrap().kind else {
+            panic!("expected marker");
+        };
+        marker_object.obstacle = false;
+
+        editor.add_shape(
+            twg_render::EditorShapeKind::Sphere,
+            GeoPoint::from_local_offset(base, 10.0, 0.0).unwrap(),
+        );
+        let EditorKind::Building(building) = &mut editor.objects.last_mut().unwrap().kind else {
+            panic!("expected building");
+        };
+        building.obstacle = false;
+
+        editor.start_play();
+
+        assert!(editor.play.obstacles.is_empty());
+    }
+
+    #[test]
+    fn play_units_do_not_walk_through_each_other() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let first = add_animated_marker(&mut editor, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", base);
+        let second_point = GeoPoint::from_local_offset(base, 8.0, 0.0).unwrap();
+        let second = add_animated_marker(
+            &mut editor,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            second_point,
+        );
+        editor.start_play();
+        editor.selected.insert(first);
+        editor.play_move_selected(second_point);
+
+        let mut closest = f64::MAX;
+        for _ in 0..900 {
+            editor.play_tick(1.0 / 60.0);
+            let offset = editor.play.units[&second]
+                .position
+                .local_offset(editor.play.units[&first].position)
+                .unwrap();
+            closest = closest.min(offset.east_meters.hypot(offset.north_meters));
+        }
+        assert!(
+            closest > 2.0,
+            "units overlapped while pathing: closest {closest} m"
+        );
     }
 
     #[test]

@@ -80,7 +80,12 @@ fn draw_login(context: &egui::Context, client: &mut ClientUi) {
                     ));
                     ui.add_space(SPACE_4);
                     widgets::labeled_input(ui, "Username", &mut client.login_username);
-                    widgets::password_input(ui, "Password", &mut client.login_password);
+                    widgets::password_input(
+                        ui,
+                        "Password",
+                        &mut client.login_password,
+                        &mut client.login_password_visible,
+                    );
                     ui.label(theme::muted(&format!("Device: {}", client.api.device_id())));
                     if let Some(error) = &client.login_error {
                         ui.add_space(SPACE_2);
@@ -265,6 +270,7 @@ fn draw_screen(ui: &mut egui::Ui, client: &mut ClientUi) {
         NavItem::Operations => screen_operations(ui, client),
         NavItem::Scenarios => screen_scenarios(ui, client),
         NavItem::Assets => crate::assets_screen::draw(ui, client),
+        NavItem::AssetGroups => crate::asset_groups_screen::draw(ui, client),
         NavItem::Games => screen_games(ui, client),
         NavItem::Users => screen_users(ui, client),
         NavItem::Satkers => screen_satkers(ui, client),
@@ -935,8 +941,24 @@ fn screen_profile(ui: &mut egui::Ui, client: &mut ClientUi) {
     ui.add_space(SPACE_4);
     widgets::card(ui, |ui| {
         ui.label(theme::title("Ganti password"));
-        widgets::password_input(ui, "Password lama", &mut client.old_password);
-        widgets::password_input(ui, "Password baru", &mut client.new_password);
+        widgets::password_input(
+            ui,
+            "Password lama",
+            &mut client.old_password,
+            &mut client.old_password_visible,
+        );
+        widgets::password_input(
+            ui,
+            "Password baru",
+            &mut client.new_password,
+            &mut client.new_password_visible,
+        );
+        widgets::password_input(
+            ui,
+            "Konfirmasi password baru",
+            &mut client.confirm_password,
+            &mut client.confirm_password_visible,
+        );
         if widgets::primary_button(ui, "Ganti password").clicked() {
             client.change_password();
         }
@@ -1147,7 +1169,18 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
                         widgets::labeled_input(ui, "Username", &mut form.username);
                     });
                     if form.id.is_none() {
-                        widgets::password_input(ui, "Password", &mut form.password);
+                        widgets::password_input(
+                            ui,
+                            "Password",
+                            &mut form.password,
+                            &mut form.password_visible,
+                        );
+                        widgets::password_input(
+                            ui,
+                            "Konfirmasi password",
+                            &mut form.confirm_password,
+                            &mut form.confirm_password_visible,
+                        );
                     }
                     let mut role = form.role.clone();
                     widgets::combo(
@@ -1389,6 +1422,9 @@ fn new_user_form(client: &ClientUi) -> UserForm {
         name: String::new(),
         username: String::new(),
         password: String::new(),
+        confirm_password: String::new(),
+        password_visible: false,
+        confirm_password_visible: false,
         units: "[]".to_owned(),
         role: if client.role() == Role::AdminSatker {
             "user_satker".to_owned()
@@ -1413,6 +1449,9 @@ fn user_form(user: &User) -> UserForm {
         name: user.name.clone(),
         username: user.username.clone(),
         password: String::new(),
+        confirm_password: String::new(),
+        password_visible: false,
+        confirm_password_visible: false,
         units: user.units.clone(),
         role: match user.role {
             Role::Admin => "admin",

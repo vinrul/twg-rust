@@ -5,7 +5,8 @@ use twg_contracts::MessageResponse;
 use twg_contracts::SingleResponse;
 use twg_contracts::map::{
     Marker, MarkerAltitudeRequest, MarkerCreateRequest, MarkerDuplicateRequest, MarkerGeomRequest,
-    MarkerNameRequest, MarkerRotateRequest, MarkerScaleRequest, MarkerUnitRequest,
+    MarkerNameRequest, MarkerObstacleRequest, MarkerRotateRequest, MarkerScaleRequest,
+    MarkerUnitRequest,
 };
 use uuid::Uuid;
 
@@ -33,6 +34,7 @@ pub async fn create(
             request.pos_x,
             request.pos_y,
             request.jumlah,
+            request.obstacle,
             &request.keterangan,
         )
         .await?;
@@ -96,6 +98,17 @@ pub async fn update_altitude(
 ) -> Result<Json<SingleResponse<Marker>>, ApiError> {
     let marker = write_store(&state)?
         .update_marker_altitude(id, request.altitude)
+        .await?;
+    Ok(Json(SingleResponse::success(marker)))
+}
+
+pub async fn update_obstacle(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<MarkerObstacleRequest>,
+) -> Result<Json<SingleResponse<Marker>>, ApiError> {
+    let marker = write_store(&state)?
+        .update_marker_obstacle(id, request.obstacle)
         .await?;
     Ok(Json(SingleResponse::success(marker)))
 }

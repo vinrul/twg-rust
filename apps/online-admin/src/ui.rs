@@ -67,6 +67,7 @@ pub struct OnlineAdminUi {
     device_id: String,
     username: String,
     password: String,
+    show_password: bool,
     session: Option<ClientSession>,
     users: Vec<OnlineUser>,
     jobs: Vec<UiJob>,
@@ -89,6 +90,7 @@ impl OnlineAdminUi {
             device_id,
             username: String::new(),
             password: String::new(),
+            show_password: false,
             session,
             users: Vec::new(),
             jobs: Vec::new(),
@@ -130,6 +132,7 @@ impl OnlineAdminUi {
         self.session = None;
         self.users.clear();
         self.password.clear();
+        self.show_password = false;
         self.notice = Some("Logout berhasil.".to_owned());
     }
 
@@ -185,6 +188,7 @@ impl OnlineAdminUi {
                     Ok(_) => {
                         self.session = self.api.session();
                         self.password.clear();
+                        self.show_password = false;
                         self.error = None;
                         self.notice = Some("Login berhasil.".to_owned());
                         self.refresh_online();
@@ -289,13 +293,24 @@ fn draw_login(context: &egui::Context, admin: &mut OnlineAdminUi) {
                         ui.horizontal(|ui| {
                             ui.label(muted("Password"));
                         });
-                        let password = ui.add(
-                            egui::TextEdit::singleline(&mut admin.password)
-                                .password(true)
-                                .desired_width(320.0),
-                        );
-                        let submit = password.lost_focus()
-                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        let mut submit = false;
+                        ui.horizontal(|ui| {
+                            let button_width = 28.0;
+                            let input_width =
+                                (ui.available_width() - button_width - ui.spacing().item_spacing.x)
+                                    .max(120.0);
+                            let password = ui.add(
+                                egui::TextEdit::singleline(&mut admin.password)
+                                    .password(!admin.show_password)
+                                    .desired_width(input_width),
+                            );
+                            if password_toggle(ui, admin.show_password).clicked() {
+                                admin.show_password = !admin.show_password;
+                                password.request_focus();
+                            }
+                            submit = password.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        });
                         ui.add_space(12.0);
                         let label = if admin.logging_in {
                             "Masuk..."
@@ -509,7 +524,67 @@ fn apply_theme(context: &egui::Context) {
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.label(muted(label));
-    ui.add(egui::TextEdit::singleline(value).desired_width(320.0));
+    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
+}
+
+/// Icon-only show/hide button. Painted directly because the bundled fonts do
+/// not contain a reliable eye glyph.
+fn password_toggle(ui: &mut egui::Ui, visible: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect(
+            rect,
+            egui::CornerRadius::same(6),
+            color(DARK.secondary),
+            egui::Stroke::NONE,
+            egui::StrokeKind::Inside,
+        );
+    }
+    let tint = if response.hovered() {
+        color(DARK.foreground)
+    } else {
+        color(DARK.muted_foreground)
+    };
+    paint_eye(painter, rect, visible, tint);
+    response.on_hover_text(if visible {
+        "Sembunyikan password"
+    } else {
+        "Tampilkan password"
+    })
+}
+
+fn paint_eye(painter: &egui::Painter, rect: egui::Rect, open: bool, tint: egui::Color32) {
+    let center = rect.center();
+    let width = 15.0;
+    let height = 9.0;
+    let stroke = egui::Stroke::new(1.4, tint);
+    let steps = 14;
+    let mut points = Vec::with_capacity(steps * 2);
+    for step in 0..=steps {
+        let t = step as f32 / steps as f32;
+        let x = center.x - width * 0.5 + width * t;
+        let y = center.y - (std::f32::consts::PI * t).sin() * height * 0.5;
+        points.push(egui::pos2(x, y));
+    }
+    for step in (1..steps).rev() {
+        let t = step as f32 / steps as f32;
+        let x = center.x - width * 0.5 + width * t;
+        let y = center.y + (std::f32::consts::PI * t).sin() * height * 0.5;
+        points.push(egui::pos2(x, y));
+    }
+    painter.add(egui::Shape::closed_line(points, stroke));
+    if open {
+        painter.circle_filled(center, 2.6, tint);
+    } else {
+        painter.line_segment(
+            [
+                center + egui::vec2(-width * 0.6, -height * 0.9),
+                center + egui::vec2(width * 0.6, height * 0.9),
+            ],
+            stroke,
+        );
+    }
 }
 
 fn color(rgb: Rgb) -> egui::Color32 {

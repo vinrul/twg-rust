@@ -97,7 +97,7 @@ impl ReadStore {
         };
         let rows = sqlx::query_as::<_, MarkerRow>(
             "SELECT id, name, unit_id, kategori, jumlah, rot_x, rot_y, rot_z, pos_x, pos_y,
-                    scale, scale_y, scale_z, altitude, is_spawn, keterangan, shoot,
+                    scale, scale_y, scale_z, altitude, is_spawn, obstacle, keterangan, shoot,
                     created_at, updated_at
              FROM markers
              WHERE skenario_id = $1
@@ -155,7 +155,7 @@ impl ReadStore {
             return Ok(Vec::new());
         };
         let rows = sqlx::query_as::<_, ParticleRow>(
-            "SELECT id, name, tipe, data, pos_x, pos_y, is_spawn, created_at, updated_at
+            "SELECT id, name, tipe, data, pos_x, pos_y, altitude, is_spawn, created_at, updated_at
              FROM particles
              WHERE skenario_id = $1
              ORDER BY created_at DESC",
@@ -667,6 +667,7 @@ struct MarkerRow {
     scale_z: Option<f64>,
     altitude: Option<f64>,
     is_spawn: Option<i32>,
+    obstacle: Option<bool>,
     keterangan: Option<String>,
     shoot: Option<String>,
     created_at: Option<NaiveDateTime>,
@@ -696,6 +697,7 @@ impl MarkerRow {
             scale_z,
             altitude: self.altitude.unwrap_or(0.0),
             is_spawn: self.is_spawn.unwrap_or(0),
+            obstacle: self.obstacle.unwrap_or(true),
             keterangan: self.keterangan.unwrap_or_default(),
             shoot: self.shoot.unwrap_or_default(),
             created_at: wita(self.created_at),
@@ -770,6 +772,7 @@ struct ParticleRow {
     data: Option<String>,
     pos_x: Option<f64>,
     pos_y: Option<f64>,
+    altitude: Option<f64>,
     is_spawn: Option<i32>,
     created_at: Option<NaiveDateTime>,
     updated_at: Option<NaiveDateTime>,
@@ -786,6 +789,7 @@ impl ParticleRow {
             data: self.data.unwrap_or_default(),
             pos_x: self.pos_x.unwrap_or(0.0),
             pos_y: self.pos_y.unwrap_or(0.0),
+            altitude: self.altitude.unwrap_or(0.0),
             is_spawn: self.is_spawn.unwrap_or(0),
             created_at: wita(self.created_at),
             updated_at: wita(self.updated_at),

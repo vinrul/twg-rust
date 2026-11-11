@@ -5,6 +5,14 @@ use crate::operations::Operation;
 use crate::scenarios::Scenario;
 use crate::time::Timestamp;
 
+const fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
     pub id: Uuid,
@@ -24,6 +32,9 @@ pub struct Marker {
     pub scale_z: f64,
     pub altitude: f64,
     pub is_spawn: i32,
+    /// Blocks movement during Play when true.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub obstacle: bool,
     pub keterangan: String,
     pub shoot: String,
     pub created_at: Timestamp,
@@ -47,6 +58,8 @@ pub struct MarkerCreateRequest {
     pub pos_x: f64,
     pub pos_y: f64,
     pub jumlah: i32,
+    #[serde(default = "default_true")]
+    pub obstacle: bool,
     #[serde(default)]
     pub keterangan: String,
 }
@@ -85,6 +98,11 @@ pub struct MarkerScaleRequest {
     pub scale_y: f64,
     #[serde(default)]
     pub scale_z: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkerObstacleRequest {
+    pub obstacle: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

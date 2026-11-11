@@ -1,11 +1,12 @@
-use chrono::{DateTime, FixedOffset, Utc};
+use crate::read::wita;
+use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use sqlx::FromRow;
 use sqlx::postgres::PgPool;
 use std::str::FromStr;
 use twg_contracts::Timestamp;
 use twg_contracts::assets::{
-    Asset, AssetCategory, AssetFile, AssetModelKind, AssetSource, AssetSourceSlot, AssetVariant,
-    AssetVariantKind,
+    Asset, AssetCategory, AssetFile, AssetGroup, AssetModelKind, AssetMoveMode, AssetSource,
+    AssetSourceSlot, AssetVariant, AssetVariantKind,
 };
 use uuid::Uuid;
 
@@ -40,6 +41,8 @@ pub struct NewAsset {
     pub name: String,
     pub category: AssetCategory,
     pub model_kind: Option<AssetModelKind>,
+    pub move_mode: AssetMoveMode,
+    pub group_id: Uuid,
     pub sources: Vec<NewAssetSource>,
 }
 
@@ -60,10 +63,12 @@ impl AssetStore {
         search: &str,
     ) -> Result<Vec<Asset>, sqlx::Error> {
         let rows = sqlx::query_as::<_, AssetRow>(
-            "SELECT id, name, category, model_kind, version, created_at, updated_at
-             FROM assets
-             WHERE ($1::text IS NULL OR category = $1)
-             ORDER BY created_at ASC",
+            "SELECT a.id, a.name, a.category, a.model_kind, a.move_mode, a.version, a.created_at,
+                    a.updated_at, a.group_id, g.name AS group_name
+             FROM assets a
+             LEFT JOIN asset_groups g ON g.id = a.group_id
+             WHERE ($1::text IS NULL OR a.category = $1)
+             ORDER BY a.created_at ASC",
         )
         .bind(category.map(|value| value.to_string()))
         .fetch_all(&self.pool)
@@ -78,9 +83,11 @@ impl AssetStore {
 
     pub async fn get(&self, id: Uuid) -> Result<Option<Asset>, sqlx::Error> {
         let row = sqlx::query_as::<_, AssetRow>(
-            "SELECT id, name, category, model_kind, version, created_at, updated_at
-             FROM assets
-             WHERE id = $1",
+            "SELECT a.id, a.name, a.category, a.model_kind, a.move_mode, a.version, a.created_at,
+                    a.updated_at, a.group_id, g.name AS group_name
+             FROM assets a
+             LEFT JOIN asset_groups g ON g.id = a.group_id
+             WHERE a.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -94,13 +101,15 @@ impl AssetStore {
     pub async fn create(&self, asset: NewAsset) -> Result<Asset, sqlx::Error> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO assets (id, name, category, model_kind)
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO assets (id, name, category, model_kind, move_mode, group_id)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(asset.id)
         .bind(&asset.name)
         .bind(asset.category.to_string())
         .bind(asset.model_kind.map(|kind| kind.to_string()))
+        .bind(asset.move_mode.to_string())
+        .bind(asset.group_id)
         .execute(&mut *transaction)
         .await?;
         for source in &asset.sources {
@@ -136,27 +145,86 @@ impl AssetStore {
         id: Uuid,
         name: Option<&str>,
         category: Option<AssetCategory>,
+        group_id: Option<Uuid>,
+        move_mode: Option<AssetMoveMode>,
         bump_version: bool,
     ) -> Result<Option<Asset>, sqlx::Error> {
-        let row = sqlx::query_as::<_, AssetRow>(
+        let result = sqlx::query(
             "UPDATE assets
              SET name = COALESCE($2, name),
                  category = COALESCE($3, category),
-                 version = CASE WHEN $4 THEN version + 1 ELSE version END,
+                 group_id = COALESCE($4, group_id),
+                 move_mode = COALESCE($5, move_mode),
+                 version = CASE WHEN $6 THEN version + 1 ELSE version END,
                  updated_at = NOW()
-             WHERE id = $1
-             RETURNING id, name, category, model_kind, version, created_at, updated_at",
+             WHERE id = $1",
         )
         .bind(id)
         .bind(name)
         .bind(category.map(|value| value.to_string()))
+        .bind(group_id)
+        .bind(move_mode.map(|value| value.to_string()))
         .bind(bump_version)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get(id).await
+    }
+
+    pub async fn list_groups(&self) -> Result<Vec<AssetGroup>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, AssetGroupRow>(
+            "SELECT id, name, created_at, updated_at
+             FROM asset_groups
+             ORDER BY name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(AssetGroupRow::into_contract).collect())
+    }
+
+    pub async fn group_exists(&self, id: Uuid) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM asset_groups WHERE id = $1)")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn create_group(&self, name: &str) -> Result<AssetGroup, sqlx::Error> {
+        let row = sqlx::query_as::<_, AssetGroupRow>(
+            "INSERT INTO asset_groups (name) VALUES ($1)
+             RETURNING id, name, created_at, updated_at",
+        )
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_contract())
+    }
+
+    pub async fn update_group(
+        &self,
+        id: Uuid,
+        name: &str,
+    ) -> Result<Option<AssetGroup>, sqlx::Error> {
+        let row = sqlx::query_as::<_, AssetGroupRow>(
+            "UPDATE asset_groups SET name = $2, updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, name, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(name)
         .fetch_optional(&self.pool)
         .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        Ok(self.attach_sources(vec![row]).await?.pop())
+        Ok(row.map(AssetGroupRow::into_contract))
+    }
+
+    pub async fn delete_group(&self, id: Uuid) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM asset_groups WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Replaces the stored file of one source slot.
@@ -369,12 +437,34 @@ impl AssetStore {
 }
 
 #[derive(Debug, FromRow)]
+struct AssetGroupRow {
+    id: Uuid,
+    name: Option<String>,
+    created_at: Option<NaiveDateTime>,
+    updated_at: Option<NaiveDateTime>,
+}
+
+impl AssetGroupRow {
+    fn into_contract(self) -> AssetGroup {
+        AssetGroup {
+            id: self.id,
+            name: self.name.unwrap_or_default(),
+            created_at: wita(self.created_at),
+            updated_at: wita(self.updated_at),
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
 struct AssetRow {
     id: Uuid,
     name: Option<String>,
     category: Option<String>,
     model_kind: Option<String>,
+    move_mode: Option<String>,
     version: Option<i64>,
+    group_id: Option<Uuid>,
+    group_name: Option<String>,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
 }
@@ -387,18 +477,37 @@ impl AssetRow {
     }
 
     fn into_contract(self, sources: Vec<AssetSource>) -> Asset {
+        let category = self
+            .category
+            .as_deref()
+            .and_then(|value| AssetCategory::from_str(value).ok())
+            .unwrap_or(AssetCategory::Model);
+        let model_kind = self
+            .model_kind
+            .as_deref()
+            .and_then(|value| AssetModelKind::from_str(value).ok());
+        let stored_move_mode = self
+            .move_mode
+            .as_deref()
+            .and_then(|value| AssetMoveMode::from_str(value).ok())
+            .unwrap_or_default();
+        // Animated models always walk to their target, and images never move;
+        // normalise here so every client sees the effective mode.
+        let move_mode = if !category.is_model() {
+            AssetMoveMode::None
+        } else if model_kind == Some(AssetModelKind::Animated) {
+            AssetMoveMode::Free
+        } else {
+            stored_move_mode
+        };
         Asset {
             id: self.id,
             name: self.name.unwrap_or_default(),
-            category: self
-                .category
-                .as_deref()
-                .and_then(|value| AssetCategory::from_str(value).ok())
-                .unwrap_or(AssetCategory::Model),
-            model_kind: self
-                .model_kind
-                .as_deref()
-                .and_then(|value| AssetModelKind::from_str(value).ok()),
+            category,
+            model_kind,
+            move_mode,
+            group_id: self.group_id,
+            group_name: self.group_name,
             sources,
             version: self.version.unwrap_or(1),
             created_at: wita_utc(self.created_at),

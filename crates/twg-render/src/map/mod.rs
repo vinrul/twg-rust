@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use twg_map::{BaseLayer, CameraFlight, MapCameraState, MapCursor};
 
 pub use anchors::GeoAnchor;
-pub use camera::{CAMERA_FOV_Y, MapCamera};
+pub use camera::{CAMERA_FOV_Y, GIZMO_RENDER_LAYER, MapCamera};
 pub use marker::DemoMarker;
 pub use tiles::{Tile, TileWorld};
 
@@ -70,6 +70,7 @@ impl Plugin for MapRenderPlugin {
                     input::map_input,
                     advance_camera_flight,
                     camera::update_camera_transform,
+                    camera::sync_gizmo_camera,
                     anchors::update_geo_anchors,
                     cursor::update_cursor,
                     tiles::sync_tiles,

@@ -6,7 +6,8 @@ use twg_contracts::SingleResponse;
 use twg_contracts::alurs::{Alur, AlurCreateRequest, AlurUpdateRequest};
 use twg_contracts::map::{
     Building, BuildingCreateRequest, BuildingGeomUpdateRequest, BuildingUpdateRequest, Line,
-    LineCreateRequest, LineGeomUpdateRequest, LineUpdateRequest, TextMarker,
+    LineCreateRequest, LineGeomUpdateRequest, LineUpdateRequest, Particle, ParticleCreateRequest,
+    ParticleGeomUpdateRequest, ParticleKind, ParticleUpdateRequest, TextMarker,
     TextMarkerCreateRequest, TextMarkerGeomUpdateRequest, TextMarkerUpdateRequest,
 };
 use uuid::Uuid;
@@ -197,6 +198,61 @@ pub async fn delete_text_marker(
     Path(id): Path<Uuid>,
 ) -> Result<Json<MessageResponse>, ApiError> {
     write_store(&state)?.delete_text_marker(id).await?;
+    Ok(success())
+}
+
+// ---------------------------------------------------------------- particles
+
+pub async fn create_particle(
+    State(state): State<AppState>,
+    Json(request): Json<ParticleCreateRequest>,
+) -> Result<(StatusCode, Json<SingleResponse<Particle>>), ApiError> {
+    let operasi_id = parse_uuid(&request.operasi_id, "operasi_id")?;
+    let skenario_id = parse_uuid(&request.skenario_id, "skenario_id")?;
+    let tipe = ParticleKind::from_key(&request.tipe).key();
+    let particle = write_store(&state)?
+        .create_particle(
+            operasi_id,
+            skenario_id,
+            &request.name,
+            tipe,
+            &request.data,
+            request.pos_x,
+            request.pos_y,
+            request.altitude,
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(SingleResponse::success(particle))))
+}
+
+pub async fn update_particle(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<ParticleUpdateRequest>,
+) -> Result<Json<SingleResponse<Particle>>, ApiError> {
+    let tipe = ParticleKind::from_key(&request.tipe).key();
+    let particle = write_store(&state)?
+        .update_particle(id, &request.name, tipe, &request.data)
+        .await?;
+    Ok(Json(SingleResponse::success(particle)))
+}
+
+pub async fn update_particle_geom(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<ParticleGeomUpdateRequest>,
+) -> Result<Json<SingleResponse<Particle>>, ApiError> {
+    let particle = write_store(&state)?
+        .update_particle_geom(id, request.pos_x, request.pos_y, request.altitude)
+        .await?;
+    Ok(Json(SingleResponse::success(particle)))
+}
+
+pub async fn delete_particle(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MessageResponse>, ApiError> {
+    write_store(&state)?.delete_particle(id).await?;
     Ok(success())
 }
 

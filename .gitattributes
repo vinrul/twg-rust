@@ -1,0 +1,5 @@
+# SQLx hashes migration files byte-for-byte, so the working tree must keep LF
+# line endings on every platform (core.autocrlf would otherwise change the
+# checksum and block startup with an already-migrated database).
+crates/twg-storage/migrations/*.sql text eol=lf
+baseline/fixtures/migrations/*.sql text eol=lf

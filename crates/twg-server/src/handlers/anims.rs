@@ -12,7 +12,7 @@ use twg_contracts::animations::{
     RouteAnimationV2Request, ShootAnimationRequest, ShootAnimationV2Request, SpawnAnimationRequest,
     SpawnPickupRequest,
 };
-use twg_contracts::map::ParticleCreateRequest;
+use twg_contracts::map::SpawnParticleRequest;
 use twg_storage::{AnimOrder, NewAnimation};
 use uuid::Uuid;
 
@@ -294,7 +294,7 @@ pub async fn create_shoot_v2(
 
 pub async fn create_spawn_particle(
     State(state): State<AppState>,
-    Json(request): Json<ParticleCreateRequest>,
+    Json(request): Json<SpawnParticleRequest>,
 ) -> Result<(StatusCode, Json<SingleResponse<Animation>>), ApiError> {
     let operasi_id = parse_uuid(&request.operasi_id, "operasi_id")?;
     let skenario_id = parse_uuid(&request.skenario_id, "skenario_id")?;

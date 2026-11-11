@@ -10,8 +10,8 @@ use twg_client::asset_cache::{AssetCache, SyncProgress};
 use twg_contracts::SingleResponse;
 use twg_contracts::Timestamp;
 use twg_contracts::assets::{
-    Asset, AssetCategory, AssetFile, AssetManifest, AssetModelKind, AssetSource, AssetSourceSlot,
-    AssetVariant, AssetVariantKind,
+    Asset, AssetCategory, AssetFile, AssetManifest, AssetModelKind, AssetMoveMode, AssetSource,
+    AssetSourceSlot, AssetVariant, AssetVariantKind,
 };
 use uuid::Uuid;
 
@@ -31,6 +31,9 @@ fn sample_asset() -> (Asset, Vec<u8>, Vec<u8>) {
         name: "walk".to_owned(),
         category: AssetCategory::Model,
         model_kind: Some(AssetModelKind::Animated),
+        move_mode: AssetMoveMode::Free,
+        group_id: None,
+        group_name: None,
         sources: vec![
             AssetSource {
                 slot: AssetSourceSlot::Idle,

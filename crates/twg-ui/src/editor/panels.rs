@@ -9,7 +9,8 @@ use crate::theme;
 use super::input::distance_meters;
 use super::model::{
     AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    MIN_MARKER_SCALE, ObjectKey, ObjectType, marker_color, parse_hex_color,
+    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, marker_color, parse_hex_color,
+    particle_kind_label,
 };
 use super::textures;
 
@@ -316,6 +317,34 @@ fn draw_toolbar(ui: &mut egui::Ui, editor: &mut EditorState, action: &mut Editor
                         });
                     ui.separator();
                 }
+                if editor.tool == EditorTool::Particle {
+                    ui.label("Jenis");
+                    egui::ComboBox::from_id_salt("editor_particle_kind")
+                        .selected_text(particle_kind_label(editor.active_particle))
+                        .width(128.0)
+                        .show_ui(ui, |ui| {
+                            for kind in twg_contracts::map::ParticleKind::ALL {
+                                if ui
+                                    .selectable_label(
+                                        editor.active_particle == kind,
+                                        particle_kind_label(kind),
+                                    )
+                                    .clicked()
+                                {
+                                    editor.active_particle = kind;
+                                }
+                            }
+                        });
+                    ui.separator();
+                }
+                ui.add_enabled_ui(!editor.preview, |ui| {
+                    ui.checkbox(&mut editor.particle_preview, "Animasi particle")
+                        .on_hover_text(
+                            "Khusus editor. Saat dimatikan efek disembunyikan dan tidak dianimasikan; \
+                             Play/simulasi tetap menampilkan animasi particle.",
+                        );
+                });
+                ui.separator();
                 ui.label("Snap");
                 egui::ComboBox::from_id_salt("editor_snap")
                     .selected_text(snap_label(editor.snap_meters))
@@ -1217,6 +1246,12 @@ fn draw_object_inspector(
                     changed = true;
                 }
             });
+            changed |= ui
+                .checkbox(&mut marker.obstacle, "Obstacle")
+                .on_hover_text(
+                    "Default aktif. Jika dimatikan, unit saat Play bisa melewati marker ini.",
+                )
+                .changed();
             ui.add_space(4.0);
             ui.label(theme::title("Transform"));
             let lon = drag_row(ui, "Lon", &mut marker.lon, 0.000_001, 0.000_01, 7, "");
@@ -1246,6 +1281,32 @@ fn draw_object_inspector(
             let scale_z = scale_row(ui, "Scale Z", &mut marker.scale_z);
             undo |= scale_z.gained_focus() || scale_z.drag_started();
             changed |= scale_z.changed();
+            let static_asset = editor
+                .marker_models
+                .get(&marker.unit_id)
+                .is_some_and(|model| !model.animated);
+            if let Some(model) = editor.marker_models.get(&marker.unit_id) {
+                ui.add_space(4.0);
+                let label = if model.animated {
+                    "Bisa pindah bebas (animasi)".to_owned()
+                } else {
+                    match model.move_mode {
+                        twg_contracts::assets::AssetMoveMode::None => {
+                            "Tidak bisa pindah saat Play".to_owned()
+                        }
+                        twg_contracts::assets::AssetMoveMode::Limited => {
+                            "Bisa pindah terbatas (gizmo) saat Play".to_owned()
+                        }
+                        twg_contracts::assets::AssetMoveMode::Free => {
+                            "Bisa pindah bebas saat Play".to_owned()
+                        }
+                    }
+                };
+                ui.label(theme::muted(&format!("Mode pindah: {label}")));
+                if static_asset {
+                    ui.label(theme::muted("Ubah mode pindah di menu Aset (detail aset)."));
+                }
+            }
             ui.add_space(4.0);
             ui.label("Keterangan");
             changed |= ui.text_edit_multiline(&mut marker.keterangan).changed();
@@ -1336,6 +1397,14 @@ fn draw_object_inspector(
                         }
                     });
             });
+            if building.shape != EditorShapeKind::Ground {
+                changed |= ui
+                    .checkbox(&mut building.obstacle, "Obstacle")
+                    .on_hover_text(
+                        "Default aktif. Jika dimatikan, unit saat Play bisa melewati bentuk ini.",
+                    )
+                    .changed();
+            }
             ui.add_space(4.0);
             ui.label(theme::title("Transform"));
             let lon = drag_row(ui, "Lon", &mut building.lon, 0.000_001, 0.000_01, 7, "");
@@ -1541,13 +1610,145 @@ fn draw_object_inspector(
             changed |= altitude.changed();
         }
         EditorKind::Particle(particle) => {
-            ui.monospace(format!("Tipe: {}", particle.tipe));
-            ui.monospace(format!("Spawn: {}", particle.is_spawn));
-            ui.monospace(format!("Pos: {:.6}, {:.6}", particle.lat, particle.lon));
-            ui.label("Data");
-            ui.monospace(&particle.data);
+            ui.horizontal(|ui| {
+                ui.label("Jenis");
+                egui::ComboBox::from_id_salt("particle_kind")
+                    .selected_text(particle_kind_label(particle.kind))
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for kind in twg_contracts::map::ParticleKind::ALL {
+                            if ui
+                                .selectable_label(particle.kind == kind, particle_kind_label(kind))
+                                .clicked()
+                            {
+                                particle.kind = kind;
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            let lon = drag_row(ui, "Lon", &mut particle.lon, 0.000_001, 0.000_01, 7, "");
+            undo |= lon.gained_focus() || lon.drag_started();
+            changed |= lon.changed();
+            let lat = drag_row(ui, "Lat", &mut particle.lat, 0.000_001, 0.000_01, 7, "");
+            undo |= lat.gained_focus() || lat.drag_started();
+            changed |= lat.changed();
+            let altitude = drag_row(ui, "Alt", &mut particle.altitude, 0.25, 0.5, 1, " m");
+            undo |= altitude.gained_focus() || altitude.drag_started();
+            changed |= altitude.changed();
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Pengaturan efek").strong());
+                if ui.small_button("Reset").clicked() {
+                    particle.settings = ParticleSettings::default();
+                    changed = true;
+                }
+            });
+            let (size_label, density_label, height_label, spread_label, opacity_label) =
+                match particle.kind {
+                    twg_contracts::map::ParticleKind::Fire => (
+                        "Ukuran api",
+                        "Kerapatan",
+                        "Tinggi api",
+                        "Sebaran",
+                        "Intensitas",
+                    ),
+                    twg_contracts::map::ParticleKind::Smoke => (
+                        "Ukuran asap",
+                        "Jumlah asap",
+                        "Tinggi asap",
+                        "Angin",
+                        "Ketebalan",
+                    ),
+                    twg_contracts::map::ParticleKind::Water => (
+                        "Ukuran tetesan",
+                        "Jumlah air",
+                        "Tinggi pancuran",
+                        "Lebar pancuran",
+                        "Kepekatan",
+                    ),
+                };
+            let before = particle.settings;
+            let size = drag_row(
+                ui,
+                size_label,
+                &mut particle.settings.size,
+                0.01,
+                0.1,
+                2,
+                "×",
+            );
+            undo |= size.gained_focus() || size.drag_started();
+            changed |= size.changed();
+            let density = drag_row(
+                ui,
+                density_label,
+                &mut particle.settings.density,
+                0.01,
+                0.1,
+                2,
+                "×",
+            );
+            undo |= density.gained_focus() || density.drag_started();
+            changed |= density.changed();
+            let height = drag_row(
+                ui,
+                height_label,
+                &mut particle.settings.height,
+                0.01,
+                0.1,
+                2,
+                "×",
+            );
+            undo |= height.gained_focus() || height.drag_started();
+            changed |= height.changed();
+            let spread = drag_row(
+                ui,
+                spread_label,
+                &mut particle.settings.spread,
+                0.01,
+                0.1,
+                2,
+                "×",
+            );
+            undo |= spread.gained_focus() || spread.drag_started();
+            changed |= spread.changed();
+            let speed = drag_row(
+                ui,
+                "Kecepatan",
+                &mut particle.settings.speed,
+                0.01,
+                0.1,
+                2,
+                "×",
+            );
+            undo |= speed.gained_focus() || speed.drag_started();
+            changed |= speed.changed();
+            let opacity = drag_row(
+                ui,
+                opacity_label,
+                &mut particle.settings.opacity,
+                0.01,
+                0.1,
+                2,
+                "×",
+            );
+            undo |= opacity.gained_focus() || opacity.drag_started();
+            changed |= opacity.changed();
+            let clamped = particle.settings.clamped();
+            if clamped != particle.settings {
+                particle.settings = clamped;
+                changed = true;
+            }
+            if particle.settings != before {
+                changed = true;
+            }
             ui.label(theme::muted(
-                "Particle hanya dapat dilihat (endpoint tulis belum ada).",
+                "Pengaturan efek ikut tersimpan bersama skenario.",
+            ));
+            ui.label(theme::muted(
+                "Efek besar dan rapat menambah beban render; turunkan Jumlah/Ketebalan bila FPS menurun.",
             ));
         }
     }
@@ -1795,7 +1996,9 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
             );
 
             egui::Area::new(egui::Id::new("editor_view_controls"))
-                .fixed_pos(egui::pos2(rect.right() - 118.0, rect.top() + 12.0))
+                // Keep the zoom/bearing panel clear of the Inspector on the
+                // right edge of the viewport.
+                .fixed_pos(egui::pos2(rect.right() - 156.0, rect.top() + 12.0))
                 .order(egui::Order::Foreground)
                 .show(&context, |ui| {
                     egui::Frame::new()
@@ -1820,6 +2023,28 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                                 "{:.1}° / {:.1}°",
                                 editor.map_state.bearing_degrees, editor.map_state.pitch_degrees
                             ));
+                            let fps = editor.fps.max(0.0);
+                            let frame_ms = if fps > 0.1 { 1000.0 / fps } else { 0.0 };
+                            let fps_color = if fps <= 0.1 {
+                                theme::color(DARK.foreground)
+                            } else if fps >= 50.0 {
+                                theme::color(DARK.success)
+                            } else if fps >= 30.0 {
+                                theme::color(DARK.warning)
+                            } else {
+                                theme::color(DARK.destructive)
+                            };
+                            let fps_text = if fps > 0.1 {
+                                format!("{fps:.0} FPS · {frame_ms:.1} ms")
+                            } else {
+                                "-- FPS".to_owned()
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(fps_text).monospace().color(fps_color),
+                                )
+                                .selectable(false),
+                            );
                         });
                 });
         });
@@ -1869,9 +2094,26 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
             continue;
         };
         match _kind {
-            ObjectType::Marker | ObjectType::Text | ObjectType::Particle => {
+            ObjectType::Marker | ObjectType::Text => {
                 if let Some(center) = points.first() {
                     painter.circle_stroke(*center, 15.0, stroke);
+                }
+            }
+            // Particle effects are their own visual; a crosshair keeps the
+            // selection feedback without drawing another circle over them.
+            ObjectType::Particle => {
+                if let Some(center) = points.first() {
+                    let gap = 4.0;
+                    let tick = 7.0;
+                    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                        painter.line_segment(
+                            [
+                                *center + egui::vec2(dx * gap, dy * gap),
+                                *center + egui::vec2(dx * (gap + tick), dy * (gap + tick)),
+                            ],
+                            stroke,
+                        );
+                    }
                 }
             }
             ObjectType::Line | ObjectType::Building => {
@@ -1907,8 +2149,20 @@ fn draw_object_pins(painter: &egui::Painter, editor: &EditorState) {
                 painter.rect_stroke(rect, 2.0, outline, egui::StrokeKind::Inside);
             }
             ObjectType::Particle => {
-                painter.circle_filled(*position, 4.0, color);
-                painter.circle_stroke(*position, 4.0, outline);
+                // When the editor preview is off the effect is hidden; leave a
+                // small diamond so the particle can still be found and picked.
+                if !editor.preview && !editor.particle_preview {
+                    let radius = 5.0;
+                    painter.add(egui::Shape::closed_line(
+                        vec![
+                            *position + egui::vec2(0.0, -radius),
+                            *position + egui::vec2(radius, 0.0),
+                            *position + egui::vec2(0.0, radius),
+                            *position + egui::vec2(-radius, 0.0),
+                        ],
+                        egui::Stroke::new(1.4, color),
+                    ));
+                }
             }
             ObjectType::Line | ObjectType::Building => {}
         }

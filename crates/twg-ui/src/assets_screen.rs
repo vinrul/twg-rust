@@ -3,8 +3,8 @@
 use bevy_egui::egui;
 use twg_client::design::{CONTROL_HEIGHT, DARK, FONT_SM, FONT_XS, RADIUS_SM, SPACE_2, SPACE_3};
 use twg_contracts::assets::{
-    Asset, AssetCategory, AssetModelKind, AssetSource, AssetSourceSlot, AssetVariantKind,
-    ConvertTarget,
+    Asset, AssetCategory, AssetModelKind, AssetMoveMode, AssetSource, AssetSourceSlot,
+    AssetVariantKind, ConvertTarget,
 };
 use twg_domain::Role;
 use twg_render::{PREVIEW_SIZE, PREVIEW_SLOTS, PreviewOrbitInput, PreviewPhase};
@@ -209,6 +209,16 @@ fn draw_toolbar(ui: &mut egui::Ui, client: &mut ClientUi) {
             _ => None,
         };
         widgets::search_input(ui, &mut client.asset_search, "Cari nama aset...");
+        let mut group_options = vec![(None, "Semua kategori".to_owned())];
+        for group in &client.data.asset_groups {
+            group_options.push((Some(group.id), group.name.clone()));
+        }
+        widgets::combo(
+            ui,
+            egui::Id::new("asset-group-filter"),
+            &mut client.asset_group_filter,
+            &group_options,
+        );
         ui.separator();
         let (rgb, label) = match &client.asset_sync.state {
             AssetSyncState::Ready => (DARK.success, "Sinkron".to_owned()),
@@ -247,11 +257,42 @@ fn draw_rename(ui: &mut egui::Ui, client: &mut ClientUi, asset: &Asset) {
                 .margin(egui::Margin::symmetric(8, 5)),
         );
         let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-        let trimmed = client.asset_edit_name.trim();
-        let changed = !trimmed.is_empty() && trimmed != asset.name;
+        let trimmed = client.asset_edit_name.trim().to_owned();
+        let static_model =
+            asset.category.is_model() && asset.model_kind_or_static() == AssetModelKind::Static;
+        let mut group_options = client
+            .data
+            .asset_groups
+            .iter()
+            .map(|group| (Some(group.id), group.name.clone()))
+            .collect::<Vec<_>>();
+        if asset.group_id.is_none() {
+            group_options.insert(0, (None, "Pilih kategori".to_owned()));
+        }
+        ui.label(theme::muted("Kategori"));
+        widgets::combo(
+            ui,
+            egui::Id::new("asset-edit-group"),
+            &mut client.asset_edit_group_id,
+            &group_options,
+        );
+        if static_model {
+            ui.label(theme::muted("Mode pindah"));
+            let modes = move_mode_options();
+            widgets::combo(
+                ui,
+                egui::Id::new("asset-edit-move-mode"),
+                &mut client.asset_edit_move_mode,
+                &modes,
+            );
+        }
+        let changed = !trimmed.is_empty()
+            && (trimmed != asset.name
+                || client.asset_edit_group_id != asset.group_id
+                || (static_model && client.asset_edit_move_mode != asset.move_mode));
         let saved = ui
             .add_enabled_ui(changed, |ui| {
-                widgets::secondary_button(ui, "Simpan nama").clicked()
+                widgets::secondary_button(ui, "Simpan").clicked()
             })
             .inner;
         if let Some(()) = (changed && (saved || enter)).then_some(()) {
@@ -259,6 +300,8 @@ fn draw_rename(ui: &mut egui::Ui, client: &mut ClientUi, asset: &Asset) {
         }
         if changed && widgets::ghost_button(ui, "Batal").clicked() {
             client.asset_edit_name = asset.name.clone();
+            client.asset_edit_group_id = asset.group_id;
+            client.asset_edit_move_mode = asset.move_mode;
         }
     });
 }
@@ -294,6 +337,11 @@ fn filtered_assets(client: &ClientUi) -> Vec<Asset> {
                 .is_none_or(|category| asset.category == category)
         })
         .filter(|asset| {
+            client
+                .asset_group_filter
+                .is_none_or(|group_id| asset.group_id == Some(group_id))
+        })
+        .filter(|asset| {
             needle.is_empty()
                 || asset.name.to_lowercase().contains(&needle)
                 || asset
@@ -317,9 +365,9 @@ fn draw_list(ui: &mut egui::Ui, client: &mut ClientUi, assets: &[Asset]) {
                 let selected = client.selected_asset == Some(asset.id);
                 let cached = client.asset_is_cached(asset);
                 let subtitle = format!(
-                    "{} · v{}{}",
+                    "{} · {}{}",
                     category_label(asset.category),
-                    asset.version,
+                    asset.group_name.as_deref().unwrap_or("Tanpa kategori"),
                     if cached { " · offline" } else { "" }
                 );
                 let text = egui::RichText::new(format!("{}\n{}", asset.name, subtitle))
@@ -373,8 +421,21 @@ fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
         ui.label(theme::title(&asset.name));
         ui.add_space(SPACE_2);
         widgets::badge(ui, category_label(asset.category), DARK.success);
+        if let Some(group) = &asset.group_name {
+            widgets::badge(ui, group, DARK.primary);
+        } else {
+            widgets::badge(ui, "Tanpa kategori", DARK.muted_foreground);
+        }
         if let Some(kind) = asset.model_kind {
             widgets::badge(ui, model_kind_label(kind), DARK.warning);
+        }
+        if asset.category.is_model() {
+            let (label, color) = match asset.move_mode {
+                AssetMoveMode::None => ("tidak bisa pindah", DARK.muted_foreground),
+                AssetMoveMode::Limited => ("pindah via gizmo", DARK.warning),
+                AssetMoveMode::Free => ("pindah bebas", DARK.success),
+            };
+            widgets::badge(ui, label, color);
         }
         if client.asset_is_cached(&asset) {
             widgets::badge(ui, "offline siap", DARK.success);
@@ -718,6 +779,7 @@ fn draw_upload_form(ui: &mut egui::Ui, client: &mut ClientUi) {
     ui.add_space(SPACE_2);
 
     ui.horizontal_wrapped(|ui| {
+        ui.label("Jenis file");
         let categories = [
             (AssetCategory::Model, "Model".to_owned()),
             (AssetCategory::Texture, "Texture".to_owned()),
@@ -747,9 +809,45 @@ fn draw_upload_form(ui: &mut egui::Ui, client: &mut ClientUi) {
             .changed()
             {
                 client.asset_upload.files.clear();
+                client.asset_upload.move_mode = AssetMoveMode::None;
             }
         }
+        if client.asset_upload.category.is_model()
+            && client.asset_upload.model_kind == AssetModelKind::Static
+        {
+            ui.label("Mode pindah");
+            let modes = move_mode_options();
+            widgets::combo(
+                ui,
+                egui::Id::new("asset-upload-move-mode"),
+                &mut client.asset_upload.move_mode,
+                &modes,
+            );
+        }
         widgets::labeled_input_with_width(ui, "Nama", &mut client.asset_upload.name, 240.0);
+    });
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Kategori aset");
+        let mut groups = client
+            .data
+            .asset_groups
+            .iter()
+            .map(|group| (Some(group.id), group.name.clone()))
+            .collect::<Vec<_>>();
+        if groups.is_empty() {
+            ui.label(theme::danger(
+                "Belum ada kategori. Buat dulu di menu Kategori Aset.",
+            ));
+        } else {
+            groups.insert(0, (None, "Pilih kategori".to_owned()));
+            widgets::combo(
+                ui,
+                egui::Id::new("asset-upload-group"),
+                &mut client.asset_upload.group_id,
+                &groups,
+            );
+        }
     });
 
     let slots = client.asset_upload.required_files().to_vec();
@@ -790,11 +888,18 @@ fn draw_upload_actions(ui: &mut egui::Ui, client: &mut ClientUi) {
         } else {
             "Upload"
         };
-        if widgets::primary_button(ui, label).clicked() && !client.asset_upload.busy {
+        let ready = client.asset_upload.group_id.is_some() && !client.asset_upload.busy;
+        let clicked = ui
+            .add_enabled_ui(ready, |ui| widgets::primary_button(ui, label).clicked())
+            .inner;
+        if clicked {
             client.begin_asset_upload();
         }
         if widgets::ghost_button(ui, "Reset").clicked() {
             client.clear_asset_upload();
+        }
+        if client.asset_upload.group_id.is_none() {
+            ui.label(theme::muted("Pilih kategori aset dulu."));
         }
     });
 }
@@ -822,6 +927,14 @@ fn model_kind_label(kind: AssetModelKind) -> &'static str {
         AssetModelKind::Static => "static",
         AssetModelKind::Animated => "animasi",
     }
+}
+
+fn move_mode_options() -> [(AssetMoveMode, String); 3] {
+    [
+        (AssetMoveMode::None, "Tidak bisa pindah".to_owned()),
+        (AssetMoveMode::Limited, "Bisa pindah (gizmo)".to_owned()),
+        (AssetMoveMode::Free, "Bisa pindah bebas".to_owned()),
+    ]
 }
 
 fn slot_label(slot: AssetSourceSlot) -> &'static str {

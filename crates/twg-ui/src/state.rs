@@ -16,8 +16,8 @@ use twg_client::session::{ClientSession, ClientState, NavItem, Screen};
 #[cfg(not(target_arch = "wasm32"))]
 use twg_contracts::assets::AssetSource;
 use twg_contracts::assets::{
-    Asset, AssetCategory, AssetManifest, AssetModelKind, AssetSourceSlot, AssetVariantKind,
-    ConvertRequest, ConvertResult, ConvertTarget, SyncProgress,
+    Asset, AssetCategory, AssetGroup, AssetManifest, AssetModelKind, AssetMoveMode,
+    AssetSourceSlot, AssetVariantKind, ConvertRequest, ConvertResult, ConvertTarget, SyncProgress,
 };
 use twg_contracts::categories::Category;
 use twg_contracts::operations::{HomeOperation, Operation};
@@ -81,6 +81,9 @@ pub enum JobKind {
     AssetReplaceSource,
     AssetConvert,
     AssetDelete,
+    AssetGroups,
+    AssetGroupSave,
+    AssetGroupDelete,
 }
 
 pub struct UiJob {
@@ -119,6 +122,9 @@ pub struct UserForm {
     pub name: String,
     pub username: String,
     pub password: String,
+    pub confirm_password: String,
+    pub password_visible: bool,
+    pub confirm_password_visible: bool,
     pub units: String,
     pub role: String,
     pub satker_id: String,
@@ -142,6 +148,7 @@ pub enum ConfirmAction {
     DeleteSatker(Uuid),
     DeleteSnapshot(Uuid),
     DeleteAsset(Uuid),
+    DeleteAssetGroup(Uuid),
     Logout,
 }
 
@@ -158,6 +165,9 @@ pub struct ConfirmDialog {
 pub struct AssetUploadDraft {
     pub category: AssetCategory,
     pub model_kind: AssetModelKind,
+    /// Only used by static models; animated models are always free to move.
+    pub move_mode: AssetMoveMode,
+    pub group_id: Option<Uuid>,
     pub name: String,
     pub files: Vec<PathBuf>,
     pub busy: bool,
@@ -169,6 +179,8 @@ impl Default for AssetUploadDraft {
         Self {
             category: AssetCategory::Model,
             model_kind: AssetModelKind::Static,
+            move_mode: AssetMoveMode::None,
+            group_id: None,
             name: String::new(),
             files: Vec::new(),
             busy: false,
@@ -298,6 +310,7 @@ pub struct ClientData {
     pub online: Vec<OnlineUser>,
     pub home: Vec<HomeOperation>,
     pub categories: Vec<Category>,
+    pub asset_groups: Vec<AssetGroup>,
     pub snapshot: Option<Snapshot>,
     pub loading: HashMap<&'static str, bool>,
 }
@@ -330,6 +343,7 @@ pub struct ClientUi {
     pub base_url: String,
     pub login_username: String,
     pub login_password: String,
+    pub login_password_visible: bool,
     pub login_error: Option<String>,
     pub logging_in: bool,
     pub modal: Modal,
@@ -345,6 +359,10 @@ pub struct ClientUi {
     pub profile_img: String,
     pub old_password: String,
     pub new_password: String,
+    pub confirm_password: String,
+    pub old_password_visible: bool,
+    pub new_password_visible: bool,
+    pub confirm_password_visible: bool,
     pub profile_message: Option<(bool, String)>,
     pub ws: WsUi,
     pub layer_order: Vec<&'static str>,
@@ -354,10 +372,20 @@ pub struct ClientUi {
     pub editor: EditorState,
     pub assets: Vec<Asset>,
     pub asset_filter: Option<AssetCategory>,
+    pub asset_group_filter: Option<Uuid>,
     pub asset_search: String,
     pub selected_asset: Option<Uuid>,
     /// Name being edited in the asset detail panel.
     pub asset_edit_name: String,
+    /// Category selected while editing the current asset.
+    pub asset_edit_group_id: Option<Uuid>,
+    /// Play move mode selected while editing the current asset.
+    pub asset_edit_move_mode: AssetMoveMode,
+    /// Inline form for the asset-category module.
+    pub asset_group_new_name: String,
+    pub asset_group_edit_id: Option<Uuid>,
+    pub asset_group_edit_name: String,
+    pub asset_group_error: Option<String>,
     /// Set while the user is about to drop a replacement file for a slot.
     pub asset_replace: Option<AssetReplaceTarget>,
     pub asset_upload: AssetUploadDraft,
@@ -401,6 +429,7 @@ impl ClientUi {
             base_url,
             login_username: String::new(),
             login_password: String::new(),
+            login_password_visible: false,
             login_error: None,
             logging_in: false,
             modal: Modal::None,
@@ -416,6 +445,10 @@ impl ClientUi {
             profile_img: String::new(),
             old_password: String::new(),
             new_password: String::new(),
+            confirm_password: String::new(),
+            old_password_visible: false,
+            new_password_visible: false,
+            confirm_password_visible: false,
             profile_message: None,
             ws: WsUi::default(),
             layer_order: vec!["OpenStreetMap", "Satelit"],
@@ -425,9 +458,16 @@ impl ClientUi {
             editor: EditorState::new(),
             assets: Vec::new(),
             asset_filter: None,
+            asset_group_filter: None,
             asset_search: String::new(),
             selected_asset: None,
             asset_edit_name: String::new(),
+            asset_edit_group_id: None,
+            asset_edit_move_mode: AssetMoveMode::None,
+            asset_group_new_name: String::new(),
+            asset_group_edit_id: None,
+            asset_group_edit_name: String::new(),
+            asset_group_error: None,
             asset_replace: None,
             asset_upload: AssetUploadDraft::default(),
             asset_sync: AssetSyncUi::default(),
@@ -515,6 +555,12 @@ impl ClientUi {
         self.assets.clear();
         self.selected_asset = None;
         self.asset_edit_name.clear();
+        self.asset_edit_group_id = None;
+        self.asset_group_filter = None;
+        self.asset_group_new_name.clear();
+        self.asset_group_edit_id = None;
+        self.asset_group_edit_name.clear();
+        self.asset_group_error = None;
         self.asset_replace = None;
         self.preview = PreviewUi::default();
         self.preview_wanted = std::array::from_fn(|_| None);
@@ -668,6 +714,7 @@ impl ClientUi {
                 match result {
                     Ok(_) => {
                         if let Some(session) = self.api.session() {
+                            self.login_password_visible = false;
                             self.enter_session(session);
                             self.toast("Login berhasil.", ToastKind::Success);
                         }
@@ -848,6 +895,10 @@ impl ClientUi {
                 Ok(_) => {
                     self.old_password.clear();
                     self.new_password.clear();
+                    self.confirm_password.clear();
+                    self.old_password_visible = false;
+                    self.new_password_visible = false;
+                    self.confirm_password_visible = false;
                     self.profile_message = Some((true, "Password diganti.".to_owned()));
                     self.toast("Password diganti.", ToastKind::Success);
                 }
@@ -909,6 +960,37 @@ impl ClientUi {
                     Err(error) => self.error(&error),
                 }
             }
+            JobKind::AssetGroups => {
+                match result.and_then(|response| response.list::<AssetGroup>()) {
+                    Ok((groups, _)) => self.data.asset_groups = groups,
+                    Err(error) => self.error(&error),
+                }
+            }
+            JobKind::AssetGroupSave => match result {
+                Ok(_) => {
+                    let editing = self.asset_group_edit_id.is_some();
+                    self.cancel_asset_group_edit();
+                    self.asset_group_new_name.clear();
+                    self.toast(
+                        if editing {
+                            "Kategori aset diperbarui."
+                        } else {
+                            "Kategori aset dibuat."
+                        },
+                        ToastKind::Success,
+                    );
+                    self.refresh_assets();
+                }
+                Err(error) => self.asset_group_error = Some(error.message),
+            },
+            JobKind::AssetGroupDelete => match result {
+                Ok(_) => {
+                    self.cancel_asset_group_edit();
+                    self.toast("Kategori aset dihapus.", ToastKind::Success);
+                    self.refresh_assets();
+                }
+                Err(error) => self.asset_group_error = Some(error.message),
+            },
             JobKind::AssetManifest => {
                 match result.and_then(|response| response.data::<AssetManifest>()) {
                     Ok(manifest) => {
@@ -950,6 +1032,8 @@ impl ClientUi {
                         let selected = asset.id;
                         self.asset_upload.reset();
                         self.asset_edit_name = asset.name.clone();
+                        self.asset_edit_group_id = asset.group_id;
+                        self.asset_edit_move_mode = asset.move_mode;
                         self.asset_replace = None;
                         self.assets.insert(0, asset);
                         self.selected_asset = Some(selected);
@@ -983,12 +1067,11 @@ impl ClientUi {
             JobKind::AssetRename => match result.and_then(|response| response.data::<Asset>()) {
                 Ok(asset) => {
                     self.asset_edit_name = asset.name.clone();
+                    self.asset_edit_group_id = asset.group_id;
+                    self.asset_edit_move_mode = asset.move_mode;
                     let name = asset.name.clone();
                     self.replace_asset(asset);
-                    self.toast(
-                        format!("Nama aset diubah menjadi '{name}'."),
-                        ToastKind::Success,
-                    );
+                    self.toast(format!("Aset '{name}' diperbarui."), ToastKind::Success);
                 }
                 Err(error) => self.error(&error),
             },
@@ -1032,9 +1115,74 @@ impl ClientUi {
     // ---------------------------------------------------------------- assets
 
     pub fn refresh_assets(&mut self) {
+        self.refresh_asset_groups();
         self.data.set_loading("assets", true);
         let handle = self.api.request(HttpMethod::Get, "/private/assets", None);
         self.track(JobKind::Assets, handle);
+    }
+
+    pub fn refresh_asset_groups(&mut self) {
+        let handle = self
+            .api
+            .request(HttpMethod::Get, "/private/asset-groups", None);
+        self.track(JobKind::AssetGroups, handle);
+    }
+
+    pub fn begin_asset_group_edit(&mut self, id: Uuid, name: &str) {
+        self.asset_group_edit_id = Some(id);
+        self.asset_group_edit_name = name.to_owned();
+        self.asset_group_error = None;
+    }
+
+    pub fn cancel_asset_group_edit(&mut self) {
+        self.asset_group_edit_id = None;
+        self.asset_group_edit_name.clear();
+        self.asset_group_error = None;
+    }
+
+    pub fn begin_asset_group_save(&mut self) {
+        if self.role() != Role::Admin {
+            self.asset_group_error =
+                Some("Hanya admin yang bisa membuat kategori aset.".to_owned());
+            return;
+        }
+        let (path, body) = if let Some(id) = self.asset_group_edit_id {
+            let name = self.asset_group_edit_name.trim().to_owned();
+            if name.is_empty() {
+                self.asset_group_error = Some("Nama kategori wajib diisi.".to_owned());
+                return;
+            }
+            (format!("/admin/asset-groups/{id}"), json!({ "name": name }))
+        } else {
+            let name = self.asset_group_new_name.trim().to_owned();
+            if name.is_empty() {
+                self.asset_group_error = Some("Nama kategori wajib diisi.".to_owned());
+                return;
+            }
+            ("/admin/asset-groups".to_owned(), json!({ "name": name }))
+        };
+        self.asset_group_error = None;
+        let method = if self.asset_group_edit_id.is_some() {
+            HttpMethod::Put
+        } else {
+            HttpMethod::Post
+        };
+        let handle = self.api.request(method, path, Some(body));
+        self.track(JobKind::AssetGroupSave, handle);
+    }
+
+    pub fn begin_asset_group_delete(&mut self, id: Uuid) {
+        if self.role() != Role::Admin {
+            self.asset_group_error =
+                Some("Hanya admin yang bisa menghapus kategori aset.".to_owned());
+            return;
+        }
+        let handle = self.api.request(
+            HttpMethod::Delete,
+            format!("/admin/asset-groups/{id}"),
+            None,
+        );
+        self.track(JobKind::AssetGroupDelete, handle);
     }
 
     /// Asks the server for the asset manifest and syncs the offline cache when
@@ -1179,12 +1327,10 @@ impl ClientUi {
             return;
         }
         self.selected_asset = Some(asset_id);
-        self.asset_edit_name = self
-            .assets
-            .iter()
-            .find(|asset| asset.id == asset_id)
-            .map(|asset| asset.name.clone())
-            .unwrap_or_default();
+        let asset = self.assets.iter().find(|asset| asset.id == asset_id);
+        self.asset_edit_name = asset.map(|asset| asset.name.clone()).unwrap_or_default();
+        self.asset_edit_group_id = asset.and_then(|asset| asset.group_id);
+        self.asset_edit_move_mode = asset.map(|asset| asset.move_mode).unwrap_or_default();
         self.asset_replace = None;
         self.preview = PreviewUi::default();
         self.preview_wanted = std::array::from_fn(|_| None);
@@ -1320,6 +1466,10 @@ impl ClientUi {
             ));
             return;
         }
+        let Some(group_id) = self.asset_upload.group_id else {
+            self.asset_upload.error = Some("Pilih kategori aset sebelum mengunggah.".to_owned());
+            return;
+        };
         let model_kind = self
             .asset_upload
             .category
@@ -1329,6 +1479,8 @@ impl ClientUi {
             &name,
             self.asset_upload.category,
             model_kind,
+            self.asset_upload.move_mode,
+            group_id,
             &self.asset_upload.files,
         ) {
             Ok(payload) => payload,
@@ -1383,10 +1535,23 @@ impl ClientUi {
             self.toast("Nama aset wajib diisi.", ToastKind::Error);
             return;
         }
+        let move_mode = self
+            .assets
+            .iter()
+            .find(|asset| asset.id == asset_id)
+            .and_then(|asset| {
+                (asset.category.is_model()
+                    && asset.model_kind_or_static() == AssetModelKind::Static)
+                    .then_some(self.asset_edit_move_mode)
+            });
         let handle = self.api.request(
             HttpMethod::Put,
             format!("/admin/assets/{asset_id}"),
-            Some(json!({ "name": name })),
+            Some(json!({
+                "name": name,
+                "group_id": self.asset_edit_group_id,
+                "move_mode": move_mode,
+            })),
         );
         self.track(JobKind::AssetRename, handle);
     }
@@ -1814,7 +1979,7 @@ impl ClientUi {
         } else if item == NavItem::Scenarios {
             self.refresh_operations();
             self.refresh_scenarios();
-        } else if item == NavItem::Assets {
+        } else if matches!(item, NavItem::Assets | NavItem::AssetGroups) {
             self.refresh_assets();
         } else if item == NavItem::Games {
             self.refresh_home();
@@ -1842,7 +2007,7 @@ impl ClientUi {
                 self.refresh_scenarios();
             }
             NavItem::Games => self.refresh_home(),
-            NavItem::Assets => self.refresh_assets(),
+            NavItem::Assets | NavItem::AssetGroups => self.refresh_assets(),
             NavItem::Users => self.refresh_users(),
             NavItem::Satkers => self.refresh_satkers(),
             NavItem::Online => self.refresh_online(),
@@ -2059,6 +2224,10 @@ impl ClientUi {
                     form.error = Some("Password minimal 8 karakter.".to_owned());
                     return;
                 }
+                if form.password != form.confirm_password {
+                    form.error = Some("Konfirmasi password tidak cocok.".to_owned());
+                    return;
+                }
                 let body = json!({
                     "name": form.name,
                     "username": form.username,
@@ -2116,6 +2285,11 @@ impl ClientUi {
             ));
             return;
         }
+        if self.new_password != self.confirm_password {
+            self.profile_message =
+                Some((false, "Konfirmasi password baru tidak cocok.".to_owned()));
+            return;
+        }
         let body = json!({
             "old_password": self.old_password,
             "new_password": self.new_password,
@@ -2162,6 +2336,9 @@ impl ClientUi {
             }
             ConfirmAction::DeleteAsset(id) => {
                 self.begin_asset_delete(id);
+            }
+            ConfirmAction::DeleteAssetGroup(id) => {
+                self.begin_asset_group_delete(id);
             }
             ConfirmAction::Logout => self.logout(),
         }
@@ -2272,12 +2449,18 @@ fn multipart_asset_body(
     name: &str,
     category: AssetCategory,
     model_kind: Option<AssetModelKind>,
+    move_mode: AssetMoveMode,
+    group_id: Uuid,
     files: &[PathBuf],
 ) -> Result<(String, Vec<u8>), String> {
     let boundary = format!("----twg{}", Uuid::new_v4().simple());
     let mut body = Vec::new();
     push_form_field(&mut body, &boundary, "name", name);
     push_form_field(&mut body, &boundary, "category", &category.to_string());
+    push_form_field(&mut body, &boundary, "group_id", &group_id.to_string());
+    if category.is_model() {
+        push_form_field(&mut body, &boundary, "move_mode", &move_mode.to_string());
+    }
     if let Some(kind) = model_kind {
         push_form_field(&mut body, &boundary, "model_kind", &kind.to_string());
     }

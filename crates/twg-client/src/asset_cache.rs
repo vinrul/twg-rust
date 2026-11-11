@@ -355,8 +355,8 @@ mod tests {
     use super::{AssetCache, asset_files, sha256_hex};
     use twg_contracts::Timestamp;
     use twg_contracts::assets::{
-        Asset, AssetCategory, AssetFile, AssetModelKind, AssetSource, AssetSourceSlot,
-        AssetVariant, AssetVariantKind,
+        Asset, AssetCategory, AssetFile, AssetModelKind, AssetMoveMode, AssetSource,
+        AssetSourceSlot, AssetVariant, AssetVariantKind,
     };
     use uuid::Uuid;
 
@@ -377,6 +377,9 @@ mod tests {
             name: "model".to_owned(),
             category: AssetCategory::Model,
             model_kind: Some(AssetModelKind::Static),
+            move_mode: AssetMoveMode::None,
+            group_id: None,
+            group_name: None,
             sources: vec![AssetSource {
                 slot: AssetSourceSlot::Static,
                 file: asset_file("original.glb", &format!("/assets/{id}/static/original.glb")),

@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::prelude::{Mat4, Quat, Vec3};
 use serde_json::Value;
 use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -11,8 +13,9 @@ use twg_contracts::geocode::GeocodeResult;
 use twg_contracts::map::{
     Building, BuildingCreateRequest, BuildingGeomUpdateRequest, BuildingUpdateRequest, Line,
     LineCreateRequest, LineGeomUpdateRequest, LineUpdateRequest, Marker, MarkerCreateRequest,
-    MarkerGeomRequest, MarkerNameRequest, MarkerScaleRequest, MarkerUnitRequest, TextMarker,
-    TextMarkerCreateRequest, TextMarkerGeomUpdateRequest, TextMarkerUpdateRequest,
+    MarkerGeomRequest, MarkerNameRequest, MarkerScaleRequest, MarkerUnitRequest, Particle,
+    ParticleCreateRequest, ParticleGeomUpdateRequest, ParticleKind, ParticleUpdateRequest,
+    TextMarker, TextMarkerCreateRequest, TextMarkerGeomUpdateRequest, TextMarkerUpdateRequest,
 };
 use twg_contracts::scenarios::Scenario;
 use twg_domain::{BaseLayer as DomainBaseLayer, MapMode};
@@ -28,7 +31,8 @@ use crate::state::{ClientUi, ToastKind};
 use super::model::MarkerAssetModel;
 use super::model::{
     BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, LineObject,
-    MarkerObject, ObjectKey, ObjectType, ParticleObject, TextObject, unit_for_uuid,
+    MarkerObject, ObjectKey, ObjectType, ParticleObject, ParticleSettings, TextObject,
+    unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +47,7 @@ pub enum EditorJobKind {
     CreateLine,
     CreateBuilding,
     CreateText,
+    CreateParticle,
     Update,
     Delete,
     Geocode,
@@ -136,7 +141,7 @@ impl ClientUi {
         let signature = self
             .assets
             .iter()
-            .map(|asset| (asset.id, asset.version))
+            .map(|asset| (asset.id, asset.version, asset.move_mode))
             .collect::<Vec<_>>();
         if signature == self.editor.marker_model_signature {
             return;
@@ -206,22 +211,29 @@ impl ClientUi {
                         None
                     };
                     // Normalise the model to a usable size from the glTF
-                    // POSITION bounds, so markers do not come out microscopic
-                    // or huge depending on the exporter's units.
-                    let base_scale = match model_height(&resolved_path) {
-                        Some(height) if height > 1.0e-3 => {
-                            super::model::ASSET_MARKER_HEIGHT / height
+                    // bounds, so markers do not come out microscopic or huge
+                    // depending on the exporter's units. The footprint radius
+                    // follows the same transform so movement collision matches
+                    // the rendered size.
+                    let bounds = model_bounds(&resolved_path);
+                    let base_scale = match bounds {
+                        Some(bounds) if bounds.height > 1.0e-3 => {
+                            super::model::ASSET_MARKER_HEIGHT / bounds.height
                         }
                         _ => 1.0,
                     };
+                    let footprint_radius =
+                        bounds.map(|bounds| bounds.footprint_radius).unwrap_or(0.0);
                     models.insert(
                         asset.id.to_string(),
                         MarkerAssetModel {
                             name: asset.name.clone(),
                             path,
                             base_scale,
+                            footprint_radius,
                             draco: source.has_draco,
                             animated,
+                            move_mode: asset.move_mode,
                             animation_path: animation.as_ref().map(|(path, _)| path.clone()),
                             animation_draco: animation.is_some_and(|(_, draco)| draco),
                         },
@@ -577,6 +589,11 @@ impl ClientUi {
                     response.data::<TextMarker>().map(|text| text.id)
                 });
             }
+            EditorJobKind::CreateParticle => {
+                self.create_done(key, result, |response| {
+                    response.data::<Particle>().map(|particle| particle.id)
+                });
+            }
             EditorJobKind::UploadTexture => {
                 let source = key.and_then(|key| self.editor.pending_texture_uploads.remove(&key));
                 match result.and_then(|response| response.data::<String>()) {
@@ -778,10 +795,12 @@ impl ClientUi {
     }
 }
 
-/// Height (meters) of the meshes in a glTF/GLB file, read from the POSITION
-/// accessor bounds. Only the JSON chunk of a GLB is read.
+/// Bounds of the meshes in a glTF/GLB file, measured after applying the node
+/// hierarchy. Height is used to normalise marker size; the footprint radius is
+/// the half diagonal of the XZ bounds and feeds Play obstacle avoidance. Only
+/// the JSON chunk of a GLB is read.
 #[cfg(not(target_arch = "wasm32"))]
-fn model_height(path: &Path) -> Option<f32> {
+fn model_bounds(path: &Path) -> Option<ModelBounds> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(path).ok()?;
@@ -807,8 +826,83 @@ fn model_height(path: &Path) -> Option<f32> {
     let value: serde_json::Value = serde_json::from_slice(&json).ok()?;
     let accessors = value.get("accessors")?.as_array()?;
     let meshes = value.get("meshes")?.as_array()?;
-    let mut min = f32::INFINITY;
-    let mut max = f32::NEG_INFINITY;
+
+    // Accessor bounds are in mesh-local space. Exported models often carry a
+    // node scale (for example 100x) and a rotation, so the real-world height
+    // must be measured after applying the node hierarchy.
+    if let Some(nodes) = value.get("nodes").and_then(Value::as_array) {
+        let mut parents = vec![None; nodes.len()];
+        for (index, node) in nodes.iter().enumerate() {
+            let Some(children) = node.get("children").and_then(Value::as_array) else {
+                continue;
+            };
+            for child in children {
+                if let Some(child) = child.as_u64().map(|value| value as usize)
+                    && child < parents.len()
+                {
+                    parents[child] = Some(index);
+                }
+            }
+        }
+        let mut cache = vec![None; nodes.len()];
+        let mut visiting = vec![false; nodes.len()];
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for (index, node) in nodes.iter().enumerate() {
+            let Some(mesh) = node
+                .get("mesh")
+                .and_then(Value::as_u64)
+                .and_then(|mesh| meshes.get(mesh as usize))
+            else {
+                continue;
+            };
+            let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
+                continue;
+            };
+            let world = node_world(index, nodes, &parents, &mut cache, &mut visiting);
+            for primitive in primitives {
+                let Some(accessor) = primitive
+                    .pointer("/attributes/POSITION")
+                    .and_then(Value::as_u64)
+                    .and_then(|index| accessors.get(index as usize))
+                else {
+                    continue;
+                };
+                let Some(low) = accessor.get("min").and_then(Value::as_array) else {
+                    continue;
+                };
+                let Some(high) = accessor.get("max").and_then(Value::as_array) else {
+                    continue;
+                };
+                let (Some(lx), Some(ly), Some(lz)) = (coord(low, 0), coord(low, 1), coord(low, 2))
+                else {
+                    continue;
+                };
+                let (Some(hx), Some(hy), Some(hz)) =
+                    (coord(high, 0), coord(high, 1), coord(high, 2))
+                else {
+                    continue;
+                };
+                for x in [lx, hx] {
+                    for y in [ly, hy] {
+                        for z in [lz, hz] {
+                            let point =
+                                world.transform_point3(Vec3::new(x as f32, y as f32, z as f32));
+                            min = min.min(point);
+                            max = max.max(point);
+                        }
+                    }
+                }
+            }
+        }
+        if min.is_finite() && max.is_finite() && max.y > min.y {
+            return Some(ModelBounds::from_extents(min, max));
+        }
+    }
+
+    // Fallback for files without node transforms.
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
     for mesh in meshes {
         let Some(primitives) = mesh.get("primitives").and_then(|value| value.as_array()) else {
             continue;
@@ -823,25 +917,124 @@ fn model_height(path: &Path) -> Option<f32> {
             let Some(accessor) = accessors.get(index as usize) else {
                 continue;
             };
-            let Some(low) = accessor
-                .get("min")
-                .and_then(|value| value.get(1))
-                .and_then(|value| value.as_f64())
+            let Some(low) = accessor.get("min").and_then(Value::as_array) else {
+                continue;
+            };
+            let Some(high) = accessor.get("max").and_then(Value::as_array) else {
+                continue;
+            };
+            let (Some(lx), Some(ly), Some(lz)) = (coord(low, 0), coord(low, 1), coord(low, 2))
             else {
                 continue;
             };
-            let Some(high) = accessor
-                .get("max")
-                .and_then(|value| value.get(1))
-                .and_then(|value| value.as_f64())
+            let (Some(hx), Some(hy), Some(hz)) = (coord(high, 0), coord(high, 1), coord(high, 2))
             else {
                 continue;
             };
-            min = min.min(low as f32);
-            max = max.max(high as f32);
+            min = min.min(Vec3::new(lx as f32, ly as f32, lz as f32));
+            max = max.max(Vec3::new(hx as f32, hy as f32, hz as f32));
         }
     }
-    (min.is_finite() && max.is_finite() && max > min).then_some(max - min)
+    (min.is_finite() && max.is_finite() && max.y > min.y)
+        .then(|| ModelBounds::from_extents(min, max))
+}
+
+/// Size of a model in its own (transformed) units.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug)]
+struct ModelBounds {
+    height: f32,
+    /// Half of the XZ diagonal, used as a conservative ground footprint.
+    footprint_radius: f32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ModelBounds {
+    fn from_extents(min: Vec3, max: Vec3) -> Self {
+        Self {
+            height: max.y - min.y,
+            footprint_radius: 0.5 * (max.x - min.x).hypot(max.z - min.z),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn coord(values: &[Value], index: usize) -> Option<f64> {
+    values.get(index).and_then(Value::as_f64)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn node_local_matrix(node: &Value) -> Mat4 {
+    if let Some(matrix) = node.get("matrix").and_then(Value::as_array)
+        && matrix.len() == 16
+    {
+        let mut values = [0.0f32; 16];
+        for (slot, value) in values.iter_mut().zip(matrix) {
+            *slot = value.as_f64().unwrap_or(0.0) as f32;
+        }
+        return Mat4::from_cols_array(&values);
+    }
+    let translation = node
+        .get("translation")
+        .and_then(Value::as_array)
+        .and_then(|values| vector3(values.as_slice()))
+        .map(Vec3::from_array)
+        .unwrap_or(Vec3::ZERO);
+    let rotation = node
+        .get("rotation")
+        .and_then(Value::as_array)
+        .and_then(|values| {
+            Some([
+                coord(values, 0)? as f32,
+                coord(values, 1)? as f32,
+                coord(values, 2)? as f32,
+                coord(values, 3)? as f32,
+            ])
+        })
+        .map(|[x, y, z, w]| Quat::from_xyzw(x, y, z, w))
+        .unwrap_or(Quat::IDENTITY);
+    let scale = node
+        .get("scale")
+        .and_then(Value::as_array)
+        .and_then(|values| vector3(values.as_slice()))
+        .map(Vec3::from_array)
+        .unwrap_or(Vec3::ONE);
+    Mat4::from_scale_rotation_translation(scale, rotation, translation)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn vector3(values: &[Value]) -> Option<[f32; 3]> {
+    Some([
+        coord(values, 0)? as f32,
+        coord(values, 1)? as f32,
+        coord(values, 2)? as f32,
+    ])
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn node_world(
+    index: usize,
+    nodes: &[Value],
+    parents: &[Option<usize>],
+    cache: &mut [Option<Mat4>],
+    visiting: &mut [bool],
+) -> Mat4 {
+    if let Some(matrix) = cache[index] {
+        return matrix;
+    }
+    // Malformed files could contain a cycle; refuse to recurse forever.
+    if visiting[index] {
+        return Mat4::IDENTITY;
+    }
+    visiting[index] = true;
+    let local = node_local_matrix(&nodes[index]);
+    let world = match parents[index] {
+        Some(parent) => node_world(parent, nodes, parents, cache, visiting) * local,
+        None => local,
+    };
+    visiting[index] = false;
+    cache[index] = Some(world);
+    world
 }
 
 fn marker_object(marker: Marker) -> EditorObject {
@@ -868,6 +1061,7 @@ fn marker_object(marker: Marker) -> EditorObject {
             jumlah: marker.jumlah,
             kategori: marker.kategori,
             keterangan: marker.keterangan,
+            obstacle: marker.obstacle,
         }),
     }
 }
@@ -893,7 +1087,7 @@ fn line_object(line: Line) -> EditorObject {
 fn building_object(building: Building) -> EditorObject {
     let points = parse_geom(&building.geom);
     let meta = shape_meta(&building.keterangan);
-    let (shape, center, rotation, scale, texture, use_texture, keterangan) = match meta {
+    let (shape, center, rotation, scale, texture, use_texture, keterangan, obstacle) = match meta {
         Some(meta) => {
             let center = meta
                 .lon
@@ -909,6 +1103,7 @@ fn building_object(building: Building) -> EditorObject {
                 meta.texture,
                 meta.use_texture,
                 meta.note,
+                meta.obstacle,
             )
         }
         None => (
@@ -919,6 +1114,7 @@ fn building_object(building: Building) -> EditorObject {
             None,
             false,
             building.keterangan,
+            true,
         ),
     };
     EditorObject {
@@ -944,6 +1140,7 @@ fn building_object(building: Building) -> EditorObject {
             points,
             height: building.height,
             keterangan,
+            obstacle,
         }),
     }
 }
@@ -958,6 +1155,7 @@ struct ShapeMeta {
     texture: Option<String>,
     use_texture: bool,
     note: String,
+    obstacle: bool,
 }
 
 fn shape_meta(keterangan: &str) -> Option<ShapeMeta> {
@@ -985,6 +1183,10 @@ fn shape_meta(keterangan: &str) -> Option<ShapeMeta> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
+        obstacle: value
+            .get("obstacle")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
     })
 }
 
@@ -1022,6 +1224,7 @@ fn building_meta_json(building: &BuildingObject) -> String {
         "texture": building.texture,
         "use_texture": building.use_texture,
         "note": building.keterangan,
+        "obstacle": building.obstacle,
     })
     .to_string()
 }
@@ -1070,9 +1273,9 @@ fn particle_object(particle: twg_contracts::map::Particle) -> EditorObject {
         kind: EditorKind::Particle(ParticleObject {
             lon: particle.pos_x,
             lat: particle.pos_y,
-            tipe: particle.tipe,
-            data: particle.data,
-            is_spawn: particle.is_spawn,
+            altitude: particle.altitude,
+            kind: ParticleKind::from_key(&particle.tipe),
+            settings: ParticleSettings::from_json(&particle.data),
         }),
     }
 }
@@ -1153,6 +1356,7 @@ fn create_request(
                 pos_x: marker.lon,
                 pos_y: marker.lat,
                 jumlah: marker.jumlah,
+                obstacle: marker.obstacle,
                 keterangan: marker.keterangan.clone(),
             })
             .ok()?,
@@ -1199,13 +1403,27 @@ fn create_request(
             })
             .ok()?,
         ),
-        EditorKind::Particle(_) => return None,
+        EditorKind::Particle(particle) => (
+            EditorJobKind::CreateParticle,
+            serde_json::to_value(ParticleCreateRequest {
+                operasi_id: operation_id.to_string(),
+                skenario_id: scenario_id.to_string(),
+                name: object.name.clone(),
+                tipe: particle.kind.key().to_owned(),
+                data: particle.settings.to_json(),
+                pos_x: particle.lon,
+                pos_y: particle.lat,
+                altitude: particle.altitude,
+            })
+            .ok()?,
+        ),
     };
     let path = match kind {
         EditorJobKind::CreateMarker => "/private/markers",
         EditorJobKind::CreateLine => "/private/lines",
         EditorJobKind::CreateBuilding => "/private/buildings",
         EditorJobKind::CreateText => "/private/text-markers",
+        EditorJobKind::CreateParticle => "/private/particles",
         _ => return None,
     };
     Some(EditorRequest {
@@ -1308,6 +1526,16 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                 })
                 .ok(),
             });
+            requests.push(EditorRequest {
+                kind: EditorJobKind::Update,
+                key: Some(object.key),
+                method: HttpMethod::Put,
+                path: format!("/private/markers/obstacle/{id}"),
+                body: serde_json::to_value(twg_contracts::map::MarkerObstacleRequest {
+                    obstacle: marker.obstacle,
+                })
+                .ok(),
+            });
         }
         EditorKind::Line(line) => {
             requests.push(EditorRequest {
@@ -1387,7 +1615,32 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                 .ok(),
             });
         }
-        EditorKind::Particle(_) => return None,
+        EditorKind::Particle(particle) => {
+            requests.push(EditorRequest {
+                kind: EditorJobKind::Update,
+                key: Some(object.key),
+                method: HttpMethod::Put,
+                path: format!("/private/particles/{id}"),
+                body: serde_json::to_value(ParticleUpdateRequest {
+                    name: object.name.clone(),
+                    tipe: particle.kind.key().to_owned(),
+                    data: particle.settings.to_json(),
+                })
+                .ok(),
+            });
+            requests.push(EditorRequest {
+                kind: EditorJobKind::Update,
+                key: Some(object.key),
+                method: HttpMethod::Put,
+                path: format!("/private/particles/geom/{id}"),
+                body: serde_json::to_value(ParticleGeomUpdateRequest {
+                    pos_x: particle.lon,
+                    pos_y: particle.lat,
+                    altitude: particle.altitude,
+                })
+                .ok(),
+            });
+        }
     }
     Some(requests)
 }
@@ -1406,7 +1659,7 @@ fn delete_path(kind: ObjectType, id: Uuid) -> String {
         ObjectType::Line => format!("/private/lines/{id}"),
         ObjectType::Building => format!("/private/buildings/{id}"),
         ObjectType::Text => format!("/private/text-markers/{id}"),
-        ObjectType::Particle => String::new(),
+        ObjectType::Particle => format!("/private/particles/{id}"),
     }
 }
 
@@ -1443,8 +1696,46 @@ mod tests {
     #[test]
     fn reads_the_height_of_a_cached_glb() {
         let path = Path::new("../../assets/models/polwan_airud_idle_lod2.glb");
-        let height = model_height(path).expect("GLB height");
-        assert!(height > 0.01 && height < 100_000.0, "height {height}");
+        let bounds = model_bounds(path).expect("GLB bounds");
+        assert!(
+            bounds.height > 0.01 && bounds.height < 100_000.0,
+            "height {}",
+            bounds.height
+        );
+        assert!(bounds.footprint_radius > 0.0);
+    }
+
+    #[test]
+    fn node_scale_and_rotation_are_applied_to_the_height() {
+        let json = br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5126,"count":8,"type":"VEC3","min":[-0.5,-0.5,0],"max":[0.5,0.5,0.25]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"nodes":[{"mesh":0,"rotation":[-0.70710678,0,0,0.70710678],"scale":[100,100,100]}],"scenes":[{"nodes":[0]}]}"#;
+        let mut padded = json.to_vec();
+        while !padded.len().is_multiple_of(4) {
+            padded.push(b' ');
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"glTF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&((12 + 8 + padded.len()) as u32).to_le_bytes());
+        bytes.extend_from_slice(&(padded.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+        bytes.extend_from_slice(&padded);
+
+        let path = std::env::temp_dir().join("twg-model-height-test.glb");
+        std::fs::write(&path, bytes).expect("write test GLB");
+        let bounds = model_bounds(&path).expect("GLB bounds");
+        let _ = std::fs::remove_file(&path);
+        // Local Z (0.25) maps to world Y after the -90 degree X rotation, then
+        // the node scale of 100 applies. X and Z each span one unit at 100x.
+        assert!(
+            (bounds.height - 25.0).abs() < 0.01,
+            "height {}",
+            bounds.height
+        );
+        assert!(
+            (bounds.footprint_radius - 70.710_68).abs() < 0.01,
+            "footprint {}",
+            bounds.footprint_radius
+        );
     }
 
     #[test]
@@ -1471,6 +1762,7 @@ mod tests {
         building.use_texture = true;
         building.texture = Some("asset-id".to_owned());
         building.keterangan = "catatan".to_owned();
+        building.obstacle = false;
 
         let meta = shape_meta(&building_meta_json(&building)).expect("shape metadata");
 
@@ -1480,6 +1772,10 @@ mod tests {
         assert_eq!(meta.texture.as_deref(), Some("asset-id"));
         assert!(meta.use_texture);
         assert_eq!(meta.note, "catatan");
+        assert!(!meta.obstacle);
+        // Legacy metadata without the field stays an obstacle.
+        let legacy = shape_meta(r#"{"shape":"box","note":"lama"}"#).expect("legacy meta");
+        assert!(legacy.obstacle);
         let geom = building_geom_json(&building);
         assert!(geom.starts_with("[[") && geom.ends_with("]]"));
     }

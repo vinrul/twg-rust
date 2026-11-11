@@ -9,7 +9,7 @@ use thiserror::Error;
 use twg_contracts::alurs::Alur;
 use twg_contracts::animations::Animation;
 use twg_contracts::categories::Category;
-use twg_contracts::map::{Building, Line, Marker, TextMarker};
+use twg_contracts::map::{Building, Line, Marker, Particle, TextMarker};
 use twg_contracts::operations::Operation;
 use twg_contracts::satkers::Satker;
 use twg_contracts::scenarios::Scenario;
@@ -443,7 +443,8 @@ impl WriteStore {
 
         let markers = sqlx::query_as::<_, CopyMarkerRow>(
             "SELECT id, unit_id, name, jumlah, rot_x, rot_y, rot_z, pos_x, pos_y,
-                    keterangan, kategori, is_spawn, shoot, scale, scale_y, scale_z, altitude
+                    keterangan, kategori, is_spawn, shoot, scale, scale_y, scale_z, altitude,
+                    obstacle
              FROM markers WHERE skenario_id = $1 ORDER BY created_at DESC",
         )
         .bind(source_id)
@@ -459,9 +460,9 @@ impl WriteStore {
                 "INSERT INTO markers (
                      name, operasi_id, skenario_id, unit_id, jumlah, rot_x, rot_y, rot_z,
                      pos_x, pos_y, keterangan, kategori, scale, is_spawn, shoot, scale_y,
-                     scale_z, altitude
+                     scale_z, altitude, obstacle
                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                           $14, $15, $16, $17, $18)
+                           $14, $15, $16, $17, $18, $19)
                  RETURNING id",
             )
             .bind(&marker.name)
@@ -482,6 +483,7 @@ impl WriteStore {
             .bind(marker.scale_y)
             .bind(marker.scale_z)
             .bind(marker.altitude)
+            .bind(marker.obstacle)
             .fetch_one(&mut *transaction)
             .await?;
             replacements.insert(marker.id.to_string(), marker_id.to_string());
@@ -562,7 +564,7 @@ impl WriteStore {
         }
 
         let particles = sqlx::query_as::<_, CopyParticleRow>(
-            "SELECT id, name, pos_x, pos_y, data, is_spawn, tipe
+            "SELECT id, name, pos_x, pos_y, data, is_spawn, tipe, altitude
              FROM particles WHERE skenario_id = $1 ORDER BY created_at DESC",
         )
         .bind(source_id)
@@ -570,8 +572,8 @@ impl WriteStore {
         .await?;
         for particle in &particles {
             let particle_id = sqlx::query_scalar::<_, Uuid>(
-                "INSERT INTO particles (name, operasi_id, skenario_id, pos_x, pos_y, data, is_spawn, tipe)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                "INSERT INTO particles (name, operasi_id, skenario_id, pos_x, pos_y, data, is_spawn, tipe, altitude)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                  RETURNING id",
             )
             .bind(&particle.name)
@@ -582,6 +584,7 @@ impl WriteStore {
             .bind(&particle.data)
             .bind(particle.is_spawn)
             .bind(&particle.tipe)
+            .bind(particle.altitude)
             .fetch_one(&mut *transaction)
             .await?;
             replacements.insert(particle.id.to_string(), particle_id.to_string());
@@ -880,15 +883,16 @@ impl WriteStore {
         pos_x: f64,
         pos_y: f64,
         jumlah: i32,
+        obstacle: bool,
         keterangan: &str,
     ) -> Result<Marker, WriteError> {
         let row = sqlx::query_as::<_, MarkerRow>(
             "INSERT INTO markers (
                  name, operasi_id, skenario_id, unit_id, jumlah, rot_x, rot_y, rot_z,
-                 pos_x, pos_y, keterangan, kategori
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 pos_x, pos_y, keterangan, kategori, obstacle
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(name)
@@ -903,6 +907,7 @@ impl WriteStore {
         .bind(pos_y)
         .bind(keterangan)
         .bind(kategori)
+        .bind(obstacle)
         .fetch_one(&self.pool)
         .await
         .map_err(|error| map_write_error(error, "marker already exists"))?;
@@ -924,7 +929,7 @@ impl WriteStore {
              SET pos_x = $2, pos_y = $3, rot_x = $4, rot_y = $5, rot_z = $6, updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(id)
@@ -952,7 +957,7 @@ impl WriteStore {
              SET name = $2, jumlah = $3, keterangan = $4, updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(id)
@@ -966,13 +971,35 @@ impl WriteStore {
         Ok(row.into_contract(&context))
     }
 
+    pub async fn update_marker_obstacle(
+        &self,
+        id: Uuid,
+        obstacle: bool,
+    ) -> Result<Marker, WriteError> {
+        let row = sqlx::query_as::<_, MarkerRow>(
+            "UPDATE markers
+             SET obstacle = $2, updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
+                       keterangan, shoot, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(obstacle)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(WriteError::NotFound("marker not found"))?;
+        let context = self.context(row.skenario_id).await?;
+        Ok(row.into_contract(&context))
+    }
+
     pub async fn update_marker_unit(&self, id: Uuid, unit_id: Uuid) -> Result<Marker, WriteError> {
         let row = sqlx::query_as::<_, MarkerRow>(
             "UPDATE markers
              SET unit_id = $2, updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(id)
@@ -996,7 +1023,7 @@ impl WriteStore {
              SET scale = $2, scale_y = $3, scale_z = $4, updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(id)
@@ -1020,7 +1047,7 @@ impl WriteStore {
              SET altitude = $2, updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(id)
@@ -1044,7 +1071,7 @@ impl WriteStore {
              SET rot_z = $2, rot_x = $3, rot_y = $4, updated_at = NOW()
              WHERE id = $1
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(id)
@@ -1066,7 +1093,8 @@ impl WriteStore {
     ) -> Result<Marker, WriteError> {
         let source = sqlx::query_as::<_, MarkerCopyRow>(
             "SELECT operasi_id, skenario_id, unit_id, name, jumlah, rot_x, rot_y, rot_z,
-                    keterangan, kategori, scale, is_spawn, shoot, scale_y, scale_z, altitude
+                    keterangan, kategori, scale, is_spawn, shoot, scale_y, scale_z, altitude,
+                    obstacle
              FROM markers WHERE id = $1",
         )
         .bind(id)
@@ -1077,11 +1105,11 @@ impl WriteStore {
             "INSERT INTO markers (
                  name, operasi_id, skenario_id, unit_id, jumlah, rot_x, rot_y, rot_z,
                  pos_x, pos_y, keterangan, kategori, scale, is_spawn, shoot, scale_y,
-                 scale_z, altitude
+                 scale_z, altitude, obstacle
              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                       $16, $17, $18)
+                       $16, $17, $18, $19)
              RETURNING id, skenario_id, name, unit_id, kategori, jumlah, rot_x, rot_y,
-                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn,
+                       rot_z, pos_x, pos_y, scale, scale_y, scale_z, altitude, is_spawn, obstacle,
                        keterangan, shoot, created_at, updated_at",
         )
         .bind(&source.name)
@@ -1102,6 +1130,7 @@ impl WriteStore {
         .bind(source.scale_y)
         .bind(source.scale_z)
         .bind(source.altitude)
+        .bind(source.obstacle)
         .fetch_one(&self.pool)
         .await?;
         let context = self.context(row.skenario_id).await?;
@@ -1399,6 +1428,88 @@ impl WriteStore {
     }
 
     // ---------------------------------------------------------------- particles
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_particle(
+        &self,
+        operasi_id: Uuid,
+        skenario_id: Uuid,
+        name: &str,
+        tipe: &str,
+        data: &str,
+        pos_x: f64,
+        pos_y: f64,
+        altitude: f64,
+    ) -> Result<Particle, WriteError> {
+        let row = sqlx::query_as::<_, ParticleRow>(
+            "INSERT INTO particles (
+                 operasi_id, skenario_id, name, tipe, data, pos_x, pos_y, altitude, is_spawn
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)
+             RETURNING id, skenario_id, tipe, name, data, pos_x, pos_y, altitude, is_spawn,
+                       created_at, updated_at",
+        )
+        .bind(operasi_id)
+        .bind(skenario_id)
+        .bind(name)
+        .bind(tipe)
+        .bind(data)
+        .bind(pos_x)
+        .bind(pos_y)
+        .bind(altitude)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| map_write_error(error, "particle already exists"))?;
+        let context = self.context(row.skenario_id).await?;
+        Ok(row.into_contract(&context))
+    }
+
+    pub async fn update_particle(
+        &self,
+        id: Uuid,
+        name: &str,
+        tipe: &str,
+        data: &str,
+    ) -> Result<Particle, WriteError> {
+        let row = sqlx::query_as::<_, ParticleRow>(
+            "UPDATE particles SET name = $2, tipe = $3, data = $4, updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, skenario_id, tipe, name, data, pos_x, pos_y, altitude, is_spawn,
+                       created_at, updated_at",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(tipe)
+        .bind(data)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(WriteError::NotFound("particle not found"))?;
+        let context = self.context(row.skenario_id).await?;
+        Ok(row.into_contract(&context))
+    }
+
+    pub async fn update_particle_geom(
+        &self,
+        id: Uuid,
+        pos_x: f64,
+        pos_y: f64,
+        altitude: f64,
+    ) -> Result<Particle, WriteError> {
+        let row = sqlx::query_as::<_, ParticleRow>(
+            "UPDATE particles SET pos_x = $2, pos_y = $3, altitude = $4, updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, skenario_id, tipe, name, data, pos_x, pos_y, altitude, is_spawn,
+                       created_at, updated_at",
+        )
+        .bind(id)
+        .bind(pos_x)
+        .bind(pos_y)
+        .bind(altitude)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(WriteError::NotFound("particle not found"))?;
+        let context = self.context(row.skenario_id).await?;
+        Ok(row.into_contract(&context))
+    }
 
     pub async fn delete_particle(&self, id: Uuid) -> Result<(), WriteError> {
         let result = sqlx::query("DELETE FROM particles WHERE id = $1")
@@ -2181,7 +2292,8 @@ impl WriteStore {
         let particle = sqlx::query_as::<_, ParticleRow>(
             "INSERT INTO particles (tipe, operasi_id, skenario_id, name, data, pos_x, pos_y, is_spawn)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             RETURNING id, skenario_id, tipe, name, data, pos_x, pos_y, is_spawn",
+             RETURNING id, skenario_id, tipe, name, data, pos_x, pos_y, altitude, is_spawn,
+                       created_at, updated_at",
         )
         .bind(tipe)
         .bind(operasi_id)
@@ -2826,6 +2938,7 @@ struct MarkerRow {
     scale_z: Option<f64>,
     altitude: Option<f64>,
     is_spawn: Option<i32>,
+    obstacle: Option<bool>,
     keterangan: Option<String>,
     shoot: Option<String>,
     created_at: Option<NaiveDateTime>,
@@ -2855,6 +2968,7 @@ impl MarkerRow {
             scale_z,
             altitude: self.altitude.unwrap_or(0.0),
             is_spawn: self.is_spawn.unwrap_or(0),
+            obstacle: self.obstacle.unwrap_or(true),
             keterangan: self.keterangan.unwrap_or_default(),
             shoot: self.shoot.unwrap_or_default(),
             created_at: wita(self.created_at),
@@ -2881,6 +2995,7 @@ struct MarkerCopyRow {
     scale_y: Option<f64>,
     scale_z: Option<f64>,
     altitude: Option<f64>,
+    obstacle: Option<bool>,
 }
 
 #[derive(Debug, FromRow)]
@@ -3080,6 +3195,7 @@ struct CopyMarkerRow {
     scale_y: Option<f64>,
     scale_z: Option<f64>,
     altitude: Option<f64>,
+    obstacle: Option<bool>,
 }
 
 #[derive(Debug, FromRow)]
@@ -3121,6 +3237,7 @@ struct CopyParticleRow {
     data: Option<String>,
     is_spawn: Option<i32>,
     tipe: Option<String>,
+    altitude: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -3434,17 +3551,35 @@ struct MarkerShootRow {
 #[derive(Debug, FromRow)]
 struct ParticleRow {
     id: Uuid,
-    #[allow(dead_code)]
     skenario_id: Uuid,
     tipe: Option<String>,
-    #[allow(dead_code)]
     name: Option<String>,
-    #[allow(dead_code)]
     data: Option<String>,
     pos_x: Option<f64>,
     pos_y: Option<f64>,
-    #[allow(dead_code)]
+    altitude: Option<f64>,
     is_spawn: Option<i32>,
+    created_at: Option<NaiveDateTime>,
+    updated_at: Option<NaiveDateTime>,
+}
+
+impl ParticleRow {
+    fn into_contract(self, context: &ScenarioContext) -> Particle {
+        Particle {
+            id: self.id,
+            name: self.name.unwrap_or_default(),
+            operasi: context.operation.clone(),
+            skenario: context.scenario.clone(),
+            tipe: self.tipe.unwrap_or_default(),
+            data: self.data.unwrap_or_default(),
+            pos_x: self.pos_x.unwrap_or(0.0),
+            pos_y: self.pos_y.unwrap_or(0.0),
+            altitude: self.altitude.unwrap_or(0.0),
+            is_spawn: self.is_spawn.unwrap_or(0),
+            created_at: wita(self.created_at),
+            updated_at: wita(self.updated_at),
+        }
+    }
 }
 
 #[derive(Debug, FromRow)]

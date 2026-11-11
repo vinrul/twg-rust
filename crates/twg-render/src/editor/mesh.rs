@@ -385,6 +385,34 @@ pub fn grid_mesh(spacing: f32, extent: f32, height: f32) -> Mesh {
     mesh
 }
 
+/// Unit quad on the XY plane centred at the origin and facing +Z. Particle
+/// elements are billboarded by copying the camera rotation onto this mesh.
+pub fn billboard_quad_mesh() -> Mesh {
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        VertexAttributeValues::Float32x3(vec![
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ]),
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_NORMAL,
+        VertexAttributeValues::Float32x3(vec![[0.0, 0.0, 1.0]; 4]),
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_UV_0,
+        VertexAttributeValues::Float32x2(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+    );
+    mesh.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
+    mesh
+}
+
 /// Flat annulus in the XZ plane, used by the rotation gizmo. Triangles render
 /// with the standard material pipeline, unlike line-list meshes.
 pub fn ring_mesh(radius_outer: f32, radius_inner: f32, segments: u32) -> Mesh {
@@ -434,13 +462,6 @@ pub fn cone_mesh(radius: f32, height: f32) -> Mesh {
     Cone::new(radius, height).mesh().build()
 }
 
-pub fn sphere_mesh(radius: f32) -> Mesh {
-    Sphere::new(radius)
-        .mesh()
-        .ico(2)
-        .unwrap_or_else(|_| Sphere::new(radius).mesh().build())
-}
-
 /// Unit primitive meshes for editor shape objects. All are anchored at the
 /// centre of their footprint on the ground plane (y = 0), so scale and
 /// rotation happen around the object's placement point.
@@ -475,6 +496,23 @@ pub fn shape_ground_mesh() -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn particle_quad_faces_positive_z() {
+        let mesh = billboard_quad_mesh();
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("particle quad has no position attribute");
+        };
+        let Some(Indices::U32(indices)) = mesh.indices() else {
+            panic!("particle quad has no u32 indices");
+        };
+        let [a, b, c] = [indices[0], indices[1], indices[2]].map(|index| index as usize);
+        let ab = Vec3::from(positions[b]) - Vec3::from(positions[a]);
+        let ac = Vec3::from(positions[c]) - Vec3::from(positions[a]);
+        assert!(ab.cross(ac).z > 0.0, "particle quad must face +Z");
+    }
 
     #[test]
     fn quad_faces_up_so_it_is_not_backface_culled() {

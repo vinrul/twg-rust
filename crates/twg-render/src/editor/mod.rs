@@ -5,8 +5,8 @@ use bevy::prelude::*;
 
 pub use scene::{
     EditorGizmo, EditorGizmoAxis, EditorGizmoMode, EditorGrid, EditorMode, EditorModelShading,
-    EditorPlayFrame, EditorPlayModel, EditorPlayUnit, EditorScene, EditorSceneKind,
-    EditorSceneObject, EditorShapeKind,
+    EditorParticleKind, EditorParticleSettings, EditorPlayFrame, EditorPlayModel, EditorPlayUnit,
+    EditorScene, EditorSceneKind, EditorSceneObject, EditorShapeKind,
 };
 
 /// Renders the editor scene graph on the tactical map.
@@ -25,8 +25,10 @@ impl Plugin for EditorRenderPlugin {
                 Update,
                 (
                     scene::sync_editor_scene,
+                    scene::tag_gizmo_parts,
                     scene::sync_editor_play_scenes,
                     scene::apply_editor_play_frame,
+                    scene::follow_play_gizmo,
                     scene::sync_editor_play_animations,
                     scene::update_gizmo_scale,
                     scene::normalize_marker_meshes,
@@ -34,6 +36,12 @@ impl Plugin for EditorRenderPlugin {
                 )
                     .chain()
                     .before(crate::map::MapUpdateSet),
+            )
+            // Particle billboards need the camera pose updated by the map set
+            // in the same frame, so they run after it.
+            .add_systems(
+                Update,
+                scene::animate_particle_effects.after(crate::map::MapUpdateSet),
             );
     }
 }

@@ -104,6 +104,73 @@ async fn apply_compat_columns(pool: &PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     }
+    let particles: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public.particles')::text")
+            .fetch_one(pool)
+            .await?;
+    if particles.is_some() {
+        sqlx::query(
+            "ALTER TABLE particles
+             ADD COLUMN IF NOT EXISTS altitude DOUBLE PRECISION NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await?;
+    }
+    let assets: Option<String> = sqlx::query_scalar("SELECT to_regclass('public.assets')::text")
+        .fetch_one(pool)
+        .await?;
+    if assets.is_some() {
+        let asset_groups_existed: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('public.asset_groups')::text")
+                .fetch_one(pool)
+                .await?;
+        if asset_groups_existed.is_none() {
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS asset_groups (
+                     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                     name VARCHAR(120) NOT NULL UNIQUE,
+                     created_at TIMESTAMP DEFAULT NOW(),
+                     updated_at TIMESTAMP DEFAULT NOW()
+                 )",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO asset_groups (name) VALUES
+                     ('Personel'), ('Bangunan'), ('Kendaraan Bermotor'),
+                     ('Senjata'), ('Perlengkapan'), ('Lainnya')
+                 ON CONFLICT (name) DO NOTHING",
+            )
+            .execute(pool)
+            .await?;
+        }
+        sqlx::query(
+            "ALTER TABLE assets
+             ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES asset_groups(id) ON DELETE SET NULL",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_assets_group_id ON assets (group_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE assets
+             ADD COLUMN IF NOT EXISTS move_mode TEXT NOT NULL DEFAULT 'none'",
+        )
+        .execute(pool)
+        .await?;
+    }
+    let markers: Option<String> = sqlx::query_scalar("SELECT to_regclass('public.markers')::text")
+        .fetch_one(pool)
+        .await?;
+    if markers.is_some() {
+        sqlx::query(
+            "ALTER TABLE markers
+             ADD COLUMN IF NOT EXISTS obstacle BOOLEAN NOT NULL DEFAULT TRUE",
+        )
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 

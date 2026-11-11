@@ -118,6 +118,7 @@ pub fn router(state: AppState) -> Router {
         .route("/private/users/online", get(handlers::public::online_users))
         .route("/private/satkers", get(handlers::private::satkers))
         .route("/private/assets", get(handlers::assets::list))
+        .route("/private/asset-groups", get(handlers::assets::list_groups))
         .route("/private/assets/manifest", get(handlers::assets::manifest))
         .route("/private/assets/{id}", get(handlers::assets::detail))
         .route(
@@ -160,6 +161,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/private/markers/altitude/{id}",
             put(handlers::markers::update_altitude),
+        )
+        .route(
+            "/private/markers/obstacle/{id}",
+            put(handlers::markers::update_obstacle),
         )
         .route(
             "/private/markers/rotasi/{id}",
@@ -211,6 +216,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/private/lines/{id}",
             delete(handlers::geometry::delete_line),
+        )
+        .route(
+            "/private/particles",
+            post(handlers::geometry::create_particle),
+        )
+        .route(
+            "/private/particles/{id}",
+            put(handlers::geometry::update_particle),
+        )
+        .route(
+            "/private/particles/geom/{id}",
+            put(handlers::geometry::update_particle_geom),
+        )
+        .route(
+            "/private/particles/{id}",
+            delete(handlers::geometry::delete_particle),
         )
         .route("/private/anims/route", post(handlers::anims::create_route))
         .route(
@@ -405,6 +426,11 @@ pub fn router(state: AppState) -> Router {
     // Writes restricted to the `admin` role (assets and session revocation).
     let admin_only = Router::new()
         .route("/admin/assets", post(handlers::assets::upload))
+        .route("/admin/asset-groups", post(handlers::assets::create_group))
+        .route(
+            "/admin/asset-groups/{id}",
+            put(handlers::assets::update_group).delete(handlers::assets::delete_group),
+        )
         .route(
             "/admin/assets/{id}",
             put(handlers::assets::update).delete(handlers::assets::delete),
@@ -1179,6 +1205,7 @@ mod tests {
             for path in [
                 "/admin/assets".to_owned(),
                 format!("/admin/assets/{asset_id}/source"),
+                "/admin/asset-groups".to_owned(),
             ] {
                 let (status, _, body) = send(
                     app.clone(),

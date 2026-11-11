@@ -7,8 +7,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
 use twg_contracts::assets::{
-    Asset, AssetCategory, AssetManifest, AssetModelKind, AssetSourceSlot, AssetUpdateRequest,
-    AssetVariantKind, ConvertRequest, ConvertResult, ConvertTarget,
+    Asset, AssetCategory, AssetGroup, AssetGroupRequest, AssetManifest, AssetModelKind,
+    AssetMoveMode, AssetSourceSlot, AssetUpdateRequest, AssetVariantKind, ConvertRequest,
+    ConvertResult, ConvertTarget,
 };
 use twg_contracts::uploads::ALLOWED_IMAGE_TYPES;
 use twg_contracts::{ListResponse, MessageResponse, SingleResponse};
@@ -64,6 +65,14 @@ fn parse_category(raw: Option<&str>) -> Result<AssetCategory, ApiError> {
         .ok_or_else(|| ApiError::bad_request("category is required"))?;
     AssetCategory::from_str(value)
         .map_err(|_| ApiError::bad_request("category must be one of: model, texture, icon"))
+}
+
+fn parse_move_mode(raw: Option<&str>) -> Result<AssetMoveMode, ApiError> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(AssetMoveMode::None);
+    };
+    AssetMoveMode::from_str(value)
+        .map_err(|_| ApiError::bad_request("move_mode must be one of: none, limited, free"))
 }
 
 /// Validates one uploaded source file and fills the metadata stored in
@@ -144,6 +153,8 @@ pub async fn upload(
     let mut name = None;
     let mut category = None;
     let mut model_kind = None;
+    let mut move_mode = None;
+    let mut group_id = None;
     let mut files: HashMap<String, (String, Bytes)> = HashMap::new();
     while let Some(field) = multipart
         .next_field()
@@ -168,6 +179,16 @@ pub async fn upload(
                     ApiError::bad_request(format!("invalid model_kind: {error}"))
                 })?);
             }
+            "group_id" => {
+                group_id = Some(field.text().await.map_err(|error| {
+                    ApiError::bad_request(format!("invalid group_id: {error}"))
+                })?);
+            }
+            "move_mode" => {
+                move_mode = Some(field.text().await.map_err(|error| {
+                    ApiError::bad_request(format!("invalid move_mode: {error}"))
+                })?);
+            }
             "file" | "idle" | "animated" => {
                 let original_name = field.file_name().unwrap_or("asset").to_owned();
                 let bytes = field
@@ -182,6 +203,20 @@ pub async fn upload(
 
     let name = valid_name(&name.unwrap_or_default())?;
     let category = parse_category(category.as_deref())?;
+    let group_id = group_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("group_id is required: choose an asset category"))?;
+    let group_id =
+        Uuid::parse_str(group_id).map_err(|_| ApiError::bad_request("group_id must be a UUID"))?;
+    if !store
+        .group_exists(group_id)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::bad_request("asset category not found"));
+    }
 
     // Models must say whether they are static (one file) or animated (idle +
     // animated). Textures/icons always use the `static` slot.
@@ -204,6 +239,13 @@ pub async fn upload(
     let required: &[AssetSourceSlot] = match model_kind {
         Some(kind) => kind.slots(),
         None => &[AssetSourceSlot::Static],
+    };
+    // Animated models always walk during Play and images never move; only a
+    // static model can choose between the three move modes.
+    let move_mode = match model_kind {
+        Some(AssetModelKind::Animated) => AssetMoveMode::Free,
+        Some(AssetModelKind::Static) => parse_move_mode(move_mode.as_deref())?,
+        None => AssetMoveMode::None,
     };
     let required_fields = required
         .iter()
@@ -263,6 +305,8 @@ pub async fn upload(
             name,
             category,
             model_kind,
+            move_mode,
+            group_id,
             sources,
         })
         .await;
@@ -273,6 +317,71 @@ pub async fn upload(
             Err(ApiError::internal(error))
         }
     }
+}
+
+// ---------------------------------------------------------------- groups
+
+pub async fn list_groups(
+    State(state): State<AppState>,
+) -> Result<Json<ListResponse<AssetGroup>>, ApiError> {
+    let groups = asset_store(&state)?
+        .list_groups()
+        .await
+        .map_err(ApiError::internal)?;
+    let total = groups.len();
+    Ok(Json(ListResponse::new(groups, total)))
+}
+
+pub async fn create_group(
+    State(state): State<AppState>,
+    Json(request): Json<AssetGroupRequest>,
+) -> Result<(StatusCode, Json<SingleResponse<AssetGroup>>), ApiError> {
+    let name = valid_name(&request.name)?;
+    let group = asset_store(&state)?
+        .create_group(&name)
+        .await
+        .map_err(map_group_error)?;
+    Ok((StatusCode::CREATED, Json(SingleResponse::success(group))))
+}
+
+pub async fn update_group(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<AssetGroupRequest>,
+) -> Result<Json<SingleResponse<AssetGroup>>, ApiError> {
+    let name = valid_name(&request.name)?;
+    let group = asset_store(&state)?
+        .update_group(id, &name)
+        .await
+        .map_err(map_group_error)?
+        .ok_or_else(|| ApiError::not_found("asset category not found"))?;
+    Ok(Json(SingleResponse::success(group)))
+}
+
+pub async fn delete_group(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MessageResponse>, ApiError> {
+    if !asset_store(&state)?
+        .delete_group(id)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::not_found("asset category not found"));
+    }
+    Ok(Json(MessageResponse {
+        code: 200,
+        message: "success".to_owned(),
+    }))
+}
+
+fn map_group_error(error: sqlx::Error) -> ApiError {
+    if let sqlx::Error::Database(database) = &error
+        && database.code().as_deref() == Some("23505")
+    {
+        return ApiError::conflict("asset category name already exists");
+    }
+    ApiError::internal(error)
 }
 
 // ---------------------------------------------------------------- reads
@@ -335,6 +444,14 @@ pub async fn update(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("asset not found"))?;
     let name = request.name.as_deref().map(valid_name).transpose()?;
+    if let Some(group_id) = request.group_id
+        && !store
+            .group_exists(group_id)
+            .await
+            .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::bad_request("asset category not found"));
+    }
     if let Some(category) = request.category
         && category != current.category
         && !(category.is_image() && current.category.is_image())
@@ -343,13 +460,32 @@ pub async fn update(
             "category can only change between texture and icon; upload a new asset instead",
         ));
     }
+    if request.move_mode.is_some() {
+        if !current.category.is_model() {
+            return Err(ApiError::bad_request(
+                "move_mode only applies to model assets",
+            ));
+        }
+        if current.model_kind_or_static() == AssetModelKind::Animated {
+            return Err(ApiError::bad_request(
+                "animated models are always free to move during play",
+            ));
+        }
+    }
     // Only a category change can alter which files the asset offers, so a pure
     // rename keeps the version and desktop clients do not re-download it.
     let bump_version = request
         .category
         .is_some_and(|category| category != current.category);
     let asset = store
-        .update(id, name.as_deref(), request.category, bump_version)
+        .update(
+            id,
+            name.as_deref(),
+            request.category,
+            request.group_id,
+            request.move_mode,
+            bump_version,
+        )
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("asset not found"))?;

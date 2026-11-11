@@ -8,8 +8,8 @@ mod stress;
 
 pub use editor::{
     EditorGizmo, EditorGizmoAxis, EditorGizmoMode, EditorGrid, EditorMode, EditorModelShading,
-    EditorPlayFrame, EditorPlayModel, EditorPlayUnit, EditorRenderPlugin, EditorScene,
-    EditorSceneKind, EditorSceneObject, EditorShapeKind,
+    EditorParticleKind, EditorParticleSettings, EditorPlayFrame, EditorPlayModel, EditorPlayUnit,
+    EditorRenderPlugin, EditorScene, EditorSceneKind, EditorSceneObject, EditorShapeKind,
 };
 pub use map::{
     BaseLayerResource, CAMERA_FOV_Y, CameraFlightState, DemoMarker, GeoAnchor, MapCamera,

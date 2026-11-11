@@ -15,6 +15,7 @@ use twg_render::{
     cache_asset_path,
 };
 
+mod asset_groups_screen;
 mod assets_screen;
 mod compass_panel;
 pub mod editor;

@@ -5,9 +5,9 @@ use bevy::window::PrimaryWindow;
 use bevy_egui::egui;
 use twg_map::{CameraFlight, GeoPoint};
 use twg_render::{
-    BaseLayerResource, CameraFlightState, EditorGizmoAxis, EditorMode, EditorPlayFrame,
-    EditorPlayUnit, EditorScene, EditorShapeKind, MapCamera, MapCameraResource, MapCursorResource,
-    UiPointerState,
+    BaseLayerResource, CameraFlightState, EditorGizmoAxis, EditorGizmoMode, EditorMode,
+    EditorPlayFrame, EditorPlayUnit, EditorScene, EditorShapeKind, MapCamera, MapCameraResource,
+    MapCursorResource, UiPointerState,
 };
 
 use crate::state::ClientUi;
@@ -28,6 +28,7 @@ pub fn sync_editor_mode(client: Res<ClientUi>, mut mode: ResMut<EditorMode>) {
     let active = client.state.screen == twg_client::session::Screen::MapEditor;
     mode.active = active;
     mode.preview = active && client.editor.preview;
+    mode.particles_animate = client.editor.particle_preview;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -66,6 +67,7 @@ pub fn editor_input(
     }
     mode.active = true;
     mode.preview = client.editor.preview;
+    mode.particles_animate = client.editor.particle_preview;
 
     let control = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if !focus.keyboard && control && keys.just_pressed(KeyCode::KeyS) {
@@ -203,7 +205,6 @@ pub fn editor_input(
             editor.drag = DragState::None;
         }
     } else {
-        editor.drag = DragState::None;
         editor.context_menu = None;
         editor.asset_drag = None;
         if editor.preview && editor.loaded {
@@ -217,6 +218,9 @@ pub fn editor_input(
                 camera_transform,
             );
         } else {
+            // Only reset the drag when Play is not running: resetting it here
+            // every frame would cancel a Play gizmo drag right after it starts.
+            editor.drag = DragState::None;
             editor.hover_key = None;
             editor.hover_axis = None;
         }
@@ -231,9 +235,28 @@ pub fn editor_input(
                 key: *key,
                 lon: unit.position.longitude,
                 lat: unit.position.latitude,
+                altitude: unit.altitude,
                 heading_deg: unit.heading_deg,
                 moving: unit.target.is_some(),
+                animated: unit.animated,
             }));
+        // Limited assets are not orderable units, but their root still has to
+        // follow the gizmo while it is dragged.
+        play_frame.units.extend(
+            editor
+                .play
+                .limited
+                .iter()
+                .map(|(key, unit)| EditorPlayUnit {
+                    key: *key,
+                    lon: unit.position.longitude,
+                    lat: unit.position.latitude,
+                    altitude: unit.altitude,
+                    heading_deg: 0.0,
+                    moving: false,
+                    animated: false,
+                }),
+        );
     }
 
     if render.revision != editor.render_revision {
@@ -269,9 +292,10 @@ fn apply_requests(
     }
 }
 
-/// RTS input used while the editor is in Play mode. Animated units can be
-/// selected (click / Shift+click / marquee) and ordered to move with a right
-/// click; static markers are neither pickable nor draggable.
+/// RTS input used while the editor is in Play mode. `Free` assets and animated
+/// units can be selected (click / Shift+click / marquee) and ordered to move
+/// with a right click. `Limited` assets are selected with a click and moved by
+/// dragging their 3D gizmo. `None` assets are neither pickable nor draggable.
 #[allow(clippy::too_many_arguments)]
 fn play_input(
     editor: &mut EditorState,
@@ -292,17 +316,46 @@ fn play_input(
         editor.play.right_press = None;
         editor.hover_key = None;
         editor.hover_axis = None;
+        if !mouse.pressed(MouseButton::Left) {
+            editor.drag = DragState::None;
+        }
         return;
     }
     let Some(position) = pointer else {
         return;
     };
+    // Play gizmos do not highlight: refreshing the material would rebuild the
+    // scene and reset every animated Play instance. The handles still work.
     editor.hover_axis = None;
     editor.hover_key = editor.play_pick(position);
 
     if mouse.just_pressed(MouseButton::Left) {
+        // Grabbing a gizmo handle takes priority over selecting the model.
+        if let Some(axis) = gizmo_axis_at(editor, camera, transform, position)
+            && matches!(
+                axis,
+                EditorGizmoAxis::X | EditorGizmoAxis::Y | EditorGizmoAxis::Z
+            )
+            && let (Some(world), Some((key, original, original_altitude))) =
+                (editor.cursor_world, editor.play_gizmo_target())
+        {
+            editor.drag = DragState::PlayGizmo {
+                axis,
+                key,
+                original,
+                original_altitude,
+                start_world: world,
+                start_screen: position,
+            };
+            editor.play.marquee = None;
+            editor.play.right_press = None;
+            return;
+        }
+        let previous_gizmo = editor.play_gizmo_target().map(|(key, _, _)| key);
         if let Some(key) = editor.play_pick(position) {
-            if additive {
+            if editor.play.limited.contains_key(&key) {
+                editor.play_select_limited(key);
+            } else if additive {
                 editor.play_toggle_selected(key);
             } else {
                 editor.play_select_only(key);
@@ -314,18 +367,28 @@ fn play_input(
             }
             editor.play.marquee = Some((position, position));
         }
+        // The gizmo is part of the render scene, so showing, hiding, or moving
+        // it to another limited asset needs one rebuild (never per drag frame).
+        if previous_gizmo != editor.play_gizmo_target().map(|(key, _, _)| key) {
+            editor.touch();
+        }
     }
-    if mouse.pressed(MouseButton::Left)
-        && let Some((_, current)) = editor.play.marquee.as_mut()
-    {
-        *current = position;
+    if mouse.pressed(MouseButton::Left) {
+        if matches!(editor.drag, DragState::PlayGizmo { .. }) {
+            update_drag(editor, position, camera, transform);
+        } else if let Some((_, current)) = editor.play.marquee.as_mut() {
+            *current = position;
+        }
     }
-    if mouse.just_released(MouseButton::Left)
-        && let Some((start, current)) = editor.play.marquee.take()
-    {
-        let rect = egui::Rect::from_two_pos(start, current);
-        if rect.width() > 3.0 || rect.height() > 3.0 {
-            editor.play_box_select(rect, additive);
+    if mouse.just_released(MouseButton::Left) {
+        if matches!(editor.drag, DragState::PlayGizmo { .. }) {
+            editor.drag = DragState::None;
+        }
+        if let Some((start, current)) = editor.play.marquee.take() {
+            let rect = egui::Rect::from_two_pos(start, current);
+            if rect.width() > 3.0 || rect.height() > 3.0 {
+                editor.play_box_select(rect, additive);
+            }
         }
     }
 
@@ -343,7 +406,11 @@ fn play_input(
     }
 
     if keys.just_pressed(KeyCode::Escape) {
+        let had_gizmo = editor.play_gizmo_target().is_some();
         editor.play_clear_selection();
+        if had_gizmo {
+            editor.touch();
+        }
     }
 }
 
@@ -393,7 +460,10 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
         }
         let points = match editor.play.units.get(&object.key) {
             Some(unit) => vec![unit.position],
-            None => object.kind.points(),
+            None => match editor.play.limited.get(&object.key) {
+                Some(unit) => vec![unit.position],
+                None => object.kind.points(),
+            },
         };
         let altitudes = match &object.kind {
             super::model::EditorKind::Line(line) => line
@@ -485,6 +555,25 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
                 rings.push((*key, ring));
             }
         }
+        for (key, unit) in &editor.play.limited {
+            let mut ring = Vec::with_capacity(SEGMENTS);
+            for index in 0..SEGMENTS {
+                let angle = index as f64 / SEGMENTS as f64 * std::f64::consts::TAU;
+                let Ok(point) = GeoPoint::from_local_offset(
+                    unit.position,
+                    unit.radius * angle.cos(),
+                    unit.radius * angle.sin(),
+                ) else {
+                    continue;
+                };
+                if let Some(screen) = project_geo(editor, camera, transform, point) {
+                    ring.push(screen);
+                }
+            }
+            if ring.len() >= 3 {
+                rings.push((*key, ring));
+            }
+        }
     }
     editor.play_rings = rings;
 }
@@ -513,12 +602,21 @@ fn pick_object(editor: &EditorState, pointer: egui::Pos2) -> Option<ObjectKey> {
     let mut best: Option<(f32, ObjectKey)> = None;
     for (key, kind, points, _) in &editor.projected {
         let score = match kind {
-            ObjectType::Marker | ObjectType::Text | ObjectType::Particle => {
+            ObjectType::Marker | ObjectType::Text => {
                 let distance = points
                     .first()
                     .map(|point| distance(point, pointer))
                     .unwrap_or(f32::MAX);
                 (distance <= 18.0).then_some(distance * 0.2)
+            }
+            // A particle effect rises above its anchor, so give it a wider
+            // click target than a flat label marker.
+            ObjectType::Particle => {
+                let distance = points
+                    .first()
+                    .map(|point| distance(point, pointer))
+                    .unwrap_or(f32::MAX);
+                (distance <= 40.0).then_some(distance * 0.15)
             }
             ObjectType::Line => polyline_distance(points, pointer)
                 .filter(|distance| *distance <= 10.0)
@@ -592,23 +690,35 @@ fn gizmo_axis_at(
     transform: &GlobalTransform,
     pointer: egui::Pos2,
 ) -> Option<EditorGizmoAxis> {
-    if !editor.tool.changes_gizmo() {
-        return None;
-    }
-    let (_, target) = editor.gizmo_target()?;
     let size = (editor.map_state.meters_per_pixel() as f32 * 90.0).max(1.0);
-    let (x, z) = editor
-        .map_state
-        .geo_to_world(GeoPoint::new(target.lon, target.lat))?;
-    let anchor = Vec3::new(x, target.altitude as f32, z);
+    // Play shows a full move gizmo (X/Y/Z) for a limited asset.
+    let (anchor, allow_y, mode) = if let Some((_, point, altitude)) = editor.play_gizmo_target() {
+        let (x, z) = editor.map_state.geo_to_world(point)?;
+        (Vec3::new(x, altitude, z), true, EditorGizmoMode::Move)
+    } else {
+        if !editor.tool.changes_gizmo() {
+            return None;
+        }
+        let (_, target) = editor.gizmo_target()?;
+        let (x, z) = editor
+            .map_state
+            .geo_to_world(GeoPoint::new(target.lon, target.lat))?;
+        let mode = match editor.tool {
+            EditorTool::Rotate => EditorGizmoMode::Rotate,
+            EditorTool::Scale => EditorGizmoMode::Scale,
+            _ => EditorGizmoMode::Move,
+        };
+        let allow_y = editor.point_edit.is_none() || editor.point_edit_allows_altitude();
+        (Vec3::new(x, target.altitude as f32, z), allow_y, mode)
+    };
     let anchor_screen = camera
         .world_to_viewport(transform, anchor)
         .ok()
         .map(|point| egui::pos2(point.x, point.y))?;
 
-    match editor.tool {
-        EditorTool::Rotate => ring_axis_at(camera, transform, anchor, size, pointer),
-        EditorTool::Scale => {
+    match mode {
+        EditorGizmoMode::Rotate => ring_axis_at(camera, transform, anchor, size, pointer),
+        EditorGizmoMode::Scale => {
             // The center ring/handle scales every axis at once.
             if anchor_screen.distance(pointer) <= 30.0 {
                 return Some(EditorGizmoAxis::Uniform);
@@ -623,19 +733,15 @@ fn gizmo_axis_at(
                 true,
             )
         }
-        EditorTool::Move => {
-            let allow_y = editor.point_edit.is_none() || editor.point_edit_allows_altitude();
-            handle_axis_at(
-                camera,
-                transform,
-                anchor,
-                anchor_screen,
-                size,
-                pointer,
-                allow_y,
-            )
-        }
-        _ => None,
+        EditorGizmoMode::Move => handle_axis_at(
+            camera,
+            transform,
+            anchor,
+            anchor_screen,
+            size,
+            pointer,
+            allow_y,
+        ),
     }
 }
 
@@ -716,11 +822,17 @@ fn gizmo_center_screen(
     camera: &Camera,
     transform: &GlobalTransform,
 ) -> Option<egui::Pos2> {
-    let (_, target) = editor.gizmo_target()?;
-    let (x, z) = editor
-        .map_state
-        .geo_to_world(GeoPoint::new(target.lon, target.lat))?;
-    let anchor = Vec3::new(x, target.altitude as f32, z);
+    let (point, altitude) = if let Some((_, point, altitude)) = editor.play_gizmo_target() {
+        (point, altitude)
+    } else {
+        let (_, target) = editor.gizmo_target()?;
+        (
+            GeoPoint::new(target.lon, target.lat),
+            target.altitude as f32,
+        )
+    };
+    let (x, z) = editor.map_state.geo_to_world(point)?;
+    let anchor = Vec3::new(x, altitude, z);
     camera
         .world_to_viewport(transform, anchor)
         .ok()
@@ -805,6 +917,9 @@ fn keyboard_shortcuts(
         }
         if keys.just_pressed(KeyCode::Digit4) {
             editor.set_tool(EditorTool::Measure);
+        }
+        if keys.just_pressed(KeyCode::Digit5) {
+            editor.set_tool(EditorTool::Particle);
         }
         if keys.just_pressed(KeyCode::KeyQ) {
             editor.set_tool(EditorTool::Select);
@@ -922,6 +1037,14 @@ fn mouse_input(
             EditorTool::Text => {
                 if let Some(geo) = geo {
                     editor.add_text(geo);
+                    editor.set_tool(EditorTool::Select);
+                }
+            }
+            EditorTool::Particle => {
+                if let Some(geo) = geo {
+                    editor.add_particle(geo);
+                    // One click places one particle; go back to Select so the
+                    // next click does not add another one by accident.
                     editor.set_tool(EditorTool::Select);
                 }
             }
@@ -1238,6 +1361,56 @@ fn update_drag(
             }
             editor.dirty = true;
             editor.touch();
+        }
+        DragState::PlayGizmo {
+            axis,
+            key,
+            original,
+            original_altitude,
+            start_world,
+            start_screen,
+        } => {
+            if axis == EditorGizmoAxis::Y {
+                let delta =
+                    (start_screen.y - pointer.y) * editor.map_state.meters_per_pixel() as f32;
+                if let Some(unit) = editor.play.limited.get_mut(&key) {
+                    unit.altitude = (original_altitude + delta).max(0.0);
+                }
+                // No `touch()`: the marker root and the gizmo both follow the
+                // runtime altitude through `EditorPlayFrame`.
+                return;
+            }
+            let Some(world) = ground_point(camera, transform, pointer, editor) else {
+                return;
+            };
+            let Some(start_geo) = editor.map_state.world_to_geo(start_world.x, start_world.z)
+            else {
+                return;
+            };
+            let Some(target_geo) = editor.map_state.world_to_geo(world.x, world.z) else {
+                return;
+            };
+            let Ok(offset) = target_geo.local_offset(start_geo) else {
+                return;
+            };
+            let Ok(target) =
+                GeoPoint::from_local_offset(original, offset.east_meters, offset.north_meters)
+            else {
+                return;
+            };
+            if let Some(unit) = editor.play.limited.get_mut(&key) {
+                unit.position = target;
+            }
+            if let Some(obstacle) = editor
+                .play
+                .obstacles
+                .iter_mut()
+                .find(|obstacle| obstacle.key == Some(key))
+            {
+                obstacle.center = target;
+            }
+            // No `touch()`: the marker root and the gizmo both follow the
+            // runtime position through `EditorPlayFrame`.
         }
         DragState::PointDrag {
             axis,

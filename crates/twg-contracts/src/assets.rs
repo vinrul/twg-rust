@@ -76,6 +76,34 @@ impl AssetModelKind {
     }
 }
 
+/// How an asset may be moved during Play/simulation.
+///
+/// Only static models use `Limited` or `Free`; animated models are always
+/// `Free` (walk clip, obstacle avoidance) and textures/icons are always `None`.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Display, EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum AssetMoveMode {
+    /// Not pickable and never moves during Play.
+    #[default]
+    None,
+    /// Pickable during Play; moved with the 3D move gizmo (barriers, cones).
+    Limited,
+    /// Pickable during Play; ordered to move with a right click, avoiding
+    /// obstacles like an animated unit but without its walk animation.
+    Free,
+}
+
+impl AssetMoveMode {
+    pub const ALL: [Self; 3] = [Self::None, Self::Limited, Self::Free];
+
+    pub const fn is_movable(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// One source file of an asset. Textures/icons only have `static`; models have
 /// either `static` or both `idle` and `animated`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
@@ -225,6 +253,19 @@ impl AssetSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetGroupRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Asset {
     pub id: Uuid,
     pub name: String,
@@ -232,6 +273,14 @@ pub struct Asset {
     /// Only set for models; `None` for textures and icons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_kind: Option<AssetModelKind>,
+    /// Movement allowed during Play. Animated models always report `Free`.
+    #[serde(default)]
+    pub move_mode: AssetMoveMode,
+    /// Semantic asset category (Personel, Bangunan, Kendaraan, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
     pub sources: Vec<AssetSource>,
     /// Bumped on every metadata or variant change so clients can re-sync.
     pub version: i64,
@@ -295,6 +344,11 @@ pub struct AssetUpdateRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub category: Option<AssetCategory>,
+    #[serde(default)]
+    pub group_id: Option<Uuid>,
+    /// Only honored for static models.
+    #[serde(default)]
+    pub move_mode: Option<AssetMoveMode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,7 +390,10 @@ pub struct ConvertResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssetCategory, AssetModelKind, AssetSourceSlot, AssetVariantKind, ConvertTarget};
+    use super::{
+        AssetCategory, AssetModelKind, AssetMoveMode, AssetSourceSlot, AssetVariantKind,
+        ConvertTarget,
+    };
     use serde_json::json;
     use std::str::FromStr;
 
@@ -411,6 +468,22 @@ mod tests {
         assert!(AssetVariantKind::DracoLod2.is_draco());
         assert!(AssetVariantKind::DracoLod2.is_lod2());
         assert!(!AssetVariantKind::Lod2.is_draco());
+    }
+
+    #[test]
+    fn move_modes_use_snake_case() {
+        for (mode, wire) in [
+            (AssetMoveMode::None, "none"),
+            (AssetMoveMode::Limited, "limited"),
+            (AssetMoveMode::Free, "free"),
+        ] {
+            assert_eq!(mode.to_string(), wire);
+            assert_eq!(AssetMoveMode::from_str(wire).unwrap(), mode);
+            assert_eq!(serde_json::to_value(mode).unwrap(), json!(wire));
+        }
+        assert!(!AssetMoveMode::None.is_movable());
+        assert!(AssetMoveMode::Limited.is_movable());
+        assert!(AssetMoveMode::Free.is_movable());
     }
 
     #[test]

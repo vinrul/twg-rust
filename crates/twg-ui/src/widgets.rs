@@ -83,14 +83,92 @@ pub fn labeled_input_with_width(
     )
 }
 
-pub fn password_input(ui: &mut egui::Ui, label: &str, value: &mut String) -> egui::Response {
+/// Password field with an eye show/hide toggle. `visible` is kept by the caller
+/// so the state can be reset when a form is submitted or reopened.
+pub fn password_input(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    visible: &mut bool,
+) -> egui::Response {
     ui.label(egui::RichText::new(label).size(FONT_XS));
-    ui.add(
-        egui::TextEdit::singleline(value)
-            .password(true)
-            .desired_width(f32::INFINITY)
-            .margin(egui::Margin::symmetric(8, 5)),
-    )
+    ui.horizontal(|ui| {
+        let button_width = 28.0;
+        let input_width =
+            (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(80.0);
+        let response = ui.add(
+            egui::TextEdit::singleline(value)
+                .password(!*visible)
+                .desired_width(input_width)
+                .margin(egui::Margin::symmetric(8, 5)),
+        );
+        if password_toggle(ui, *visible).clicked() {
+            *visible = !*visible;
+            response.request_focus();
+        }
+        response
+    })
+    .inner
+}
+
+/// Icon-only show/hide button. The eye is painted directly because the bundled
+/// fonts do not contain a reliable eye glyph.
+fn password_toggle(ui: &mut egui::Ui, visible: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect(
+            rect,
+            egui::CornerRadius::same(6),
+            color(DARK.secondary),
+            egui::Stroke::NONE,
+            egui::StrokeKind::Inside,
+        );
+    }
+    let tint = if response.hovered() {
+        color(DARK.foreground)
+    } else {
+        color(DARK.muted_foreground)
+    };
+    paint_eye(painter, rect, visible, tint);
+    response.on_hover_text(if visible {
+        "Sembunyikan password"
+    } else {
+        "Tampilkan password"
+    })
+}
+
+fn paint_eye(painter: &egui::Painter, rect: egui::Rect, open: bool, tint: egui::Color32) {
+    let center = rect.center();
+    let width = 15.0;
+    let height = 9.0;
+    let stroke = egui::Stroke::new(1.4, tint);
+    let steps = 14;
+    let mut points = Vec::with_capacity(steps * 2);
+    for step in 0..=steps {
+        let t = step as f32 / steps as f32;
+        let x = center.x - width * 0.5 + width * t;
+        let y = center.y - (std::f32::consts::PI * t).sin() * height * 0.5;
+        points.push(egui::pos2(x, y));
+    }
+    for step in (1..steps).rev() {
+        let t = step as f32 / steps as f32;
+        let x = center.x - width * 0.5 + width * t;
+        let y = center.y + (std::f32::consts::PI * t).sin() * height * 0.5;
+        points.push(egui::pos2(x, y));
+    }
+    painter.add(egui::Shape::closed_line(points, stroke));
+    if open {
+        painter.circle_filled(center, 2.6, tint);
+    } else {
+        painter.line_segment(
+            [
+                center + egui::vec2(-width * 0.6, -height * 0.9),
+                center + egui::vec2(width * 0.6, height * 0.9),
+            ],
+            stroke,
+        );
+    }
 }
 
 pub fn textarea(ui: &mut egui::Ui, label: &str, value: &mut String, rows: usize) -> egui::Response {

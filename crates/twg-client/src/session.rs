@@ -21,6 +21,7 @@ pub enum NavItem {
     Operations,
     Scenarios,
     Assets,
+    AssetGroups,
     Games,
     Users,
     Satkers,
@@ -31,11 +32,12 @@ pub enum NavItem {
 }
 
 impl NavItem {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Dashboard,
         Self::Operations,
         Self::Scenarios,
         Self::Assets,
+        Self::AssetGroups,
         Self::Games,
         Self::Users,
         Self::Satkers,
@@ -51,6 +53,7 @@ impl NavItem {
             Self::Operations => "Operasi",
             Self::Scenarios => "Skenario",
             Self::Assets => "Aset",
+            Self::AssetGroups => "Kategori Aset",
             Self::Games => "Latihan",
             Self::Users => "Pengguna",
             Self::Satkers => "Satker",
@@ -67,6 +70,7 @@ impl NavItem {
             Self::Operations => "OP",
             Self::Scenarios => "SK",
             Self::Assets => "AS",
+            Self::AssetGroups => "KA",
             Self::Games => "LT",
             Self::Users => "US",
             Self::Satkers => "ST",
