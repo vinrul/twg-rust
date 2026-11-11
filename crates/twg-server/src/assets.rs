@@ -145,6 +145,33 @@ impl AssetFiles {
             Err(error) => Err(error),
         }
     }
+
+    /// Saved preview screenshot for the editor tooltip and asset list.
+    pub fn preview_path(&self, asset_id: Uuid) -> PathBuf {
+        self.asset_dir(asset_id).join("preview.png")
+    }
+
+    pub async fn write_preview(&self, asset_id: Uuid, bytes: &[u8]) -> io::Result<()> {
+        let path = self.preview_path(asset_id);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(path, bytes).await
+    }
+
+    /// Changes whenever the preview file is replaced, so clients re-download.
+    pub async fn preview_version(&self, asset_id: Uuid) -> Option<String> {
+        let metadata = tokio::fs::metadata(self.preview_path(asset_id))
+            .await
+            .ok()?;
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis();
+        Some(format!("{}-{modified}", metadata.len()))
+    }
 }
 
 pub fn original_filename(extension: &str) -> String {

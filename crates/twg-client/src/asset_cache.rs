@@ -27,6 +27,8 @@ pub struct CachedFileRef {
     pub url: String,
     pub sha256: String,
     pub size_bytes: i64,
+    /// True for the asset preview screenshot (stored outside the source slots).
+    pub preview: bool,
 }
 
 /// Progress shared with the UI thread while a sync runs.
@@ -86,6 +88,11 @@ impl AssetCache {
             .join(filename)
     }
 
+    /// Local path of the server-synced preview screenshot.
+    pub fn preview_path(&self, asset_id: Uuid) -> PathBuf {
+        self.root.join(asset_id.to_string()).join("preview.png")
+    }
+
     /// True when the cache already mirrors `remote` (same versions, files on
     /// disk).
     pub fn is_current(&self, remote: &AssetManifest) -> bool {
@@ -110,32 +117,36 @@ impl AssetCache {
     /// planned again: a conversion or re-upload can overwrite a file whose size
     /// happens to stay the same.
     pub fn plan(&self, remote: &AssetManifest) -> Vec<CachedFileRef> {
-        remote
-            .assets
-            .iter()
-            .flat_map(|asset| {
-                let changed = self
-                    .manifest
-                    .as_ref()
-                    .and_then(|local| {
-                        local
-                            .assets
-                            .iter()
-                            .find(|local_asset| local_asset.id == asset.id)
-                    })
-                    .is_some_and(|local_asset| local_asset.version != asset.version);
-                asset_files(asset).into_iter().filter(move |file| {
-                    if changed {
-                        return true;
-                    }
-                    let path = self.local_path(file.asset_id, file.slot, &file.filename);
-                    match fs::metadata(&path) {
-                        Ok(metadata) => metadata.len() != file.size_bytes.max(0) as u64,
-                        Err(_) => true,
-                    }
-                })
-            })
-            .collect()
+        let mut planned = Vec::new();
+        for asset in &remote.assets {
+            let local_asset = self.manifest.as_ref().and_then(|local| {
+                local
+                    .assets
+                    .iter()
+                    .find(|local_asset| local_asset.id == asset.id)
+            });
+            let changed =
+                local_asset.is_some_and(|local_asset| local_asset.version != asset.version);
+            for file in asset_files(asset) {
+                let path = self.local_path(file.asset_id, file.slot, &file.filename);
+                let missing = match fs::metadata(&path) {
+                    Ok(metadata) => metadata.len() != file.size_bytes.max(0) as u64,
+                    Err(_) => true,
+                };
+                if changed || missing {
+                    planned.push(file);
+                }
+            }
+            if let Some(preview) = preview_file(asset) {
+                let changed = local_asset
+                    .map(|local_asset| local_asset.preview_version != asset.preview_version)
+                    .unwrap_or(true);
+                if changed || !self.preview_path(asset.id).is_file() {
+                    planned.push(preview);
+                }
+            }
+        }
+        planned
     }
 
     /// Downloads everything missing and rewrites `manifest.json` when done.
@@ -166,7 +177,11 @@ impl AssetCache {
         for file in &planned {
             {
                 let mut guard = progress.lock().expect("progress poisoned");
-                guard.current = format!("{}/{}", file.slot, file.filename);
+                guard.current = if file.preview {
+                    "preview".to_owned()
+                } else {
+                    format!("{}/{}", file.slot, file.filename)
+                };
             }
             let url = format!("{base_url}{}", file.url);
             let bytes = download(&agent, &url)?;
@@ -176,7 +191,11 @@ impl AssetCache {
                     file.slot, file.filename
                 ));
             }
-            let path = self.local_path(file.asset_id, file.slot, &file.filename);
+            let path = if file.preview {
+                self.preview_path(file.asset_id)
+            } else {
+                self.local_path(file.asset_id, file.slot, &file.filename)
+            };
             write_atomic(&path, &bytes)?;
             report.downloaded += 1;
             report.bytes += bytes.len() as i64;
@@ -262,6 +281,7 @@ pub fn asset_files(asset: &Asset) -> Vec<CachedFileRef> {
             url: source.file.url.clone(),
             sha256: source.file.sha256.clone(),
             size_bytes: source.file.size_bytes,
+            preview: false,
         });
         for variant in &source.variants {
             files.push(CachedFileRef {
@@ -271,10 +291,23 @@ pub fn asset_files(asset: &Asset) -> Vec<CachedFileRef> {
                 url: variant.url.clone(),
                 sha256: variant.sha256.clone(),
                 size_bytes: variant.size_bytes,
+                preview: false,
             });
         }
     }
     files
+}
+
+fn preview_file(asset: &Asset) -> Option<CachedFileRef> {
+    Some(CachedFileRef {
+        asset_id: asset.id,
+        slot: AssetSourceSlot::Static,
+        filename: "preview.png".to_owned(),
+        url: asset.preview_url.clone()?,
+        sha256: String::new(),
+        size_bytes: 0,
+        preview: true,
+    })
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -378,8 +411,13 @@ mod tests {
             category: AssetCategory::Model,
             model_kind: Some(AssetModelKind::Static),
             move_mode: AssetMoveMode::None,
+            origin: twg_contracts::assets::AssetOrigin::Admin,
+            operasi_id: None,
+            owner_id: None,
             group_id: None,
             group_name: None,
+            preview_url: None,
+            preview_version: None,
             sources: vec![AssetSource {
                 slot: AssetSourceSlot::Static,
                 file: asset_file("original.glb", &format!("/assets/{id}/static/original.glb")),

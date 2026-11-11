@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use bevy::prelude::Vec3;
 use bevy_egui::egui;
-use twg_contracts::assets::AssetMoveMode;
+use twg_contracts::assets::{AssetCategory, AssetModelKind, AssetMoveMode, AssetSourceSlot};
 use twg_contracts::map::ParticleKind;
 use twg_map::{BaseLayer, GeoPoint, MapCameraState};
 use twg_render::{
@@ -98,6 +98,19 @@ pub struct EditorAssetRow {
     pub kind_label: String,
     /// The model file exists in the offline cache and can be rendered.
     pub cached: bool,
+    /// Semantic asset category shown as the tree root.
+    pub group: String,
+    pub move_mode_label: String,
+    pub version: i64,
+    pub size_label: String,
+    /// True for assets uploaded from the scenario editor's Import tab.
+    pub imported: bool,
+    /// Models can be dropped on the map; images only feed shape materials.
+    pub is_model: bool,
+    /// The current user may delete this import (uploader or admin).
+    pub can_delete: bool,
+    /// Latest saved preview screenshot, when one exists.
+    pub preview: Option<PathBuf>,
 }
 
 /// One image asset available as a shape texture.
@@ -107,6 +120,68 @@ pub struct EditorTextureRow {
     pub name: String,
     /// A local cache path or server URL is available.
     pub available: bool,
+    /// True for images uploaded through the scenario editor's Import tab.
+    pub imported: bool,
+}
+
+/// Upload form of the Import tab. Files are stored in slot order: `[static]`
+/// for static models and images, `[idle, animated]` for animated models.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportDraft {
+    pub name: String,
+    pub category: AssetCategory,
+    pub model_kind: AssetModelKind,
+    /// Only used by static models; animated models always move freely.
+    pub move_mode: AssetMoveMode,
+    pub files: Vec<PathBuf>,
+}
+
+impl Default for ImportDraft {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            category: AssetCategory::Model,
+            model_kind: AssetModelKind::Static,
+            move_mode: AssetMoveMode::None,
+            files: Vec::new(),
+        }
+    }
+}
+
+impl ImportDraft {
+    pub fn slots(&self) -> &'static [AssetSourceSlot] {
+        if self.category.is_model() {
+            self.model_kind.slots()
+        } else {
+            &[AssetSourceSlot::Static]
+        }
+    }
+
+    /// File chosen for one required slot.
+    pub fn file(&self, index: usize) -> Option<&Path> {
+        self.files
+            .get(index)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(PathBuf::as_path)
+    }
+
+    /// Assigns a picked file to one slot, padding earlier slots when needed.
+    pub fn set_file(&mut self, index: usize, path: PathBuf) {
+        if self.name.trim().is_empty()
+            && let Some(stem) = path.file_stem().and_then(|value| value.to_str())
+        {
+            self.name = stem.to_owned();
+        }
+        if self.files.len() <= index {
+            self.files.resize(index + 1, PathBuf::new());
+        }
+        self.files[index] = path;
+    }
+
+    /// Drops files that were selected for a different category/model kind.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Asset dragged from the Assets tab onto the map.
@@ -1087,7 +1162,7 @@ pub struct EditorState {
     /// Editor-only particle animation toggle. Play/simulation always animates.
     pub particle_preview: bool,
     pub show_console: bool,
-    /// Left panel tab: 0 = Scene, 1 = Assets (server models + textures).
+    /// Left panel tab: 0 = Scene, 1 = Assets, 2 = Import.
     pub left_tab: usize,
     /// Viewport shading for imported models (Texture/Solid/Wireframe).
     pub model_shading: EditorModelShading,
@@ -1106,28 +1181,30 @@ pub struct EditorState {
     pub texture_files: BTreeMap<String, String>,
     /// Cached egui textures for shape previews, keyed by file path.
     pub texture_previews: BTreeMap<String, egui::TextureHandle>,
-    /// Imported local textures as `(reference, display name)`.
-    pub local_textures: Vec<(String, String)>,
-    /// Set when the local texture folder changed and must be rescanned.
-    pub local_textures_dirty: bool,
     /// Server base URL used to resolve `/uploads/...` texture references.
     pub base_url: String,
-    /// Source file of texture uploads in flight, keyed by object.
-    pub pending_texture_uploads: BTreeMap<ObjectKey, PathBuf>,
-    /// Uploaded textures whose preview is downloading in the background.
-    pub texture_downloads: BTreeSet<String>,
-    /// Uploaded textures whose preview download failed; avoids retry loops.
-    pub texture_download_failed: BTreeSet<String>,
-    /// Finished preview downloads from background threads.
-    pub texture_download_results: textures::PreviewDownloads,
     /// `(asset id, version, move mode)` of the asset list the models were built
     /// from. The move mode is included because changing it must refresh Play
     /// behaviour without bumping the file version.
     pub marker_model_signature: Vec<(Uuid, i64, AssetMoveMode)>,
     /// Set while an asset card is being dragged onto the map.
     pub asset_drag: Option<AssetMarkerDraft>,
+    /// Search filter in the editor's Assets tab.
+    pub asset_search: String,
+    /// Asset category groups collapsed in the editor tree.
+    pub asset_groups_closed: BTreeSet<String>,
     /// Asks the shell to sync the offline cache with the server manifest.
     pub requested_asset_sync: bool,
+    /// Upload form shown in the Import tab.
+    pub import_draft: ImportDraft,
+    pub import_error: Option<String>,
+    pub import_busy: bool,
+    /// Asks the shell to upload the Import draft to the server.
+    pub requested_import_upload: bool,
+    /// Asks the shell to delete this import asset.
+    pub requested_import_delete: Option<Uuid>,
+    /// Asks the shell to reload import assets of the current operation.
+    pub requested_import_refresh: bool,
     pub last_click: Option<(f64, egui::Pos2)>,
     pub scenario_center: GeoPoint,
     pub indoor: bool,
@@ -1228,16 +1305,18 @@ impl EditorState {
             texture_paths: BTreeMap::new(),
             texture_files: BTreeMap::new(),
             texture_previews: BTreeMap::new(),
-            local_textures: Vec::new(),
-            local_textures_dirty: true,
             base_url: String::new(),
-            pending_texture_uploads: BTreeMap::new(),
-            texture_downloads: BTreeSet::new(),
-            texture_download_failed: BTreeSet::new(),
-            texture_download_results: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             marker_model_signature: Vec::new(),
             asset_drag: None,
+            asset_search: String::new(),
+            asset_groups_closed: BTreeSet::new(),
             requested_asset_sync: false,
+            import_draft: ImportDraft::default(),
+            import_error: None,
+            import_busy: false,
+            requested_import_upload: false,
+            requested_import_delete: None,
+            requested_import_refresh: false,
             last_click: None,
             scenario_center: MapCameraState::default().center,
             indoor: false,
@@ -2318,41 +2397,25 @@ impl EditorState {
             .unwrap_or(point)
     }
 
-    /// Resolves an asset id or a `local:` reference to the path the renderer
-    /// should load for a shape texture.
+    /// Resolves an asset id to the path the renderer should load for a shape
+    /// texture. `/uploads/...` references from older scenarios are still served
+    /// from the server URL.
     pub fn texture_source(&self, reference: &str) -> Option<String> {
-        if textures::is_uploaded_reference(reference) {
+        if reference.starts_with("/uploads/") {
             let base = self.base_url.trim_end_matches('/');
-            (!base.is_empty()).then(|| format!("{base}{reference}"))
-        } else if reference.starts_with(textures::LOCAL_TEXTURE_PREFIX) {
-            textures::local_texture_asset_path(reference)
-        } else {
-            self.texture_paths.get(reference).cloned()
+            return (!base.is_empty()).then(|| format!("{base}{reference}"));
         }
+        self.texture_paths.get(reference).cloned()
     }
 
     /// Cached egui preview for a shape texture, or `None` when the image is
-    /// not available locally (remote URL, missing upload, web build).
+    /// not available locally (un-downloaded asset, legacy upload, web build).
     pub fn texture_preview(
         &mut self,
         ctx: &egui::Context,
         reference: &str,
     ) -> Option<egui::TextureHandle> {
-        self.poll_texture_downloads();
-        let path = if textures::is_uploaded_reference(reference) {
-            textures::uploaded_texture_file(reference)
-        } else if reference.starts_with(textures::LOCAL_TEXTURE_PREFIX) {
-            textures::local_texture_file(reference)
-        } else {
-            self.texture_files.get(reference).map(PathBuf::from)
-        };
-        let Some(path) = path else {
-            #[cfg(not(target_arch = "wasm32"))]
-            if textures::is_uploaded_reference(reference) {
-                self.start_texture_download(reference);
-            }
-            return None;
-        };
+        let path = self.texture_files.get(reference).map(PathBuf::from)?;
         let cache_key = path.display().to_string();
         if let Some(handle) = self.texture_previews.get(&cache_key) {
             return Some(handle.clone());
@@ -2362,68 +2425,19 @@ impl EditorState {
         Some(handle)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn start_texture_download(&mut self, reference: &str) {
-        if self.base_url.is_empty()
-            || self.texture_downloads.contains(reference)
-            || self.texture_download_failed.contains(reference)
-        {
-            return;
+    /// Cached egui preview for a saved screenshot file (asset tooltip).
+    pub fn stored_preview(
+        &mut self,
+        ctx: &egui::Context,
+        path: &Path,
+    ) -> Option<egui::TextureHandle> {
+        let cache_key = path.display().to_string();
+        if let Some(handle) = self.texture_previews.get(&cache_key) {
+            return Some(handle.clone());
         }
-        if textures::download_uploaded_texture(
-            reference,
-            &self.base_url,
-            &self.texture_download_results,
-        ) {
-            self.texture_downloads.insert(reference.to_owned());
-        }
-    }
-
-    fn poll_texture_downloads(&mut self) {
-        let results = self
-            .texture_download_results
-            .lock()
-            .map(|mut results| std::mem::take(&mut *results))
-            .unwrap_or_default();
-        for (reference, path) in results {
-            self.texture_downloads.remove(&reference);
-            if path.is_none() {
-                self.texture_download_failed.insert(reference);
-            }
-        }
-    }
-
-    /// Rescans the local texture folder when it may have changed.
-    pub fn refresh_local_textures(&mut self) {
-        if !self.local_textures_dirty {
-            return;
-        }
-        self.local_textures = textures::scan_local_textures();
-        self.local_textures_dirty = false;
-    }
-
-    /// Applies the server URL returned by the image upload endpoint and keeps
-    /// a local copy for the Inspector preview.
-    pub fn apply_uploaded_texture(&mut self, key: ObjectKey, url: &str, source: Option<&Path>) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(source) = source {
-            textures::cache_uploaded_texture(url, source);
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = source;
-        if self.object(key).is_none() {
-            return;
-        }
-        self.push_undo();
-        if let Some(object) = self.object_mut(key)
-            && let EditorKind::Building(building) = &mut object.kind
-        {
-            building.texture = Some(url.to_owned());
-            building.use_texture = true;
-            object.dirty = true;
-        }
-        self.dirty = true;
-        self.touch();
+        let handle = textures::load_preview(ctx, path)?;
+        self.texture_previews.insert(cache_key, handle.clone());
+        Some(handle)
     }
 
     pub fn build_scene(&self) -> EditorScene {
@@ -2874,6 +2888,25 @@ mod tests {
         let mut editor = EditorState::new();
         editor.loaded = true;
         editor
+    }
+
+    #[test]
+    fn import_draft_keeps_files_in_slot_order() {
+        let mut draft = ImportDraft::default();
+        assert_eq!(draft.slots(), &[AssetSourceSlot::Static]);
+        draft.category = AssetCategory::Texture;
+        draft.model_kind = AssetModelKind::Animated;
+        assert_eq!(draft.slots(), &[AssetSourceSlot::Static]);
+
+        draft.category = AssetCategory::Model;
+        assert_eq!(
+            draft.slots(),
+            &[AssetSourceSlot::Idle, AssetSourceSlot::Animated]
+        );
+        draft.set_file(1, std::path::PathBuf::from("walk.glb"));
+        assert_eq!(draft.name, "walk");
+        assert!(draft.file(0).is_none());
+        assert!(draft.file(1).is_some());
     }
 
     #[test]

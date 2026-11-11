@@ -493,6 +493,14 @@ fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
             let prefer = client.asset_prefer_variants;
             client.use_asset(asset.id, prefer);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if can_admin
+            && widgets::secondary_button(ui, "Screenshot preview")
+                .on_hover_text("Simpan gambar preview aset untuk tooltip di tab Assets editor")
+                .clicked()
+        {
+            client.asset_preview_capture = Some(asset.id);
+        }
         if can_admin && widgets::danger_button(ui, "Hapus aset").clicked() {
             pending_delete = true;
         }

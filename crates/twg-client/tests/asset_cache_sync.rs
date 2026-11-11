@@ -32,8 +32,13 @@ fn sample_asset() -> (Asset, Vec<u8>, Vec<u8>) {
         category: AssetCategory::Model,
         model_kind: Some(AssetModelKind::Animated),
         move_mode: AssetMoveMode::Free,
+        origin: twg_contracts::assets::AssetOrigin::Admin,
+        operasi_id: None,
+        owner_id: None,
         group_id: None,
         group_name: None,
+        preview_url: None,
+        preview_version: None,
         sources: vec![
             AssetSource {
                 slot: AssetSourceSlot::Idle,

@@ -104,6 +104,31 @@ impl AssetMoveMode {
     }
 }
 
+/// Where an asset was uploaded from.
+///
+/// Admin assets live in the global library and carry a semantic category (asset
+/// group). Import assets are uploaded from the scenario editor by any user and
+/// belong to a single operation, so they can be reused by every scenario of
+/// that operation without showing up in the admin library.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Display, EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum AssetOrigin {
+    #[default]
+    Admin,
+    Import,
+}
+
+impl AssetOrigin {
+    pub const ALL: [Self; 2] = [Self::Admin, Self::Import];
+
+    pub const fn is_import(self) -> bool {
+        matches!(self, Self::Import)
+    }
+}
+
 /// One source file of an asset. Textures/icons only have `static`; models have
 /// either `static` or both `idle` and `animated`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
@@ -276,11 +301,27 @@ pub struct Asset {
     /// Movement allowed during Play. Animated models always report `Free`.
     #[serde(default)]
     pub move_mode: AssetMoveMode,
+    /// Admin library or a user import from the scenario editor.
+    #[serde(default)]
+    pub origin: AssetOrigin,
+    /// Operation that owns an import asset; admin assets have no operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operasi_id: Option<Uuid>,
+    /// User that uploaded an import asset, used for delete permissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<Uuid>,
     /// Semantic asset category (Personel, Bangunan, Kendaraan, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_name: Option<String>,
+    /// Server URL of the saved preview screenshot, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    /// Opaque token that changes whenever the preview image changes; the
+    /// offline cache uses it to decide when to download a new preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_version: Option<String>,
     pub sources: Vec<AssetSource>,
     /// Bumped on every metadata or variant change so clients can re-sync.
     pub version: i64,
@@ -391,8 +432,8 @@ pub struct ConvertResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        AssetCategory, AssetModelKind, AssetMoveMode, AssetSourceSlot, AssetVariantKind,
-        ConvertTarget,
+        AssetCategory, AssetModelKind, AssetMoveMode, AssetOrigin, AssetSourceSlot,
+        AssetVariantKind, ConvertTarget,
     };
     use serde_json::json;
     use std::str::FromStr;
@@ -468,6 +509,21 @@ mod tests {
         assert!(AssetVariantKind::DracoLod2.is_draco());
         assert!(AssetVariantKind::DracoLod2.is_lod2());
         assert!(!AssetVariantKind::Lod2.is_draco());
+    }
+
+    #[test]
+    fn asset_origins_use_snake_case_and_default_to_admin() {
+        for (origin, wire) in [
+            (AssetOrigin::Admin, "admin"),
+            (AssetOrigin::Import, "import"),
+        ] {
+            assert_eq!(origin.to_string(), wire);
+            assert_eq!(AssetOrigin::from_str(wire).unwrap(), origin);
+            assert_eq!(serde_json::to_value(origin).unwrap(), json!(wire));
+        }
+        assert_eq!(AssetOrigin::default(), AssetOrigin::Admin);
+        assert!(!AssetOrigin::Admin.is_import());
+        assert!(AssetOrigin::Import.is_import());
     }
 
     #[test]

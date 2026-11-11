@@ -159,6 +159,30 @@ async fn apply_compat_columns(pool: &PgPool) -> Result<(), sqlx::Error> {
         )
         .execute(pool)
         .await?;
+        sqlx::query(
+            "ALTER TABLE assets
+             ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'admin'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE assets
+             ADD COLUMN IF NOT EXISTS operasi_id UUID REFERENCES operasis(id) ON DELETE CASCADE",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE assets
+             ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_assets_operasi_id ON assets (operasi_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_assets_origin ON assets (origin)")
+            .execute(pool)
+            .await?;
     }
     let markers: Option<String> = sqlx::query_scalar("SELECT to_regclass('public.markers')::text")
         .fetch_one(pool)

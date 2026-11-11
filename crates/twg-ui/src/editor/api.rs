@@ -4,11 +4,10 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+use std::path::PathBuf;
 use twg_client::api::{ApiError, ApiHandle, ApiResponse, HttpMethod};
 use twg_client::session::{NavItem, Screen};
-#[cfg(not(target_arch = "wasm32"))]
-use twg_contracts::assets::AssetSourceSlot;
-use twg_contracts::assets::{AssetCategory, AssetModelKind};
+use twg_contracts::assets::{AssetCategory, AssetModelKind, AssetMoveMode, AssetSourceSlot};
 use twg_contracts::geocode::GeocodeResult;
 use twg_contracts::map::{
     Building, BuildingCreateRequest, BuildingGeomUpdateRequest, BuildingUpdateRequest, Line,
@@ -18,14 +17,14 @@ use twg_contracts::map::{
     TextMarker, TextMarkerCreateRequest, TextMarkerGeomUpdateRequest, TextMarkerUpdateRequest,
 };
 use twg_contracts::scenarios::Scenario;
-use twg_domain::{BaseLayer as DomainBaseLayer, MapMode};
+use twg_domain::{BaseLayer as DomainBaseLayer, MapMode, Role};
 use twg_map::{BaseLayer, GeoPoint, MapCameraState};
 use twg_render::EditorShapeKind;
 #[cfg(not(target_arch = "wasm32"))]
 use twg_render::cache_asset_path;
 use uuid::Uuid;
 
-use crate::state::{ClientUi, ToastKind};
+use crate::state::{ClientUi, JobKind, ToastKind};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::model::MarkerAssetModel;
@@ -52,7 +51,6 @@ pub enum EditorJobKind {
     Delete,
     Geocode,
     SaveView,
-    UploadTexture,
 }
 
 pub struct EditorJob {
@@ -76,6 +74,7 @@ impl ClientUi {
             .or_else(|| self.data.scenarios.first().map(|scenario| scenario.id));
         self.editor.reset();
         self.editor.scenario_id = scenario_id;
+        self.imports.clear();
         self.state.nav = NavItem::Preview;
         self.state.screen = Screen::MapEditor;
         self.refresh_assets();
@@ -129,6 +128,77 @@ impl ClientUi {
         }
     }
 
+    /// Reloads the import assets of the operation shown in the editor.
+    pub fn refresh_imports(&mut self) {
+        let Some(operation_id) = self.editor.operation_id else {
+            self.imports.clear();
+            return;
+        };
+        let path = format!("/private/assets?origin=import&operasi_id={operation_id}");
+        let handle = self.api.request(HttpMethod::Get, path, None);
+        self.track(JobKind::Imports, handle);
+    }
+
+    /// Uploads the Import tab draft to the current scenario's operation.
+    pub fn begin_import_upload(&mut self) {
+        self.editor.import_error = None;
+        if self.editor.import_busy {
+            return;
+        }
+        let Some(operation_id) = self.editor.operation_id else {
+            self.editor.import_error =
+                Some("Operasi skenario belum dimuat; tunggu sebentar.".to_owned());
+            return;
+        };
+        let payload = {
+            let draft = self.editor.import_draft.clone();
+            let name = draft.name.trim().to_owned();
+            if name.is_empty() {
+                self.editor.import_error = Some("Nama aset wajib diisi.".to_owned());
+                return;
+            }
+            let slots = draft.slots();
+            if slots
+                .iter()
+                .enumerate()
+                .any(|(index, _)| draft.file(index).is_none())
+            {
+                self.editor.import_error =
+                    Some(format!("Pilih {} file untuk kategori ini.", slots.len()));
+                return;
+            }
+            let model_kind = draft.category.is_model().then_some(draft.model_kind);
+            crate::state::multipart_asset_body(
+                &name,
+                draft.category,
+                model_kind,
+                draft.move_mode,
+                None,
+                Some(operation_id),
+                &draft.files[..slots.len()],
+            )
+        };
+        match payload {
+            Ok((content_type, body)) => {
+                self.editor.import_busy = true;
+                let handle = self.api.upload("/private/imports", content_type, body);
+                self.track(JobKind::ImportUpload, handle);
+            }
+            Err(error) => self.editor.import_error = Some(error),
+        }
+    }
+
+    /// Deletes one import asset; the server only accepts the uploader or an
+    /// admin.
+    pub fn begin_import_delete(&mut self, asset_id: Uuid) {
+        let handle = self.api.request(
+            HttpMethod::Delete,
+            format!("/private/imports/{asset_id}"),
+            None,
+        );
+        self.track(JobKind::ImportDelete, handle);
+    }
+
     fn load_map_defaults(&mut self) {
         self.editor.requested_flight = Some(MapCameraState::default());
         self.editor.requested_layer = Some(BaseLayer::OpenStreetMap);
@@ -141,6 +211,7 @@ impl ClientUi {
         let signature = self
             .assets
             .iter()
+            .chain(self.imports.iter())
             .map(|asset| (asset.id, asset.version, asset.move_mode))
             .collect::<Vec<_>>();
         if signature == self.editor.marker_model_signature {
@@ -156,7 +227,7 @@ impl ClientUi {
                 let cache = cache.lock().expect("asset cache poisoned");
                 let root = Path::new(&root);
                 let base = self.base_url.trim_end_matches('/');
-                for asset in &self.assets {
+                for asset in self.assets.iter().chain(self.imports.iter()) {
                     if asset.category.is_image() {
                         let Some(source) = asset.sources.first() else {
                             continue;
@@ -250,6 +321,7 @@ impl ClientUi {
         let textures = self
             .assets
             .iter()
+            .chain(self.imports.iter())
             .filter(|asset| asset.category.is_image())
             .filter_map(|asset| {
                 let source = asset.sources.first()?;
@@ -266,24 +338,94 @@ impl ClientUi {
         self.editor.touch();
     }
 
-    /// Server models shown in the editor's Assets tab.
+    /// Server models shown in the editor's Assets tab: admin-library models
+    /// plus the imports of the current operation.
     pub fn editor_asset_rows(&self) -> Vec<EditorAssetRow> {
+        let previews = self.asset_preview_map();
         self.assets
             .iter()
+            .chain(self.imports.iter())
             .filter(|asset| asset.category == AssetCategory::Model)
-            .map(|asset| EditorAssetRow {
-                unit_id: asset.id.to_string(),
-                name: asset.name.clone(),
-                kind_label: match asset.model_kind {
-                    Some(AssetModelKind::Animated) => "Animasi".to_owned(),
-                    _ => "Static".to_owned(),
-                },
-                cached: self
-                    .editor
-                    .marker_models
-                    .contains_key(&asset.id.to_string()),
-            })
+            .map(|asset| self.asset_row(asset, &previews))
             .collect()
+    }
+
+    /// Everything imported into the current operation, including textures and
+    /// icons, for the Import tab list.
+    pub fn editor_import_rows(&self) -> Vec<EditorAssetRow> {
+        let previews = self.asset_preview_map();
+        let mut rows = self
+            .imports
+            .iter()
+            .map(|asset| self.asset_row(asset, &previews))
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| row.name.to_lowercase());
+        rows
+    }
+
+    fn asset_row(
+        &self,
+        asset: &twg_contracts::assets::Asset,
+        previews: &BTreeMap<String, PathBuf>,
+    ) -> EditorAssetRow {
+        let animated = asset.model_kind == Some(AssetModelKind::Animated)
+            || asset
+                .sources
+                .iter()
+                .any(|source| source.slot == AssetSourceSlot::Animated);
+        let move_mode_label = match asset.move_mode {
+            AssetMoveMode::None => "tidak bisa pindah".to_owned(),
+            AssetMoveMode::Limited => "pindah via gizmo".to_owned(),
+            AssetMoveMode::Free if animated => "pindah bebas (animasi)".to_owned(),
+            AssetMoveMode::Free => "pindah bebas".to_owned(),
+        };
+        let size = asset
+            .sources
+            .iter()
+            .map(|source| source.file.size_bytes)
+            .sum::<i64>();
+        let preview = self
+            .cached_asset_preview(asset.id)
+            .or_else(|| previews.get(&asset.id.to_string()).cloned());
+        let imported = asset.origin.is_import();
+        let is_model = asset.category == AssetCategory::Model;
+        let user_id = self.session().map(|session| session.user_id);
+        let can_delete = imported
+            && (self.role() == Role::Admin
+                || (asset.owner_id.is_some() && asset.owner_id == user_id));
+        let id = asset.id.to_string();
+        let cached = if is_model {
+            self.editor.marker_models.contains_key(&id)
+        } else {
+            self.editor.texture_paths.contains_key(&id)
+        };
+        let kind_label = match asset.category {
+            AssetCategory::Model if animated => "Animasi",
+            AssetCategory::Model => "Static",
+            AssetCategory::Texture => "Tekstur",
+            AssetCategory::Icon => "Ikon",
+        };
+        EditorAssetRow {
+            unit_id: id,
+            name: asset.name.clone(),
+            kind_label: kind_label.to_owned(),
+            cached,
+            group: if imported {
+                "Import".to_owned()
+            } else {
+                asset
+                    .group_name
+                    .clone()
+                    .unwrap_or_else(|| "Tanpa kategori".to_owned())
+            },
+            move_mode_label,
+            version: asset.version,
+            size_label: format_size(size),
+            imported,
+            is_model,
+            can_delete,
+            preview,
+        }
     }
 
     /// Image assets available as shape textures in the Inspector.
@@ -291,6 +433,7 @@ impl ClientUi {
         let mut rows = self
             .assets
             .iter()
+            .chain(self.imports.iter())
             .filter(|asset| asset.category.is_image())
             .map(|asset| EditorTextureRow {
                 id: asset.id.to_string(),
@@ -299,6 +442,7 @@ impl ClientUi {
                     .editor
                     .texture_paths
                     .contains_key(&asset.id.to_string()),
+                imported: asset.origin.is_import(),
             })
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -456,32 +600,6 @@ impl ClientUi {
         });
     }
 
-    pub fn editor_upload_texture(&mut self, key: ObjectKey, path: std::path::PathBuf) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            match super::textures::multipart_image_body(&path) {
-                Ok((content_type, body)) => {
-                    self.editor.pending_texture_uploads.insert(key, path);
-                    let handle = self.api.upload("/private/upload-image", content_type, body);
-                    self.editor.jobs.push(EditorJob {
-                        kind: EditorJobKind::UploadTexture,
-                        key: Some(key),
-                        handle,
-                    });
-                    self.editor.log("Mengunggah tekstur ke server...");
-                }
-                Err(error) => {
-                    self.editor.log(error);
-                    self.toast("Gagal menyiapkan tekstur.", ToastKind::Error);
-                }
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (key, path);
-        }
-    }
-
     pub fn tick_editor_jobs(&mut self) {
         let jobs = std::mem::take(&mut self.editor.jobs);
         for job in jobs {
@@ -594,27 +712,6 @@ impl ClientUi {
                     response.data::<Particle>().map(|particle| particle.id)
                 });
             }
-            EditorJobKind::UploadTexture => {
-                let source = key.and_then(|key| self.editor.pending_texture_uploads.remove(&key));
-                match result.and_then(|response| response.data::<String>()) {
-                    Ok(url) => {
-                        if let Some(key) = key {
-                            self.editor
-                                .apply_uploaded_texture(key, &url, source.as_deref());
-                        }
-                        self.editor.log(format!("Tekstur diunggah: {url}"));
-                        self.toast(
-                            "Tekstur diunggah ke server. Simpan skenario agar bisa dilihat di komputer lain.",
-                            ToastKind::Success,
-                        );
-                    }
-                    Err(error) => {
-                        let message = format!("Gagal mengunggah tekstur: {}", error.message);
-                        self.editor.log(message.clone());
-                        self.toast(message, ToastKind::Error);
-                    }
-                }
-            }
             EditorJobKind::Update | EditorJobKind::Delete => {
                 if let Err(error) = result {
                     self.editor.save_error = Some(error.message);
@@ -676,6 +773,7 @@ impl ClientUi {
 
     fn apply_scenario(&mut self, scenario: Scenario) {
         self.editor.operation_id = Some(scenario.operasi.id);
+        self.refresh_imports();
         self.editor.scenario_name = scenario.name.clone();
         self.editor.scenario_center = GeoPoint::new(scenario.center_x, scenario.center_y);
         self.editor.indoor = scenario.map_mode == MapMode::Indoor;
@@ -1035,6 +1133,19 @@ fn node_world(
     visiting[index] = false;
     cache[index] = Some(world);
     world
+}
+
+fn format_size(bytes: i64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let bytes = bytes.max(0) as f64;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes / MB)
+    } else if bytes >= KB {
+        format!("{:.0} KB", bytes / KB)
+    } else {
+        format!("{} B", bytes as i64)
+    }
 }
 
 fn marker_object(marker: Marker) -> EditorObject {

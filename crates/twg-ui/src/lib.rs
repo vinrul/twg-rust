@@ -9,11 +9,15 @@ use bevy_egui::{
 use std::path::PathBuf;
 use twg_client::{ApiClient, WsTransport};
 use twg_contracts::assets::{AssetSourceSlot, AssetVariantKind};
+#[cfg(not(target_arch = "wasm32"))]
+use twg_render::PreviewPhase;
 use twg_render::{
     AssetPreview, AssetPreviewRequest, MapUpdateSet, MarkerModelOverride, MarkerModelPath,
     MarkerModelReload, PREVIEW_SLOTS, PreviewOrbitInput, PreviewOrbitInputs, UiPointerState,
     cache_asset_path,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use uuid::Uuid;
 
 mod asset_groups_screen;
 mod assets_screen;
@@ -27,6 +31,8 @@ pub mod theme;
 pub mod widgets;
 
 pub use state::ClientUi;
+#[cfg(not(target_arch = "wasm32"))]
+use state::ToastKind;
 
 /// Asset selected with **Gunakan**, resolved to offline cache paths. Editors
 /// and gameplay systems read this resource instead of loading from the server.
@@ -161,10 +167,20 @@ fn track_ui_pointer(
 fn draw_client_shell(
     mut contexts: EguiContexts,
     mut client: ResMut<ClientUi>,
+    mut commands: Commands,
     preview: Option<Res<AssetPreview>>,
     orbit: Option<ResMut<PreviewOrbitInputs>>,
 ) -> Result {
     client.poll();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(asset_id) = client.asset_preview_capture.take() {
+        request_asset_preview_capture(&mut commands, &mut client, preview.as_deref(), asset_id);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = client.asset_preview_capture.take();
+        let _ = &mut commands;
+    }
     if let Some(preview) = preview {
         let mut panels = Vec::with_capacity(PREVIEW_SLOTS);
         for (slot, preview_slot) in preview.slots.iter().enumerate() {
@@ -194,6 +210,81 @@ fn draw_client_shell(
         client.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];
     }
     Ok(())
+}
+
+/// Captures the offscreen asset preview render target to a timestamped PNG in
+/// the offline cache. The editor tooltip looks up the newest file per asset.
+#[cfg(not(target_arch = "wasm32"))]
+fn request_asset_preview_capture(
+    commands: &mut Commands,
+    client: &mut ClientUi,
+    preview: Option<&AssetPreview>,
+    asset_id: Uuid,
+) {
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+
+    let Some(preview) = preview else {
+        client.toast("Preview aset tidak tersedia.", ToastKind::Error);
+        return;
+    };
+    let Some(slot) = preview
+        .slots
+        .iter()
+        .find(|slot| slot.asset_id == Some(asset_id))
+    else {
+        client.toast(
+            "Preview aset belum dimuat. Buka detail aset terlebih dahulu.",
+            ToastKind::Error,
+        );
+        return;
+    };
+    if slot.phase != PreviewPhase::Ready {
+        client.toast(
+            "Preview aset belum siap; coba lagi sebentar.",
+            ToastKind::Error,
+        );
+        return;
+    }
+    let Some(image) = slot.image.clone() else {
+        client.toast("Preview aset belum siap.", ToastKind::Error);
+        return;
+    };
+    let Some(root) = client.asset_cache_root() else {
+        client.toast("Cache aset lokal tidak tersedia.", ToastKind::Error);
+        return;
+    };
+    let dir = std::path::Path::new(&root).join("previews");
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        client.toast(
+            format!("Gagal membuat folder preview: {error}"),
+            ToastKind::Error,
+        );
+        return;
+    }
+    // Only the newest screenshot per asset is used by the editor tooltip.
+    let prefix = format!("{asset_id}_");
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let path = dir.join(format!("{asset_id}_{stamp}.png"));
+    client
+        .pending_preview_uploads
+        .push((asset_id, path.clone()));
+    commands
+        .spawn(Screenshot::image(image))
+        .observe(save_to_disk(path));
+    client.toast(
+        "Preview aset dibuat; mengunggah ke server...",
+        ToastKind::Info,
+    );
 }
 
 /// Feeds window drag & drop messages into the asset upload form.

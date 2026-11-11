@@ -1,18 +1,20 @@
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{Extension, Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{FixedOffset, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
+use twg_auth::AuthContext;
 use twg_contracts::assets::{
     Asset, AssetCategory, AssetGroup, AssetGroupRequest, AssetManifest, AssetModelKind,
-    AssetMoveMode, AssetSourceSlot, AssetUpdateRequest, AssetVariantKind, ConvertRequest,
-    ConvertResult, ConvertTarget,
+    AssetMoveMode, AssetOrigin, AssetSourceSlot, AssetUpdateRequest, AssetVariantKind,
+    ConvertRequest, ConvertResult, ConvertTarget,
 };
 use twg_contracts::uploads::ALLOWED_IMAGE_TYPES;
 use twg_contracts::{ListResponse, MessageResponse, SingleResponse};
+use twg_domain::Role;
 use twg_storage::{NewAsset, NewAssetSource, NewAssetVariant};
 use uuid::Uuid;
 
@@ -32,6 +34,10 @@ pub struct ListAssetsQuery {
     category: Option<String>,
     #[serde(default)]
     search: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
+    operasi_id: Option<String>,
 }
 
 fn timestamp() -> twg_contracts::Timestamp {
@@ -73,6 +79,23 @@ fn parse_move_mode(raw: Option<&str>) -> Result<AssetMoveMode, ApiError> {
     };
     AssetMoveMode::from_str(value)
         .map_err(|_| ApiError::bad_request("move_mode must be one of: none, limited, free"))
+}
+
+/// Adds the stored preview URL/version to asset responses so every client can
+/// discover and sync the screenshot.
+async fn attach_previews(state: &AppState, assets: &mut [Asset]) {
+    for asset in assets {
+        match state.asset_files.preview_version(asset.id).await {
+            Some(version) => {
+                asset.preview_url = Some(format!("/assets/{}/preview.png", asset.id));
+                asset.preview_version = Some(version);
+            }
+            None => {
+                asset.preview_url = None;
+                asset.preview_version = None;
+            }
+        }
+    }
 }
 
 /// Validates one uploaded source file and fills the metadata stored in
@@ -146,7 +169,39 @@ fn prepare_source(
 
 pub async fn upload(
     State(state): State<AppState>,
+    Extension(context): Extension<AuthContext>,
+    multipart: Multipart,
+) -> Result<(StatusCode, Json<SingleResponse<Asset>>), ApiError> {
+    create_asset(
+        state,
+        multipart,
+        AssetOrigin::Admin,
+        Some(context.subject.user_id),
+    )
+    .await
+}
+
+/// Any signed-in user may add an import asset; it is scoped to one operation
+/// and has no admin asset category.
+pub async fn import_upload(
+    State(state): State<AppState>,
+    Extension(context): Extension<AuthContext>,
+    multipart: Multipart,
+) -> Result<(StatusCode, Json<SingleResponse<Asset>>), ApiError> {
+    create_asset(
+        state,
+        multipart,
+        AssetOrigin::Import,
+        Some(context.subject.user_id),
+    )
+    .await
+}
+
+async fn create_asset(
+    state: AppState,
     mut multipart: Multipart,
+    origin: AssetOrigin,
+    created_by: Option<Uuid>,
 ) -> Result<(StatusCode, Json<SingleResponse<Asset>>), ApiError> {
     let store = asset_store(&state)?;
 
@@ -155,6 +210,7 @@ pub async fn upload(
     let mut model_kind = None;
     let mut move_mode = None;
     let mut group_id = None;
+    let mut operasi_id = None;
     let mut files: HashMap<String, (String, Bytes)> = HashMap::new();
     while let Some(field) = multipart
         .next_field()
@@ -184,6 +240,11 @@ pub async fn upload(
                     ApiError::bad_request(format!("invalid group_id: {error}"))
                 })?);
             }
+            "operasi_id" => {
+                operasi_id = Some(field.text().await.map_err(|error| {
+                    ApiError::bad_request(format!("invalid operasi_id: {error}"))
+                })?);
+            }
             "move_mode" => {
                 move_mode = Some(field.text().await.map_err(|error| {
                     ApiError::bad_request(format!("invalid move_mode: {error}"))
@@ -203,20 +264,41 @@ pub async fn upload(
 
     let name = valid_name(&name.unwrap_or_default())?;
     let category = parse_category(category.as_deref())?;
-    let group_id = group_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("group_id is required: choose an asset category"))?;
-    let group_id =
-        Uuid::parse_str(group_id).map_err(|_| ApiError::bad_request("group_id must be a UUID"))?;
-    if !store
-        .group_exists(group_id)
-        .await
-        .map_err(ApiError::internal)?
-    {
-        return Err(ApiError::bad_request("asset category not found"));
-    }
+    let (group_id, operasi_id) = if origin.is_import() {
+        let raw = operasi_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::bad_request("operasi_id is required for import uploads"))?;
+        let operasi_id =
+            Uuid::parse_str(raw).map_err(|_| ApiError::bad_request("operasi_id must be a UUID"))?;
+        if !store
+            .operation_exists(operasi_id)
+            .await
+            .map_err(ApiError::internal)?
+        {
+            return Err(ApiError::bad_request("operation not found"));
+        }
+        (None, Some(operasi_id))
+    } else {
+        let group_id = group_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ApiError::bad_request("group_id is required: choose an asset category")
+            })?;
+        let group_id = Uuid::parse_str(group_id)
+            .map_err(|_| ApiError::bad_request("group_id must be a UUID"))?;
+        if !store
+            .group_exists(group_id)
+            .await
+            .map_err(ApiError::internal)?
+        {
+            return Err(ApiError::bad_request("asset category not found"));
+        }
+        (Some(group_id), None)
+    };
 
     // Models must say whether they are static (one file) or animated (idle +
     // animated). Textures/icons always use the `static` slot.
@@ -307,11 +389,17 @@ pub async fn upload(
             model_kind,
             move_mode,
             group_id,
+            origin,
+            operasi_id,
+            created_by,
             sources,
         })
         .await;
     match created {
-        Ok(asset) => Ok((StatusCode::CREATED, Json(SingleResponse::success(asset)))),
+        Ok(mut asset) => {
+            attach_previews(&state, std::slice::from_mut(&mut asset)).await;
+            Ok((StatusCode::CREATED, Json(SingleResponse::success(asset))))
+        }
         Err(error) => {
             let _ = state.asset_files.remove_asset_dir(asset_id).await;
             Err(ApiError::internal(error))
@@ -397,10 +485,31 @@ pub async fn list(
                 .map_err(|_| ApiError::bad_request("invalid asset category"))?,
         ),
     };
-    let assets = asset_store(&state)?
-        .list(category, query.search.as_deref().unwrap_or(""))
+    let origin = match query.origin.as_deref().map(str::trim) {
+        None | Some("") | Some("admin") => AssetOrigin::Admin,
+        Some("import") => AssetOrigin::Import,
+        Some(_) => return Err(ApiError::bad_request("invalid asset origin")),
+    };
+    let operasi_id = query
+        .operasi_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            Uuid::parse_str(value).map_err(|_| ApiError::bad_request("invalid operasi_id"))
+        })
+        .transpose()?;
+    let scope = if origin.is_import() { operasi_id } else { None };
+    let mut assets = asset_store(&state)?
+        .list(
+            category,
+            query.search.as_deref().unwrap_or(""),
+            Some(origin),
+            scope,
+        )
         .await
         .map_err(ApiError::internal)?;
+    attach_previews(&state, &mut assets).await;
     let total = assets.len();
     Ok(Json(ListResponse::new(assets, total)))
 }
@@ -408,10 +517,11 @@ pub async fn list(
 pub async fn manifest(
     State(state): State<AppState>,
 ) -> Result<Json<SingleResponse<AssetManifest>>, ApiError> {
-    let assets = asset_store(&state)?
-        .list(None, "")
+    let mut assets = asset_store(&state)?
+        .list(None, "", None, None)
         .await
         .map_err(ApiError::internal)?;
+    attach_previews(&state, &mut assets).await;
     Ok(Json(SingleResponse::success(AssetManifest {
         generated_at: timestamp(),
         assets,
@@ -422,11 +532,12 @@ pub async fn detail(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<SingleResponse<Asset>>, ApiError> {
-    let asset = asset_store(&state)?
+    let mut asset = asset_store(&state)?
         .get(id)
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("asset not found"))?;
+    attach_previews(&state, std::slice::from_mut(&mut asset)).await;
     Ok(Json(SingleResponse::success(asset)))
 }
 
@@ -477,7 +588,7 @@ pub async fn update(
     let bump_version = request
         .category
         .is_some_and(|category| category != current.category);
-    let asset = store
+    let mut asset = store
         .update(
             id,
             name.as_deref(),
@@ -489,6 +600,7 @@ pub async fn update(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("asset not found"))?;
+    attach_previews(&state, std::slice::from_mut(&mut asset)).await;
     Ok(Json(SingleResponse::success(asset)))
 }
 
@@ -566,7 +678,7 @@ pub async fn replace_source(
         .replace_source(id, source.clone())
         .await
         .map_err(ApiError::internal)?;
-    let Some(asset) = replaced else {
+    let Some(mut asset) = replaced else {
         let _ = state
             .asset_files
             .remove_file(id, slot, &source.filename)
@@ -595,7 +707,84 @@ pub async fn replace_source(
                 .await;
         }
     }
+    attach_previews(&state, std::slice::from_mut(&mut asset)).await;
     Ok(Json(SingleResponse::success(asset)))
+}
+
+/// Stores the PNG screenshot produced by the Assets screen. The file is served
+/// from `/assets/{id}/preview.png` and advertised in the asset manifest, so all
+/// clients download the same preview.
+pub async fn upload_preview(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    body: Bytes,
+) -> Result<Json<SingleResponse<Asset>>, ApiError> {
+    store_preview(state, id, AssetOrigin::Admin, body).await
+}
+
+/// Preview upload for assets imported from the scenario editor. Import assets
+/// are shared by every user of the operation, so any signed-in user may set the
+/// preview.
+pub async fn upload_import_preview(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    body: Bytes,
+) -> Result<Json<SingleResponse<Asset>>, ApiError> {
+    store_preview(state, id, AssetOrigin::Import, body).await
+}
+
+async fn store_preview(
+    state: AppState,
+    id: Uuid,
+    origin: AssetOrigin,
+    body: Bytes,
+) -> Result<Json<SingleResponse<Asset>>, ApiError> {
+    if body.len() < 8 || &body[..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err(ApiError::bad_request("preview must be a PNG image"));
+    }
+    if body.len() > 8 * 1024 * 1024 {
+        return Err(ApiError::bad_request("preview is larger than 8 MB"));
+    }
+    let store = asset_store(&state)?;
+    let mut asset = store
+        .get(id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("asset not found"))?;
+    if asset.origin != origin {
+        return Err(ApiError::not_found("asset not found"));
+    }
+    state
+        .asset_files
+        .write_preview(id, &body)
+        .await
+        .map_err(ApiError::internal)?;
+    attach_previews(&state, std::slice::from_mut(&mut asset)).await;
+    Ok(Json(SingleResponse::success(asset)))
+}
+
+pub async fn delete_import(
+    State(state): State<AppState>,
+    Extension(context): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MessageResponse>, ApiError> {
+    let allow_any = context.subject.role == Role::Admin;
+    let removed = asset_store(&state)?
+        .delete_import(id, context.subject.user_id, allow_any)
+        .await
+        .map_err(ApiError::internal)?;
+    if !removed {
+        return Err(ApiError::not_found("import asset not found"));
+    }
+    state
+        .asset_files
+        .remove_asset_dir(id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(MessageResponse {
+        code: 200,
+        message: "success".to_owned(),
+    }))
 }
 
 pub async fn delete(
@@ -628,7 +817,7 @@ pub async fn convert(
     Json(request): Json<ConvertRequest>,
 ) -> Result<Json<SingleResponse<ConvertResult>>, ApiError> {
     let store = asset_store(&state)?;
-    let asset = store
+    let mut asset = store
         .get(id)
         .await
         .map_err(ApiError::internal)?
@@ -642,6 +831,7 @@ pub async fn convert(
 
     if !request.force {
         if let Some(existing) = source.variant(kind) {
+            attach_previews(&state, std::slice::from_mut(&mut asset)).await;
             return Ok(Json(SingleResponse::success(ConvertResult {
                 asset,
                 slot,
@@ -653,7 +843,7 @@ pub async fn convert(
         // The uploaded file already satisfies the target: link the source
         // instead of re-encoding an identical result.
         if source_satisfies(&source, kind) {
-            let updated = store
+            let mut updated = store
                 .upsert_variant(
                     id,
                     slot,
@@ -671,6 +861,7 @@ pub async fn convert(
                 .await
                 .map_err(ApiError::internal)?
                 .ok_or_else(|| ApiError::not_found("asset not found"))?;
+            attach_previews(&state, std::slice::from_mut(&mut updated)).await;
             return Ok(Json(SingleResponse::success(ConvertResult {
                 asset: updated,
                 slot,
@@ -744,7 +935,7 @@ pub async fn convert(
         .await
         .map_err(ApiError::internal)?;
 
-    let updated = store
+    let mut updated = store
         .upsert_variant(
             id,
             slot,
@@ -763,6 +954,7 @@ pub async fn convert(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("asset not found"))?;
 
+    attach_previews(&state, std::slice::from_mut(&mut updated)).await;
     Ok(Json(SingleResponse::success(ConvertResult {
         asset: updated,
         slot,

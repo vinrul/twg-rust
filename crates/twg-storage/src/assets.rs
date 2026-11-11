@@ -5,8 +5,8 @@ use sqlx::postgres::PgPool;
 use std::str::FromStr;
 use twg_contracts::Timestamp;
 use twg_contracts::assets::{
-    Asset, AssetCategory, AssetFile, AssetGroup, AssetModelKind, AssetMoveMode, AssetSource,
-    AssetSourceSlot, AssetVariant, AssetVariantKind,
+    Asset, AssetCategory, AssetFile, AssetGroup, AssetModelKind, AssetMoveMode, AssetOrigin,
+    AssetSource, AssetSourceSlot, AssetVariant, AssetVariantKind,
 };
 use uuid::Uuid;
 
@@ -42,7 +42,11 @@ pub struct NewAsset {
     pub category: AssetCategory,
     pub model_kind: Option<AssetModelKind>,
     pub move_mode: AssetMoveMode,
-    pub group_id: Uuid,
+    /// Admin assets belong to an asset group; imports are scoped by operation.
+    pub group_id: Option<Uuid>,
+    pub origin: AssetOrigin,
+    pub operasi_id: Option<Uuid>,
+    pub created_by: Option<Uuid>,
     pub sources: Vec<NewAssetSource>,
 }
 
@@ -61,16 +65,23 @@ impl AssetStore {
         &self,
         category: Option<AssetCategory>,
         search: &str,
+        origin: Option<AssetOrigin>,
+        operasi_id: Option<Uuid>,
     ) -> Result<Vec<Asset>, sqlx::Error> {
         let rows = sqlx::query_as::<_, AssetRow>(
             "SELECT a.id, a.name, a.category, a.model_kind, a.move_mode, a.version, a.created_at,
-                    a.updated_at, a.group_id, g.name AS group_name
+                    a.updated_at, a.group_id, g.name AS group_name, a.origin, a.operasi_id,
+                    a.created_by
              FROM assets a
              LEFT JOIN asset_groups g ON g.id = a.group_id
              WHERE ($1::text IS NULL OR a.category = $1)
+               AND ($2::text IS NULL OR a.origin = $2)
+               AND ($3::uuid IS NULL OR a.operasi_id = $3)
              ORDER BY a.created_at ASC",
         )
         .bind(category.map(|value| value.to_string()))
+        .bind(origin.map(|value| value.to_string()))
+        .bind(operasi_id)
         .fetch_all(&self.pool)
         .await?;
         let needle = search.trim().to_lowercase();
@@ -84,7 +95,8 @@ impl AssetStore {
     pub async fn get(&self, id: Uuid) -> Result<Option<Asset>, sqlx::Error> {
         let row = sqlx::query_as::<_, AssetRow>(
             "SELECT a.id, a.name, a.category, a.model_kind, a.move_mode, a.version, a.created_at,
-                    a.updated_at, a.group_id, g.name AS group_name
+                    a.updated_at, a.group_id, g.name AS group_name, a.origin, a.operasi_id,
+                    a.created_by
              FROM assets a
              LEFT JOIN asset_groups g ON g.id = a.group_id
              WHERE a.id = $1",
@@ -101,8 +113,9 @@ impl AssetStore {
     pub async fn create(&self, asset: NewAsset) -> Result<Asset, sqlx::Error> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO assets (id, name, category, model_kind, move_mode, group_id)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO assets (id, name, category, model_kind, move_mode, group_id, origin,
+                                 operasi_id, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(asset.id)
         .bind(&asset.name)
@@ -110,6 +123,9 @@ impl AssetStore {
         .bind(asset.model_kind.map(|kind| kind.to_string()))
         .bind(asset.move_mode.to_string())
         .bind(asset.group_id)
+        .bind(asset.origin.to_string())
+        .bind(asset.operasi_id)
+        .bind(asset.created_by)
         .execute(&mut *transaction)
         .await?;
         for source in &asset.sources {
@@ -186,6 +202,13 @@ impl AssetStore {
 
     pub async fn group_exists(&self, id: Uuid) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM asset_groups WHERE id = $1)")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn operation_exists(&self, id: Uuid) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM operasis WHERE id = $1)")
             .bind(id)
             .fetch_one(&self.pool)
             .await
@@ -276,6 +299,27 @@ impl AssetStore {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Deletes an import asset when `user_id` uploaded it (or `allow_any` is
+    /// set for admins). Admin-library assets are never removed here, so the
+    /// editor cannot delete the shared catalogue.
+    pub async fn delete_import(
+        &self,
+        id: Uuid,
+        user_id: Uuid,
+        allow_any: bool,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "DELETE FROM assets
+             WHERE id = $1 AND origin = 'import' AND ($3 OR created_by = $2)",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(allow_any)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -465,6 +509,9 @@ struct AssetRow {
     version: Option<i64>,
     group_id: Option<Uuid>,
     group_name: Option<String>,
+    origin: Option<String>,
+    operasi_id: Option<Uuid>,
+    created_by: Option<Uuid>,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
 }
@@ -506,8 +553,18 @@ impl AssetRow {
             category,
             model_kind,
             move_mode,
+            origin: self
+                .origin
+                .as_deref()
+                .and_then(|value| AssetOrigin::from_str(value).ok())
+                .unwrap_or_default(),
+            operasi_id: self.operasi_id,
+            owner_id: self.created_by,
             group_id: self.group_id,
             group_name: self.group_name,
+            // Populated by the server after checking the stored files.
+            preview_url: None,
+            preview_version: None,
             sources,
             version: self.version.unwrap_or(1),
             created_at: wita_utc(self.created_at),

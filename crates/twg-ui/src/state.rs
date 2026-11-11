@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -76,7 +76,11 @@ pub enum JobKind {
     WsTicket,
     Assets,
     AssetManifest,
+    Imports,
+    ImportUpload,
+    ImportDelete,
     AssetUpload,
+    AssetPreviewUpload,
     AssetRename,
     AssetReplaceSource,
     AssetConvert,
@@ -371,6 +375,9 @@ pub struct ClientUi {
     pub last_screen: Screen,
     pub editor: EditorState,
     pub assets: Vec<Asset>,
+    /// Import assets of the operation loaded in the editor (all users of the
+    /// operation share them).
+    pub imports: Vec<Asset>,
     pub asset_filter: Option<AssetCategory>,
     pub asset_group_filter: Option<Uuid>,
     pub asset_search: String,
@@ -388,6 +395,11 @@ pub struct ClientUi {
     pub asset_group_error: Option<String>,
     /// Set while the user is about to drop a replacement file for a slot.
     pub asset_replace: Option<AssetReplaceTarget>,
+    /// Set when the Assets screen asks for a preview screenshot.
+    pub asset_preview_capture: Option<Uuid>,
+    /// Screenshot files waiting for the renderer to finish writing before the
+    /// upload to the server starts.
+    pub pending_preview_uploads: Vec<(Uuid, PathBuf)>,
     pub asset_upload: AssetUploadDraft,
     pub asset_sync: AssetSyncUi,
     pub preview: PreviewUi,
@@ -396,6 +408,9 @@ pub struct ClientUi {
     pub preview_retry: u64,
     pub used_asset: Option<UsedAsset>,
     pub pending_asset_nav: Option<NavItem>,
+    /// A manifest check was requested while a sync was running; run it again
+    /// when the current sync finishes so newly uploaded files are downloaded.
+    pub pending_asset_check: bool,
     pub dropped_files: Vec<PathBuf>,
     pub asset_prefer_variants: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -457,6 +472,7 @@ impl ClientUi {
             last_screen: Screen::Boot,
             editor: EditorState::new(),
             assets: Vec::new(),
+            imports: Vec::new(),
             asset_filter: None,
             asset_group_filter: None,
             asset_search: String::new(),
@@ -469,6 +485,8 @@ impl ClientUi {
             asset_group_edit_name: String::new(),
             asset_group_error: None,
             asset_replace: None,
+            asset_preview_capture: None,
+            pending_preview_uploads: Vec::new(),
             asset_upload: AssetUploadDraft::default(),
             asset_sync: AssetSyncUi::default(),
             preview: PreviewUi::default(),
@@ -477,6 +495,7 @@ impl ClientUi {
             preview_retry: 0,
             used_asset,
             pending_asset_nav: None,
+            pending_asset_check: false,
             dropped_files: Vec::new(),
             asset_prefer_variants: true,
             #[cfg(not(target_arch = "wasm32"))]
@@ -553,6 +572,7 @@ impl ClientUi {
         self.data = ClientData::default();
         self.close_ws();
         self.assets.clear();
+        self.imports.clear();
         self.selected_asset = None;
         self.asset_edit_name.clear();
         self.asset_edit_group_id = None;
@@ -676,6 +696,38 @@ impl ClientUi {
         self.tick_ws();
         self.tick_asset_sync();
         self.tick_editor_jobs();
+        self.poll_pending_preview_uploads();
+    }
+
+    fn poll_pending_preview_uploads(&mut self) {
+        if self.pending_preview_uploads.is_empty() {
+            return;
+        }
+        let mut remaining = Vec::new();
+        for (asset_id, path) in std::mem::take(&mut self.pending_preview_uploads) {
+            if !path.is_file() {
+                remaining.push((asset_id, path));
+                continue;
+            }
+            // Import assets have their own preview endpoint (no admin role
+            // required); admin-library assets keep using the admin route.
+            let endpoint = if self.imports.iter().any(|asset| asset.id == asset_id) {
+                format!("/private/imports/{asset_id}/preview")
+            } else {
+                format!("/admin/assets/{asset_id}/preview")
+            };
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let handle = self.api.upload(endpoint, "image/png", bytes);
+                    self.track(JobKind::AssetPreviewUpload, handle);
+                }
+                Err(error) => self.toast(
+                    format!("Gagal membaca file preview: {error}"),
+                    ToastKind::Error,
+                ),
+            }
+        }
+        self.pending_preview_uploads = remaining;
     }
 
     fn enter_session(&mut self, session: ClientSession) {
@@ -966,6 +1018,46 @@ impl ClientUi {
                     Err(error) => self.error(&error),
                 }
             }
+            JobKind::Imports => {
+                match result
+                    .and_then(|response| response.list::<Asset>().map(|(assets, _total)| assets))
+                {
+                    Ok(imports) => {
+                        self.imports = imports;
+                        self.sync_editor_marker_models();
+                    }
+                    Err(error) => self.error(&error),
+                }
+            }
+            JobKind::ImportUpload => {
+                self.editor.import_busy = false;
+                match result.and_then(|response| response.data::<Asset>()) {
+                    Ok(asset) => {
+                        self.toast(
+                            format!("Aset '{}' diimpor ke operasi ini.", asset.name),
+                            ToastKind::Success,
+                        );
+                        self.editor.import_draft.reset();
+                        self.editor.import_error = None;
+                        self.imports.insert(0, asset);
+                        self.sync_editor_marker_models();
+                        self.refresh_imports();
+                        self.request_asset_check(None);
+                    }
+                    Err(error) => {
+                        self.editor.import_error = Some(error.message.clone());
+                        self.error(&error);
+                    }
+                }
+            }
+            JobKind::ImportDelete => match result {
+                Ok(_) => {
+                    self.toast("Aset impor dihapus.", ToastKind::Success);
+                    self.refresh_imports();
+                    self.request_asset_check(None);
+                }
+                Err(error) => self.error(&error),
+            },
             JobKind::AssetGroupSave => match result {
                 Ok(_) => {
                     let editing = self.asset_group_edit_id.is_some();
@@ -1047,6 +1139,18 @@ impl ClientUi {
                         self.asset_upload.error = Some(error.message.clone());
                         self.error(&error);
                     }
+                }
+            }
+            JobKind::AssetPreviewUpload => {
+                match result.and_then(|response| response.data::<Asset>()) {
+                    Ok(asset) => {
+                        self.replace_asset(asset);
+                        self.toast("Preview aset disimpan di server.", ToastKind::Success);
+                        // Pull the manifest again so the preview is downloaded
+                        // into the offline cache on this machine too.
+                        self.sync_assets_now();
+                    }
+                    Err(error) => self.error(&error),
                 }
             }
             JobKind::AssetConvert => {
@@ -1202,6 +1306,8 @@ impl ClientUi {
             if self.asset_sync.state.is_busy() {
                 if nav.is_some() {
                     self.pending_asset_nav = nav;
+                } else {
+                    self.pending_asset_check = true;
                 }
                 return;
             }
@@ -1261,6 +1367,16 @@ impl ClientUi {
                 format!("{done} file aset diperbarui di cache offline."),
                 ToastKind::Info,
             );
+        }
+        if !failed && !self.editor.preview {
+            // Models that were missing before the sync are now in the cache;
+            // the signature alone cannot notice that, so rebuild once.
+            self.editor.marker_model_signature.clear();
+            self.sync_editor_marker_models();
+        }
+        if self.pending_asset_check {
+            self.pending_asset_check = false;
+            self.request_asset_check(None);
         }
     }
 
@@ -1339,13 +1455,14 @@ impl ClientUi {
     }
 
     fn replace_asset(&mut self, asset: Asset) {
-        match self
-            .assets
-            .iter_mut()
-            .find(|existing| existing.id == asset.id)
-        {
+        let list = if asset.origin.is_import() {
+            &mut self.imports
+        } else {
+            &mut self.assets
+        };
+        match list.iter_mut().find(|existing| existing.id == asset.id) {
             Some(existing) => *existing = asset,
-            None => self.assets.insert(0, asset),
+            None => list.insert(0, asset),
         }
     }
 
@@ -1391,6 +1508,66 @@ impl ClientUi {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            None
+        }
+    }
+
+    /// Latest saved preview screenshot per asset id. Desktop only; the web
+    /// build has no local filesystem cache.
+    pub fn asset_preview_map(&self) -> BTreeMap<String, PathBuf> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(root) = self.asset_cache_root() else {
+                return BTreeMap::new();
+            };
+            let dir = std::path::Path::new(&root).join("previews");
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                return BTreeMap::new();
+            };
+            let mut newest: BTreeMap<String, (u64, PathBuf)> = BTreeMap::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("png") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                let Some((asset_id, stamp)) = stem.rsplit_once('_') else {
+                    continue;
+                };
+                let Ok(stamp) = stamp.parse::<u64>() else {
+                    continue;
+                };
+                match newest.get(asset_id) {
+                    Some((current, _)) if *current >= stamp => {}
+                    _ => {
+                        newest.insert(asset_id.to_owned(), (stamp, path));
+                    }
+                }
+            }
+            newest
+                .into_iter()
+                .map(|(asset_id, (_, path))| (asset_id, path))
+                .collect()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            BTreeMap::new()
+        }
+    }
+
+    pub fn cached_asset_preview(&self, asset_id: Uuid) -> Option<PathBuf> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cache = self.asset_cache.as_ref()?;
+            let cache = cache.lock().expect("asset cache poisoned");
+            let path = cache.preview_path(asset_id);
+            path.is_file().then_some(path)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = asset_id;
             None
         }
     }
@@ -1480,7 +1657,8 @@ impl ClientUi {
             self.asset_upload.category,
             model_kind,
             self.asset_upload.move_mode,
-            group_id,
+            Some(group_id),
+            None,
             &self.asset_upload.files,
         ) {
             Ok(payload) => payload,
@@ -2445,19 +2623,25 @@ fn hex_value(byte: u8) -> Option<u8> {
 // ---------------------------------------------------------------- multipart
 
 /// Builds a `multipart/form-data` body for `POST /admin/assets`.
-fn multipart_asset_body(
+pub(crate) fn multipart_asset_body(
     name: &str,
     category: AssetCategory,
     model_kind: Option<AssetModelKind>,
     move_mode: AssetMoveMode,
-    group_id: Uuid,
+    group_id: Option<Uuid>,
+    operasi_id: Option<Uuid>,
     files: &[PathBuf],
 ) -> Result<(String, Vec<u8>), String> {
     let boundary = format!("----twg{}", Uuid::new_v4().simple());
     let mut body = Vec::new();
     push_form_field(&mut body, &boundary, "name", name);
     push_form_field(&mut body, &boundary, "category", &category.to_string());
-    push_form_field(&mut body, &boundary, "group_id", &group_id.to_string());
+    if let Some(group_id) = group_id {
+        push_form_field(&mut body, &boundary, "group_id", &group_id.to_string());
+    }
+    if let Some(operasi_id) = operasi_id {
+        push_form_field(&mut body, &boundary, "operasi_id", &operasi_id.to_string());
+    }
     if category.is_model() {
         push_form_field(&mut body, &boundary, "move_mode", &move_mode.to_string());
     }

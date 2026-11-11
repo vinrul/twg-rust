@@ -1,5 +1,6 @@
 use bevy_egui::egui;
 use twg_client::design::{DARK, FONT_SM, FONT_XS};
+use twg_contracts::assets::{AssetCategory, AssetModelKind, AssetMoveMode, AssetSourceSlot};
 use twg_map::{BaseLayer, GeoPoint};
 use twg_render::{EditorModelShading, EditorShapeKind};
 
@@ -12,7 +13,6 @@ use super::model::{
     MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, marker_color, parse_hex_color,
     particle_kind_label,
 };
-use super::textures;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum EditorAction {
@@ -24,11 +24,6 @@ enum EditorAction {
     SaveAndReload,
     Geocode,
     SaveView,
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    UploadTexture {
-        key: ObjectKey,
-        path: std::path::PathBuf,
-    },
 }
 
 pub fn draw(context: &egui::Context, client: &mut ClientUi) {
@@ -36,6 +31,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
     client.editor.base_url.clone_from(&client.base_url);
     client.sync_editor_marker_models();
     let asset_rows = client.editor_asset_rows();
+    let import_rows = client.editor_import_rows();
     let texture_rows = client.editor_texture_rows();
     let can_admin = client.role().is_admin_like();
     let mut action = EditorAction::None;
@@ -49,7 +45,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
                 draw_toolbar(ui, editor, &mut action);
                 draw_status(ui, editor);
                 draw_console_panel(ui, editor);
-                draw_scene_panel(ui, editor, &asset_rows);
+                draw_scene_panel(ui, editor, &asset_rows, &import_rows);
                 draw_inspector(ui, editor, can_admin, &texture_rows, &mut action);
             }
             draw_viewport(ui, editor);
@@ -83,6 +79,17 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         client.editor.requested_asset_sync = false;
         client.sync_assets_now();
     }
+    if client.editor.requested_import_upload {
+        client.editor.requested_import_upload = false;
+        client.begin_import_upload();
+    }
+    if let Some(asset_id) = client.editor.requested_import_delete.take() {
+        client.begin_import_delete(asset_id);
+    }
+    if client.editor.requested_import_refresh {
+        client.editor.requested_import_refresh = false;
+        client.refresh_imports();
+    }
 
     match action {
         EditorAction::Save => client.editor_save(),
@@ -98,7 +105,6 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         }
         EditorAction::Geocode => client.editor_geocode(),
         EditorAction::SaveView => client.editor_save_view(),
-        EditorAction::UploadTexture { key, path } => client.editor_upload_texture(key, path),
         EditorAction::None => {}
     }
 }
@@ -627,6 +633,12 @@ fn draw_asset_tab(ui: &mut egui::Ui, editor: &mut EditorState, asset_rows: &[Edi
         ));
         return;
     }
+    ui.add(
+        egui::TextEdit::singleline(&mut editor.asset_search)
+            .hint_text("Cari aset...")
+            .desired_width(f32::INFINITY)
+            .margin(egui::Margin::symmetric(8, 5)),
+    );
     let missing = asset_rows.iter().filter(|row| !row.cached).count();
     if missing > 0 {
         ui.horizontal_wrapped(|ui| {
@@ -637,20 +649,40 @@ fn draw_asset_tab(ui: &mut egui::Ui, editor: &mut EditorState, asset_rows: &[Edi
                 editor.requested_asset_sync = true;
             }
         });
+    } else {
+        ui.add_space(2.0);
+    }
+
+    let needle = editor.asset_search.trim().to_lowercase();
+    let mut groups: std::collections::BTreeMap<&str, Vec<&EditorAssetRow>> =
+        std::collections::BTreeMap::new();
+    for row in asset_rows {
+        if !needle.is_empty()
+            && !row.name.to_lowercase().contains(&needle)
+            && !row.group.to_lowercase().contains(&needle)
+        {
+            continue;
+        }
+        groups.entry(row.group.as_str()).or_default().push(row);
+    }
+    if groups.is_empty() {
+        ui.label(theme::muted("Tidak ada aset yang cocok."));
+        return;
+    }
+    for rows in groups.values_mut() {
+        rows.sort_by_key(|row| row.name.to_lowercase());
     }
     ui.label(theme::muted(if editor.asset_drag.is_some() {
         "Lepas di peta untuk menambah marker"
     } else {
-        "Tarik kartu ke peta atau klik Tambah"
+        "Tarik nama aset ke peta atau klik tombol +"
     }));
     egui::ScrollArea::vertical()
         .id_salt("editor_asset_list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let width = ui.available_width();
-            for row in asset_rows {
-                asset_card(ui, row, editor, width);
-                ui.add_space(6.0);
+            for (group, rows) in groups {
+                draw_asset_group(ui, editor, group, &rows, &needle);
             }
         });
     if let Some(drag) = &editor.asset_drag
@@ -672,71 +704,514 @@ fn draw_asset_tab(ui: &mut egui::Ui, editor: &mut EditorState, asset_rows: &[Edi
     }
 }
 
-fn asset_card(ui: &mut egui::Ui, row: &EditorAssetRow, editor: &mut EditorState, width: f32) {
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(width.max(160.0), 80.0),
+fn draw_asset_group(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    group: &str,
+    rows: &[&EditorAssetRow],
+    needle: &str,
+) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::click());
+    let open = !needle.is_empty() || !editor.asset_groups_closed.contains(group);
+    let painter = ui.painter().clone();
+    if response.hovered() {
+        painter.rect_filled(rect, 4.0, theme::color(DARK.secondary));
+    }
+    let center = rect.center().y;
+    let muted = theme::color(DARK.muted_foreground);
+    let foreground = theme::color(DARK.foreground);
+    let arrow_center = egui::pos2(rect.left() + 8.0, center);
+    let points = if open {
+        vec![
+            arrow_center + egui::vec2(-4.0, -2.5),
+            arrow_center + egui::vec2(4.0, -2.5),
+            arrow_center + egui::vec2(0.0, 2.5),
+        ]
+    } else {
+        vec![
+            arrow_center + egui::vec2(-2.5, -4.0),
+            arrow_center + egui::vec2(2.5, 0.0),
+            arrow_center + egui::vec2(-2.5, 4.0),
+        ]
+    };
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        muted,
+        egui::Stroke::NONE,
+    ));
+    painter.text(
+        egui::pos2(rect.left() + 20.0, center),
+        egui::Align2::LEFT_CENTER,
+        "M",
+        egui::FontId::proportional(FONT_SM),
+        muted,
+    );
+    let galley = painter.layout_no_wrap(
+        group.to_owned(),
+        egui::FontId::proportional(FONT_SM),
+        foreground,
+    );
+    let group_x = rect.left() + 34.0;
+    painter.galley(
+        egui::pos2(group_x, center - galley.size().y * 0.5),
+        galley.clone(),
+        foreground,
+    );
+    painter.text(
+        egui::pos2(group_x + galley.size().x + 6.0, center),
+        egui::Align2::LEFT_CENTER,
+        format!("({})", rows.len()),
+        egui::FontId::proportional(FONT_XS),
+        muted,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked() && needle.is_empty() {
+        if open {
+            editor.asset_groups_closed.insert(group.to_owned());
+        } else {
+            editor.asset_groups_closed.remove(group);
+        }
+    }
+    if open {
+        for row in rows {
+            draw_asset_row(ui, editor, row);
+        }
+    }
+}
+
+fn draw_asset_row(ui: &mut egui::Ui, editor: &mut EditorState, row: &EditorAssetRow) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
+    let plus_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 15.0, rect.center().y),
+        egui::vec2(22.0, 22.0),
+    );
+    let row_rect =
+        egui::Rect::from_min_max(rect.min, egui::pos2(plus_rect.left() - 4.0, rect.bottom()));
+    let response = ui.interact(
+        row_rect,
+        ui.id().with(("asset-row", row.unit_id.as_str())),
         egui::Sense::click_and_drag(),
     );
-    let dragging = editor
-        .asset_drag
-        .as_ref()
-        .is_some_and(|drag| drag.unit_id == row.unit_id);
-    let fill = if dragging || response.hovered() {
-        theme::color(DARK.secondary)
-    } else {
-        theme::color(DARK.card)
-    };
-    ui.painter().rect(
-        rect,
-        egui::CornerRadius::same(6),
-        fill,
-        egui::Stroke::new(
-            1.0,
-            theme::color(if dragging { DARK.ring } else { DARK.border }),
-        ),
-        egui::StrokeKind::Inside,
+    let plus = ui.interact(
+        plus_rect,
+        ui.id().with(("asset-add", row.unit_id.as_str())),
+        egui::Sense::click(),
     );
-    let mut content = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(9.0, 7.0)))
-            .layout(egui::Layout::top_down(egui::Align::Min)),
+    let painter = ui.painter().clone();
+    if response.hovered() || plus.hovered() {
+        painter.rect_filled(rect, 4.0, theme::color(DARK.secondary));
+    }
+    painter.vline(
+        rect.left() + 10.0,
+        rect.y_range(),
+        egui::Stroke::new(1.0, theme::color(DARK.border)),
     );
-    content.spacing_mut().item_spacing.y = 2.0;
-    content.label(
-        egui::RichText::new(&row.name)
-            .size(FONT_SM)
-            .strong()
-            .color(theme::color(DARK.foreground)),
+    let name_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 24.0, rect.top()),
+        egui::pos2(plus_rect.left() - 6.0, rect.bottom()),
     );
-    content.label(theme::muted(&format!(
-        "{} · {}",
-        row.kind_label,
+    painter.with_clip_rect(name_rect).text(
+        egui::pos2(rect.left() + 24.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        &row.name,
+        egui::FontId::proportional(FONT_SM),
         if row.cached {
-            "siap offline"
+            theme::color(DARK.foreground)
         } else {
-            "belum diunduh"
-        }
-    )));
-    content.horizontal(|ui| {
-        if ui
-            .add_enabled(row.cached, egui::Button::new("Tambah").small())
-            .on_hover_text("Tambah marker di tengah peta")
-            .clicked()
-        {
-            let draft = AssetMarkerDraft {
-                unit_id: row.unit_id.clone(),
-                name: row.name.clone(),
-            };
-            let point = editor.snap_point(editor.map_state.center);
-            editor.add_asset_marker(&draft, point);
-        }
-        ui.label(theme::muted("tarik ke peta"));
-    });
+            theme::color(DARK.muted_foreground)
+        },
+    );
+    let plus_color = if row.cached {
+        theme::color(DARK.foreground)
+    } else {
+        theme::color(DARK.muted_foreground)
+    };
+    if plus.hovered() && row.cached {
+        painter.rect_filled(plus_rect, 4.0, theme::color(DARK.border));
+    }
+    let stroke = egui::Stroke::new(1.4, plus_color);
+    let center = plus_rect.center();
+    painter.line_segment(
+        [
+            center + egui::vec2(-4.0, 0.0),
+            center + egui::vec2(4.0, 0.0),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            center + egui::vec2(0.0, -4.0),
+            center + egui::vec2(0.0, 4.0),
+        ],
+        stroke,
+    );
+    if plus.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if plus.clicked() && row.cached {
+        add_asset_to_map(editor, row);
+    }
     if row.cached && response.drag_started() {
         editor.asset_drag = Some(AssetMarkerDraft {
             unit_id: row.unit_id.clone(),
             name: row.name.clone(),
         });
+    }
+    if response.hovered() && editor.asset_drag.is_none() {
+        response
+            .clone()
+            .on_hover_ui(|ui| draw_asset_tooltip(ui, editor, row));
+    }
+}
+
+fn add_asset_to_map(editor: &mut EditorState, row: &EditorAssetRow) {
+    let draft = AssetMarkerDraft {
+        unit_id: row.unit_id.clone(),
+        name: row.name.clone(),
+    };
+    let point = editor.snap_point(editor.map_state.center);
+    editor.add_asset_marker(&draft, point);
+}
+
+fn draw_asset_tooltip(ui: &mut egui::Ui, editor: &mut EditorState, row: &EditorAssetRow) {
+    ui.set_max_width(250.0);
+    ui.label(egui::RichText::new(&row.name).size(FONT_SM).strong());
+    ui.label(theme::muted(&format!(
+        "Sumber: {}",
+        asset_source_label(row)
+    )));
+    ui.label(theme::muted(&format!("Kategori: {}", row.group)));
+    ui.label(theme::muted(&format!("Jenis: {}", row.kind_label)));
+    if row.is_model {
+        ui.label(theme::muted(&format!(
+            "Mode pindah: {}",
+            row.move_mode_label
+        )));
+    }
+    ui.label(theme::muted(&format!("Versi: {}", row.version)));
+    ui.label(theme::muted(&format!("Ukuran: {}", row.size_label)));
+    ui.label(theme::muted(if row.cached {
+        "Status: siap offline"
+    } else {
+        "Status: belum diunduh"
+    }));
+    if let Some(path) = &row.preview {
+        if let Some(texture) = editor.stored_preview(ui.ctx(), path) {
+            ui.add_space(4.0);
+            ui.add(egui::Image::new(&texture).fit_to_exact_size(egui::vec2(180.0, 180.0)));
+        }
+    } else {
+        ui.label(theme::muted("Belum ada gambar preview."));
+    }
+}
+
+fn asset_source_label(row: &EditorAssetRow) -> &'static str {
+    if row.imported {
+        "Import operasi ini"
+    } else {
+        "Katalog admin"
+    }
+}
+
+fn draw_import_tab(ui: &mut egui::Ui, editor: &mut EditorState, import_rows: &[EditorAssetRow]) {
+    egui::ScrollArea::vertical()
+        .id_salt("editor_import_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.label(theme::title("Import aset"));
+            ui.label(theme::muted(
+                "Unggah GLB/glTF atau gambar. Aset menjadi milik operasi skenario ini, \
+                 bisa dipakai di semua skenarionya, dan ikut tersinkron ke komputer lain.",
+            ));
+            ui.add_space(4.0);
+
+            ui.label("Nama");
+            ui.add(
+                egui::TextEdit::singleline(&mut editor.import_draft.name)
+                    .hint_text("Nama aset")
+                    .desired_width(f32::INFINITY)
+                    .margin(egui::Margin::symmetric(8, 5)),
+            );
+
+            ui.label("Kategori");
+            let mut category = editor.import_draft.category;
+            egui::ComboBox::from_id_salt("import_category")
+                .selected_text(asset_category_label(category))
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for option in AssetCategory::ALL {
+                        ui.selectable_value(&mut category, option, asset_category_label(option));
+                    }
+                });
+            if category != editor.import_draft.category {
+                editor.import_draft.category = category;
+                editor.import_draft.files.clear();
+            }
+
+            if editor.import_draft.category.is_model() {
+                ui.label("Jenis model");
+                let mut kind = editor.import_draft.model_kind;
+                egui::ComboBox::from_id_salt("import_model_kind")
+                    .selected_text(model_kind_label(kind))
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for option in AssetModelKind::ALL {
+                            ui.selectable_value(&mut kind, option, model_kind_label(option));
+                        }
+                    });
+                if kind != editor.import_draft.model_kind {
+                    editor.import_draft.model_kind = kind;
+                    editor.import_draft.files.clear();
+                }
+                if kind == AssetModelKind::Static {
+                    ui.label("Mode pindah di Play");
+                    let mut move_mode = editor.import_draft.move_mode;
+                    egui::ComboBox::from_id_salt("import_move_mode")
+                        .selected_text(move_mode_label(move_mode))
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for option in AssetMoveMode::ALL {
+                                ui.selectable_value(
+                                    &mut move_mode,
+                                    option,
+                                    move_mode_label(option),
+                                );
+                            }
+                        });
+                    editor.import_draft.move_mode = move_mode;
+                }
+            }
+
+            let slots = editor.import_draft.slots();
+            for (index, slot) in slots.iter().enumerate() {
+                ui.add_space(2.0);
+                ui.label(import_slot_label(*slot));
+                let selected = editor
+                    .import_draft
+                    .file(index)
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().to_string());
+                ui.horizontal(|ui| {
+                    ui.label(theme::muted(selected.as_deref().unwrap_or("Belum dipilih")));
+                });
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.button("Pilih file...").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Aset", editor.import_draft.category.upload_extensions())
+                        .set_title("Pilih file aset")
+                        .pick_file()
+                {
+                    editor.import_draft.set_file(index, path);
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            ui.label(theme::muted("Pemilihan file tersedia di aplikasi desktop."));
+
+            ui.add_space(6.0);
+            let ready = !editor.import_draft.name.trim().is_empty()
+                && slots
+                    .iter()
+                    .enumerate()
+                    .all(|(index, _)| editor.import_draft.file(index).is_some());
+            if ui
+                .add_enabled(
+                    ready && !editor.import_busy,
+                    egui::Button::new("Unggah aset")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .clicked()
+            {
+                editor.requested_import_upload = true;
+            }
+            if editor.import_busy {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(theme::muted("Mengunggah ke server..."));
+                });
+            }
+            if let Some(error) = editor.import_error.clone() {
+                ui.colored_label(theme::color(DARK.destructive), error);
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(theme::title("Aset impor"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Muat ulang").clicked() {
+                        editor.requested_import_refresh = true;
+                    }
+                });
+            });
+            let imports = import_rows;
+            if imports.is_empty() {
+                ui.label(theme::muted("Belum ada aset impor di operasi ini."));
+            } else {
+                for row in imports {
+                    draw_import_row(ui, editor, row);
+                }
+            }
+        });
+}
+
+fn asset_category_label(category: AssetCategory) -> &'static str {
+    match category {
+        AssetCategory::Model => "Model 3D",
+        AssetCategory::Texture => "Tekstur",
+        AssetCategory::Icon => "Ikon",
+    }
+}
+
+fn model_kind_label(kind: AssetModelKind) -> &'static str {
+    match kind {
+        AssetModelKind::Static => "Static",
+        AssetModelKind::Animated => "Animasi",
+    }
+}
+
+fn move_mode_label(mode: AssetMoveMode) -> &'static str {
+    match mode {
+        AssetMoveMode::None => "Tidak bisa pindah",
+        AssetMoveMode::Limited => "Pindah via gizmo",
+        AssetMoveMode::Free => "Pindah bebas",
+    }
+}
+
+fn import_slot_label(slot: AssetSourceSlot) -> &'static str {
+    match slot {
+        AssetSourceSlot::Static => "File",
+        AssetSourceSlot::Idle => "File diam (idle)",
+        AssetSourceSlot::Animated => "File animasi",
+    }
+}
+
+/// Import asset row: drag the name onto the map, click **+** to add it at the
+/// camera centre, and click the **x** to delete your own upload.
+fn draw_import_row(ui: &mut egui::Ui, editor: &mut EditorState, row: &EditorAssetRow) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
+    let trash_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 15.0, rect.center().y),
+        egui::vec2(20.0, 20.0),
+    );
+    let plus_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 38.0, rect.center().y),
+        egui::vec2(20.0, 20.0),
+    );
+    let row_rect =
+        egui::Rect::from_min_max(rect.min, egui::pos2(plus_rect.left() - 4.0, rect.bottom()));
+    let response = ui.interact(
+        row_rect,
+        ui.id().with(("import-row", row.unit_id.as_str())),
+        egui::Sense::click_and_drag(),
+    );
+    let plus = ui.interact(
+        plus_rect,
+        ui.id().with(("import-add", row.unit_id.as_str())),
+        egui::Sense::click(),
+    );
+    let trash = ui.interact(
+        trash_rect,
+        ui.id().with(("import-delete", row.unit_id.as_str())),
+        egui::Sense::click(),
+    );
+    let painter = ui.painter().clone();
+    if response.hovered() || plus.hovered() || trash.hovered() {
+        painter.rect_filled(rect, 4.0, theme::color(DARK.secondary));
+    }
+    let name_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 6.0, rect.top()),
+        egui::pos2(plus_rect.left() - 6.0, rect.bottom()),
+    );
+    painter.with_clip_rect(name_rect).text(
+        egui::pos2(rect.left() + 6.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        &row.name,
+        egui::FontId::proportional(FONT_SM),
+        if row.cached {
+            theme::color(DARK.foreground)
+        } else {
+            theme::color(DARK.muted_foreground)
+        },
+    );
+
+    let plus_color = if row.cached {
+        theme::color(DARK.foreground)
+    } else {
+        theme::color(DARK.muted_foreground)
+    };
+    if row.is_model {
+        if plus.hovered() && row.cached {
+            painter.rect_filled(plus_rect, 4.0, theme::color(DARK.border));
+        }
+        let plus_center = plus_rect.center();
+        let plus_stroke = egui::Stroke::new(1.4, plus_color);
+        painter.line_segment(
+            [
+                plus_center + egui::vec2(-4.0, 0.0),
+                plus_center + egui::vec2(4.0, 0.0),
+            ],
+            plus_stroke,
+        );
+        painter.line_segment(
+            [
+                plus_center + egui::vec2(0.0, -4.0),
+                plus_center + egui::vec2(0.0, 4.0),
+            ],
+            plus_stroke,
+        );
+    }
+
+    if row.can_delete {
+        if trash.hovered() {
+            painter.rect_filled(trash_rect, 4.0, theme::color(DARK.border));
+        }
+        let center = trash_rect.center();
+        let color = if trash.hovered() {
+            theme::color(DARK.destructive)
+        } else {
+            theme::color(DARK.muted_foreground)
+        };
+        let stroke = egui::Stroke::new(1.4, color);
+        painter.line_segment(
+            [
+                center + egui::vec2(-3.5, -3.5),
+                center + egui::vec2(3.5, 3.5),
+            ],
+            stroke,
+        );
+        painter.line_segment(
+            [
+                center + egui::vec2(3.5, -3.5),
+                center + egui::vec2(-3.5, 3.5),
+            ],
+            stroke,
+        );
+    }
+
+    if plus.hovered() || trash.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if plus.clicked() && row.cached && row.is_model {
+        add_asset_to_map(editor, row);
+    }
+    if trash.clicked() && row.can_delete {
+        editor.requested_import_delete = uuid::Uuid::parse_str(&row.unit_id).ok();
+    }
+    if row.is_model && row.cached && response.drag_started() {
+        editor.asset_drag = Some(AssetMarkerDraft {
+            unit_id: row.unit_id.clone(),
+            name: row.name.clone(),
+        });
+    }
+    if response.hovered() && editor.asset_drag.is_none() {
+        response
+            .clone()
+            .on_hover_ui(|ui| draw_asset_tooltip(ui, editor, row));
     }
 }
 
@@ -751,7 +1226,12 @@ fn draw_console_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         });
 }
 
-fn draw_scene_panel(ui: &mut egui::Ui, editor: &mut EditorState, asset_rows: &[EditorAssetRow]) {
+fn draw_scene_panel(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    asset_rows: &[EditorAssetRow],
+    import_rows: &[EditorAssetRow],
+) {
     egui::Panel::left("editor_scene")
         .resizable(true)
         .default_size(250.0)
@@ -761,46 +1241,95 @@ fn draw_scene_panel(ui: &mut egui::Ui, editor: &mut EditorState, asset_rows: &[E
             egui::Frame::new()
                 .fill(theme::color(DARK.card))
                 .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
-                .inner_margin(egui::Margin::same(8)),
+                .inner_margin(egui::Margin::same(0)),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (index, label) in ["Scene", "Assets"].into_iter().enumerate() {
-                    let selected = editor.left_tab == index;
-                    let text = egui::RichText::new(label).size(FONT_XS).color(if selected {
-                        theme::color(DARK.primary_foreground)
-                    } else {
-                        theme::color(DARK.foreground)
-                    });
-                    if ui
-                        .add(
-                            egui::Button::new(text)
-                                .fill(if selected {
-                                    theme::color(DARK.primary)
-                                } else {
-                                    theme::color(DARK.secondary)
-                                })
-                                .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
-                                .corner_radius(egui::CornerRadius::same(4))
-                                .min_size(egui::vec2(0.0, 22.0)),
-                        )
-                        .clicked()
-                    {
-                        editor.left_tab = index;
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if editor.left_tab == 0 {
-                        ui.monospace(format!("{}", editor.objects.len()));
-                    }
+            draw_editor_tabs(ui, editor);
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| match editor.left_tab {
+                    1 => draw_asset_tab(ui, editor, asset_rows),
+                    2 => draw_import_tab(ui, editor, import_rows),
+                    _ => draw_scene_tree(ui, editor),
                 });
-            });
-            ui.separator();
-            match editor.left_tab {
-                1 => draw_asset_tab(ui, editor, asset_rows),
-                _ => draw_scene_tree(ui, editor),
-            }
         });
+}
+
+/// Flat tab strip for the left editor panel. The bar spans the full panel
+/// width, the active tab is a lighter block without rounded corners, and the
+/// scene object count stays aligned to the right edge.
+fn draw_editor_tabs(ui: &mut egui::Ui, editor: &mut EditorState) {
+    const TAB_HEIGHT: f32 = 28.0;
+    const TAB_PADDING: f32 = 12.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), TAB_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 0.0, theme::color(DARK.secondary));
+    painter.hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, theme::color(DARK.border)),
+    );
+
+    let mut left = rect.left();
+    for (index, label) in ["Scene", "Assets", "Import"].into_iter().enumerate() {
+        let galley = painter.layout_no_wrap(
+            label.to_owned(),
+            egui::FontId::proportional(FONT_XS),
+            theme::color(DARK.foreground),
+        );
+        let width = (galley.size().x + TAB_PADDING * 2.0).max(60.0);
+        let tab = egui::Rect::from_min_size(
+            egui::pos2(left, rect.top()),
+            egui::vec2(width, rect.height()),
+        );
+        let response = ui.interact(
+            tab,
+            ui.id().with(("editor-tab", index)),
+            egui::Sense::click(),
+        );
+        let selected = editor.left_tab == index;
+        let fill = if selected {
+            Some(theme::color(DARK.input))
+        } else if response.hovered() {
+            Some(theme::color(DARK.border))
+        } else {
+            None
+        };
+        if let Some(fill) = fill {
+            painter.rect_filled(tab, 0.0, fill);
+        }
+        painter.text(
+            tab.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(FONT_XS),
+            if selected {
+                theme::color(DARK.foreground)
+            } else {
+                theme::color(DARK.muted_foreground)
+            },
+        );
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            editor.left_tab = index;
+        }
+        left += width;
+    }
+
+    if editor.left_tab == 0 {
+        painter.text(
+            egui::pos2(rect.right() - 10.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            editor.objects.len().to_string(),
+            egui::FontId::monospace(FONT_XS),
+            theme::color(DARK.muted_foreground),
+        );
+    }
 }
 
 fn draw_scene_tree(ui: &mut egui::Ui, editor: &mut EditorState) {
@@ -957,7 +1486,7 @@ fn draw_inspector(
                 .show(ui, |ui| {
                     if editor.selected.len() == 1 {
                         let key = *editor.selected.iter().next().unwrap_or(&0);
-                        draw_object_inspector(editor, key, ui, texture_rows, action);
+                        draw_object_inspector(editor, key, ui, texture_rows);
                     } else if editor.selected.len() > 1 {
                         ui.label(format!("{} objek dipilih", editor.selected.len()));
                         ui.add_space(6.0);
@@ -1150,10 +1679,7 @@ fn draw_object_inspector(
     key: ObjectKey,
     ui: &mut egui::Ui,
     texture_rows: &[EditorTextureRow],
-    action: &mut EditorAction,
 ) {
-    #[cfg(target_arch = "wasm32")]
-    let _ = &action;
     let Some(mut object) = editor.object(key).cloned() else {
         return;
     };
@@ -1501,39 +2027,44 @@ fn draw_object_inspector(
                 }
             });
             if building.use_texture {
-                editor.refresh_local_textures();
-                let local_rows = editor.local_textures.clone();
                 let selected_name =
-                    texture_reference_label(building.texture.as_deref(), texture_rows, &local_rows);
+                    texture_reference_label(building.texture.as_deref(), texture_rows);
                 let mut picked_texture: Option<String> = None;
                 egui::ComboBox::from_id_salt("shape_texture")
                     .selected_text(selected_name)
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
-                        if texture_rows.is_empty() && local_rows.is_empty() {
-                            ui.label(theme::muted("Belum ada tekstur."));
+                        if texture_rows.is_empty() {
+                            ui.label(theme::muted("Belum ada tekstur. Unggah lewat tab Import."));
                         }
-                        if !texture_rows.is_empty() {
-                            ui.label(theme::muted("Aset server"));
-                        }
-                        for row in texture_rows {
-                            if row.available {
-                                let selected = building.texture.as_deref() == Some(row.id.as_str());
-                                if ui.selectable_label(selected, &row.name).clicked() {
-                                    picked_texture = Some(row.id.clone());
-                                }
-                            } else {
-                                ui.label(theme::muted(&format!("{} (belum diunduh)", row.name)));
+                        let mut first = true;
+                        for (imported, label) in
+                            [(false, "Aset admin"), (true, "Import operasi ini")]
+                        {
+                            let rows = texture_rows
+                                .iter()
+                                .filter(|row| row.imported == imported)
+                                .collect::<Vec<_>>();
+                            if rows.is_empty() {
+                                continue;
                             }
-                        }
-                        if !local_rows.is_empty() {
-                            ui.separator();
-                            ui.label(theme::muted("Tekstur lokal"));
-                            for (reference, label) in &local_rows {
-                                let selected =
-                                    building.texture.as_deref() == Some(reference.as_str());
-                                if ui.selectable_label(selected, label).clicked() {
-                                    picked_texture = Some(reference.clone());
+                            if !first {
+                                ui.separator();
+                            }
+                            first = false;
+                            ui.label(theme::muted(label));
+                            for row in rows {
+                                if row.available {
+                                    let selected =
+                                        building.texture.as_deref() == Some(row.id.as_str());
+                                    if ui.selectable_label(selected, &row.name).clicked() {
+                                        picked_texture = Some(row.id.clone());
+                                    }
+                                } else {
+                                    ui.label(theme::muted(&format!(
+                                        "{} (belum diunduh)",
+                                        row.name
+                                    )));
                                 }
                             }
                         }
@@ -1546,22 +2077,8 @@ fn draw_object_inspector(
                 if let Some(reference) = building.texture.clone() {
                     draw_texture_preview(ui, editor, &reference);
                 } else {
-                    ui.label(theme::muted(
-                        "Pilih tekstur dari aset atau unggah dari komputer.",
-                    ));
+                    ui.label(theme::muted("Pilih tekstur dari daftar aset."));
                 }
-
-                #[cfg(not(target_arch = "wasm32"))]
-                if ui.button("Unggah tekstur ke server...").clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Gambar", &["png", "jpg", "jpeg", "webp"])
-                        .set_title("Pilih tekstur")
-                        .pick_file()
-                {
-                    *action = EditorAction::UploadTexture { key, path };
-                }
-                #[cfg(target_arch = "wasm32")]
-                ui.label(theme::muted("Unggah tekstur tersedia di aplikasi desktop."));
 
                 if building
                     .texture
@@ -1571,7 +2088,7 @@ fn draw_object_inspector(
                     ui.label(theme::muted("Tekstur belum tersedia; memakai warna solid."));
                 }
                 ui.label(theme::muted(
-                    "Tekstur diunggah ke server agar bisa dilihat di komputer lain.",
+                    "Tambahkan gambar lewat tab Import agar tersedia di semua komputer.",
                 ));
             } else {
                 color_row(ui, "Warna", &mut building.color, &mut changed);
@@ -1895,35 +2412,27 @@ fn color_picker_inline(ui: &mut egui::Ui, color: &mut String, changed: &mut bool
         });
 }
 
-fn texture_reference_label(
-    reference: Option<&str>,
-    texture_rows: &[EditorTextureRow],
-    local_rows: &[(String, String)],
-) -> String {
+fn texture_reference_label(reference: Option<&str>, texture_rows: &[EditorTextureRow]) -> String {
     let Some(reference) = reference else {
         return "Pilih tekstur".to_owned();
     };
-    if textures::is_uploaded_reference(reference) {
+    if reference.starts_with("/uploads/") {
         let name = reference.rsplit('/').next().unwrap_or(reference);
         return format!("Server: {name}");
     }
-    if let Some((_, label)) = local_rows.iter().find(|(key, _)| key == reference) {
-        return format!("Lokal: {label}");
-    }
     if let Some(row) = texture_rows.iter().find(|row| row.id == reference) {
-        return row.name.clone();
+        return if row.imported {
+            format!("Import: {}", row.name)
+        } else {
+            row.name.clone()
+        };
     }
     "Pilih tekstur".to_owned()
 }
 
 fn draw_texture_preview(ui: &mut egui::Ui, editor: &mut EditorState, reference: &str) {
     let Some(texture) = editor.texture_preview(ui.ctx(), reference) else {
-        let message = if editor.texture_downloads.contains(reference) {
-            "Mengunduh pratinjau..."
-        } else {
-            "Pratinjau belum tersedia."
-        };
-        ui.label(theme::muted(message));
+        ui.label(theme::muted("Pratinjau belum tersedia."));
         return;
     };
     let size = texture.size_vec2();

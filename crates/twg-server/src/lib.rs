@@ -121,6 +121,15 @@ pub fn router(state: AppState) -> Router {
         .route("/private/asset-groups", get(handlers::assets::list_groups))
         .route("/private/assets/manifest", get(handlers::assets::manifest))
         .route("/private/assets/{id}", get(handlers::assets::detail))
+        .route("/private/imports", post(handlers::assets::import_upload))
+        .route(
+            "/private/imports/{id}",
+            delete(handlers::assets::delete_import),
+        )
+        .route(
+            "/private/imports/{id}/preview",
+            post(handlers::assets::upload_import_preview),
+        )
         .route(
             "/private/categories/all",
             get(handlers::private::categories),
@@ -442,6 +451,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/admin/assets/{id}/convert",
             post(handlers::assets::convert),
+        )
+        .route(
+            "/admin/assets/{id}/preview",
+            post(handlers::assets::upload_preview),
         )
         .route(
             "/admin/users/{id}/kick-session",
