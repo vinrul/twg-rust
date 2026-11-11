@@ -53,6 +53,8 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         draw_context_menu(context, editor);
         draw_dialogs(context, editor, &mut action);
         draw_import_dialog(context, editor);
+        draw_import_delete_dialog(context, editor);
+        draw_delete_dialog(context, editor);
         if editor.requested_geocode {
             editor.requested_geocode = false;
             action = EditorAction::Geocode;
@@ -228,7 +230,7 @@ fn draw_menu(ui: &mut egui::Ui, editor: &mut EditorState, action: &mut EditorAct
                         )
                         .clicked()
                     {
-                        editor.delete_selected();
+                        editor.request_delete_selected();
                         ui.close();
                     }
                 });
@@ -1001,6 +1003,105 @@ fn draw_import_dialog(context: &egui::Context, editor: &mut EditorState) {
     }
 }
 
+/// Confirmation before selected map objects are removed.
+fn draw_delete_dialog(context: &egui::Context, editor: &mut EditorState) {
+    if !editor.confirm_delete {
+        return;
+    }
+    let count = editor.selected.len();
+    let message = if count == 1 {
+        editor
+            .selected
+            .iter()
+            .next()
+            .and_then(|key| editor.object(*key))
+            .map(|object| format!("Hapus objek \"{}\" dari skenario?", object.name))
+            .unwrap_or_else(|| "Hapus objek dari skenario?".to_owned())
+    } else {
+        format!("Hapus {count} objek dari skenario?")
+    };
+    let mut close = false;
+    let response = egui::Modal::new(egui::Id::new("editor_delete_modal"))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::color(DARK.card))
+                .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(16)),
+        )
+        .show(context, |ui| {
+            ui.set_width(340.0);
+            ui.label(theme::title("Hapus objek"));
+            ui.label(message);
+            ui.label(theme::muted(
+                "Setelah dihapus masih bisa dikembalikan dengan Ctrl+Z.",
+            ));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::new("Hapus").fill(theme::color(DARK.destructive)))
+                    .clicked()
+                {
+                    editor.confirm_delete = false;
+                    editor.delete_selected();
+                    close = true;
+                }
+                if ui.button("Batal").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if response.should_close() {
+        close = true;
+    }
+    if close {
+        editor.confirm_delete = false;
+    }
+}
+
+/// Confirmation before an imported asset is removed from the server.
+fn draw_import_delete_dialog(context: &egui::Context, editor: &mut EditorState) {
+    let Some((asset_id, name)) = editor.import_delete.clone() else {
+        return;
+    };
+    let mut close = false;
+    let response = egui::Modal::new(egui::Id::new("editor_import_delete_modal"))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::color(DARK.card))
+                .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(16)),
+        )
+        .show(context, |ui| {
+            ui.set_width(340.0);
+            ui.label(theme::title("Hapus aset impor"));
+            ui.label(format!(
+                "Aset \"{name}\" akan dihapus dari server dan dari cache komputer lain \
+                 saat sinkronisasi berikutnya."
+            ));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::new("Hapus").fill(theme::color(DARK.destructive)))
+                    .clicked()
+                {
+                    editor.requested_import_delete = Some(asset_id);
+                    close = true;
+                }
+                if ui.button("Batal").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if response.should_close() {
+        close = true;
+    }
+    if close {
+        editor.import_delete = None;
+    }
+}
+
 fn draw_import_form(ui: &mut egui::Ui, editor: &mut EditorState) {
     ui.label("Nama");
     ui.add(
@@ -1269,8 +1370,11 @@ fn draw_import_row(ui: &mut egui::Ui, editor: &mut EditorState, row: &EditorAsse
     if plus.clicked() && row.cached && row.is_model {
         add_asset_to_map(editor, row);
     }
-    if trash.clicked() && row.can_delete {
-        editor.requested_import_delete = uuid::Uuid::parse_str(&row.unit_id).ok();
+    if trash.clicked()
+        && row.can_delete
+        && let Ok(asset_id) = uuid::Uuid::parse_str(&row.unit_id)
+    {
+        editor.import_delete = Some((asset_id, row.name.clone()));
     }
     if row.is_model && row.cached && response.drag_started() {
         editor.asset_drag = Some(AssetMarkerDraft {
@@ -1564,7 +1668,7 @@ fn draw_inspector(
                             editor.duplicate_selected();
                         }
                         if ui.button("Hapus").clicked() {
-                            editor.delete_selected();
+                            editor.request_delete_selected();
                         }
                     } else {
                         draw_scenario_inspector(editor, ui, can_admin, action);
@@ -2357,7 +2461,7 @@ fn draw_object_inspector(
         editor.remove_point_edit_point();
     }
     if delete {
-        editor.delete_selected();
+        editor.request_delete_selected();
     }
     if duplicate {
         editor.duplicate_selected();
@@ -2988,7 +3092,7 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
         return;
     };
     let mut close = false;
-    egui::Area::new(egui::Id::new("editor_context_menu"))
+    let area = egui::Area::new(egui::Id::new("editor_context_menu"))
         .fixed_pos(position)
         .order(egui::Order::Foreground)
         .show(context, |ui| {
@@ -3006,7 +3110,7 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
                     }
                     if ui.button("Hapus").clicked() {
                         editor.select_only(key);
-                        editor.delete_selected();
+                        editor.request_delete_selected();
                         close = true;
                     }
                     if ui.button("Fokus").clicked() {
@@ -3023,6 +3127,11 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
                     }
                 });
         });
+    // Clicking anywhere outside the menu dismisses it. A click on one of its
+    // buttons is handled above and must not be swallowed.
+    if context.input(|input| input.pointer.any_click()) && !area.response.contains_pointer() {
+        close = true;
+    }
     if close {
         editor.context_menu = None;
     }

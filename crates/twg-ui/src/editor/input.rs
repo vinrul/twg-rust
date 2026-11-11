@@ -175,7 +175,10 @@ pub fn editor_input(
             editor.asset_drag = None;
         }
     } else if editing {
-        if mouse.just_pressed(MouseButton::Left) {
+        // Only a click on the map closes the menu; clicks on the menu itself or
+        // on the dock panels are handled by egui and must not dismiss it before
+        // the button gets its release event.
+        if inside_viewport && mouse.just_pressed(MouseButton::Left) {
             editor.context_menu = None;
         }
         if inside_viewport && mouse.just_pressed(MouseButton::Right) {
@@ -891,6 +894,13 @@ fn keyboard_shortcuts(
     text_focus: bool,
 ) {
     if !text_focus {
+        // The delete confirmation modal owns the keyboard until it closes.
+        if editor.confirm_delete {
+            if keys.just_pressed(KeyCode::Escape) {
+                editor.confirm_delete = false;
+            }
+            return;
+        }
         let control = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
         if control && keys.just_pressed(KeyCode::KeyZ) {
             editor.undo();
@@ -904,7 +914,7 @@ fn keyboard_shortcuts(
             editor.duplicate_selected();
         }
         if keys.just_pressed(KeyCode::Delete) || keys.just_pressed(KeyCode::Backspace) {
-            editor.delete_selected();
+            editor.request_delete_selected();
         }
         if keys.just_pressed(KeyCode::Digit1) {
             editor.set_tool(EditorTool::Shape);

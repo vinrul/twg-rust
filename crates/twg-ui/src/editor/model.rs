@@ -1201,6 +1201,10 @@ pub struct EditorState {
     pub import_busy: bool,
     /// The upload form is shown in a modal dialog.
     pub import_dialog_open: bool,
+    /// Import asset waiting for delete confirmation (`id`, `name`).
+    pub import_delete: Option<(Uuid, String)>,
+    /// Selected map objects are waiting for delete confirmation.
+    pub confirm_delete: bool,
     /// Asks the shell to upload the Import draft to the server.
     pub requested_import_upload: bool,
     /// Asks the shell to delete this import asset.
@@ -1317,6 +1321,8 @@ impl EditorState {
             import_error: None,
             import_busy: false,
             import_dialog_open: false,
+            import_delete: None,
+            confirm_delete: false,
             requested_import_upload: false,
             requested_import_delete: None,
             requested_import_refresh: false,
@@ -2056,6 +2062,15 @@ impl EditorState {
         self.selected.insert(key);
         self.dirty = true;
         self.touch();
+    }
+
+    /// Asks for confirmation before removing the selected objects. Used by the
+    /// context menu, inspector, menu bar, and Delete shortcut.
+    pub fn request_delete_selected(&mut self) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.confirm_delete = true;
     }
 
     pub fn delete_selected(&mut self) {
@@ -2891,6 +2906,21 @@ mod tests {
         let mut editor = EditorState::new();
         editor.loaded = true;
         editor
+    }
+
+    #[test]
+    fn delete_requests_confirmation_before_removing_objects() {
+        let mut editor = editor();
+        editor.add_shape(EditorShapeKind::Box, GeoPoint::new(115.225, -8.648));
+        let key = *editor.selected.iter().next().expect("shape selected");
+
+        editor.request_delete_selected();
+        assert!(editor.confirm_delete);
+        assert!(editor.object(key).is_some());
+
+        editor.confirm_delete = false;
+        editor.delete_selected();
+        assert!(editor.object(key).is_none());
     }
 
     #[test]
