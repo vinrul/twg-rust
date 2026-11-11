@@ -3128,8 +3128,10 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
                 });
         });
     // Clicking anywhere outside the menu dismisses it. A click on one of its
-    // buttons is handled above and must not be swallowed.
-    if context.input(|input| input.pointer.any_click()) && !area.response.contains_pointer() {
+    // buttons is handled above and must not be swallowed. Only the primary
+    // button counts: the right click that opened the menu would otherwise
+    // close it on the same frame.
+    if context.input(|input| input.pointer.primary_clicked()) && !area.response.contains_pointer() {
         close = true;
     }
     if close {

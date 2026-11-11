@@ -175,12 +175,9 @@ pub fn editor_input(
             editor.asset_drag = None;
         }
     } else if editing {
-        // Only a click on the map closes the menu; clicks on the menu itself or
-        // on the dock panels are handled by egui and must not dismiss it before
-        // the button gets its release event.
-        if inside_viewport && mouse.just_pressed(MouseButton::Left) {
-            editor.context_menu = None;
-        }
+        // The context menu is dismissed by its own click-outside handling in the
+        // UI pass, so a left press here must not clear it: egui needs both the
+        // press and the release to deliver a button click.
         if inside_viewport && mouse.just_pressed(MouseButton::Right) {
             editor.right_press = pointer_pos;
         }
@@ -947,7 +944,9 @@ fn keyboard_shortcuts(
             finish_draft(editor);
         }
         if keys.just_pressed(KeyCode::Escape) {
-            if editor.point_edit.is_some() {
+            if editor.context_menu.is_some() {
+                editor.context_menu = None;
+            } else if editor.point_edit.is_some() {
                 editor.end_point_edit();
             } else if editor.asset_drag.is_some() {
                 editor.asset_drag = None;
