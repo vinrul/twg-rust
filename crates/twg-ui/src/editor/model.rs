@@ -1199,6 +1199,8 @@ pub struct EditorState {
     pub import_draft: ImportDraft,
     pub import_error: Option<String>,
     pub import_busy: bool,
+    /// The upload form is shown in a modal dialog.
+    pub import_dialog_open: bool,
     /// Asks the shell to upload the Import draft to the server.
     pub requested_import_upload: bool,
     /// Asks the shell to delete this import asset.
@@ -1314,6 +1316,7 @@ impl EditorState {
             import_draft: ImportDraft::default(),
             import_error: None,
             import_busy: false,
+            import_dialog_open: false,
             requested_import_upload: false,
             requested_import_delete: None,
             requested_import_refresh: false,

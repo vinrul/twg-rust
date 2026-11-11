@@ -52,6 +52,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         });
         draw_context_menu(context, editor);
         draw_dialogs(context, editor, &mut action);
+        draw_import_dialog(context, editor);
         if editor.requested_geocode {
             editor.requested_geocode = false;
             action = EditorAction::Geocode;
@@ -918,144 +919,213 @@ fn asset_source_label(row: &EditorAssetRow) -> &'static str {
 }
 
 fn draw_import_tab(ui: &mut egui::Ui, editor: &mut EditorState, import_rows: &[EditorAssetRow]) {
+    ui.add_space(2.0);
+    if ui
+        .add(egui::Button::new("Import aset").min_size(egui::vec2(ui.available_width(), 28.0)))
+        .clicked()
+    {
+        editor.import_error = None;
+        editor.import_dialog_open = true;
+    }
+    ui.label(theme::muted(
+        "Unggah GLB/glTF atau gambar. Aset menjadi milik operasi skenario ini, \
+         bisa dipakai di semua skenarionya, dan ikut tersinkron ke komputer lain.",
+    ));
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(theme::title("Aset impor"));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("Muat ulang").clicked() {
+                editor.requested_import_refresh = true;
+            }
+        });
+    });
+    if import_rows.is_empty() {
+        ui.label(theme::muted("Belum ada aset impor di operasi ini."));
+        return;
+    }
     egui::ScrollArea::vertical()
-        .id_salt("editor_import_scroll")
+        .id_salt("editor_import_list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            for row in import_rows {
+                draw_import_row(ui, editor, row);
+            }
+        });
+}
+
+/// Modal upload form opened from the Import tab.
+fn draw_import_dialog(context: &egui::Context, editor: &mut EditorState) {
+    if !editor.import_dialog_open {
+        return;
+    }
+    let mut close = false;
+    let response = egui::Modal::new(egui::Id::new("editor_import_modal"))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::color(DARK.card))
+                .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(16)),
+        )
+        .show(context, |ui| {
+            ui.set_width(380.0);
             ui.label(theme::title("Import aset"));
             ui.label(theme::muted(
-                "Unggah GLB/glTF atau gambar. Aset menjadi milik operasi skenario ini, \
-                 bisa dipakai di semua skenarionya, dan ikut tersinkron ke komputer lain.",
+                "Aset tersimpan di server untuk operasi ini dan dipakai semua skenarionya.",
             ));
-            ui.add_space(4.0);
+            ui.add_space(6.0);
+            draw_import_form(ui, editor);
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let ready = import_ready(editor) && !editor.import_busy;
+                if ui
+                    .add_enabled(ready, egui::Button::new("Unggah aset"))
+                    .clicked()
+                {
+                    editor.requested_import_upload = true;
+                }
+                if ui.button("Batal").clicked() && !editor.import_busy {
+                    close = true;
+                }
+            });
+        });
+    if response.should_close() && !editor.import_busy {
+        close = true;
+    }
+    if close {
+        editor.import_dialog_open = false;
+        editor.import_error = None;
+    }
+}
 
-            ui.label("Nama");
-            ui.add(
-                egui::TextEdit::singleline(&mut editor.import_draft.name)
-                    .hint_text("Nama aset")
-                    .desired_width(f32::INFINITY)
-                    .margin(egui::Margin::symmetric(8, 5)),
-            );
+fn draw_import_form(ui: &mut egui::Ui, editor: &mut EditorState) {
+    ui.label("Nama");
+    ui.add(
+        egui::TextEdit::singleline(&mut editor.import_draft.name)
+            .hint_text("Nama aset")
+            .desired_width(f32::INFINITY)
+            .margin(egui::Margin::symmetric(8, 5)),
+    );
 
-            ui.label("Kategori");
-            let mut category = editor.import_draft.category;
-            egui::ComboBox::from_id_salt("import_category")
-                .selected_text(asset_category_label(category))
+    ui.label("Kategori");
+    let mut category = editor.import_draft.category;
+    egui::ComboBox::from_id_salt("import_category")
+        .selected_text(asset_category_label(category))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for option in AssetCategory::ALL {
+                ui.selectable_value(&mut category, option, asset_category_label(option));
+            }
+        });
+    if category != editor.import_draft.category {
+        editor.import_draft.category = category;
+        editor.import_draft.files.clear();
+    }
+    let formats = editor
+        .import_draft
+        .category
+        .upload_extensions()
+        .iter()
+        .map(|extension| format!(".{extension}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    ui.label(theme::muted(&format!("Format file: {formats}")));
+
+    if editor.import_draft.category.is_model() {
+        ui.label("Jenis model");
+        let mut kind = editor.import_draft.model_kind;
+        egui::ComboBox::from_id_salt("import_model_kind")
+            .selected_text(model_kind_label(kind))
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for option in AssetModelKind::ALL {
+                    ui.selectable_value(&mut kind, option, model_kind_label(option));
+                }
+            });
+        if kind != editor.import_draft.model_kind {
+            editor.import_draft.model_kind = kind;
+            editor.import_draft.files.clear();
+        }
+        if kind == AssetModelKind::Static {
+            ui.label("Mode pindah di Play");
+            let mut move_mode = editor.import_draft.move_mode;
+            egui::ComboBox::from_id_salt("import_move_mode")
+                .selected_text(move_mode_label(move_mode))
                 .width(ui.available_width())
                 .show_ui(ui, |ui| {
-                    for option in AssetCategory::ALL {
-                        ui.selectable_value(&mut category, option, asset_category_label(option));
+                    for option in AssetMoveMode::ALL {
+                        ui.selectable_value(&mut move_mode, option, move_mode_label(option));
                     }
                 });
-            if category != editor.import_draft.category {
-                editor.import_draft.category = category;
-                editor.import_draft.files.clear();
-            }
+            editor.import_draft.move_mode = move_mode;
+        }
+    }
 
-            if editor.import_draft.category.is_model() {
-                ui.label("Jenis model");
-                let mut kind = editor.import_draft.model_kind;
-                egui::ComboBox::from_id_salt("import_model_kind")
-                    .selected_text(model_kind_label(kind))
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        for option in AssetModelKind::ALL {
-                            ui.selectable_value(&mut kind, option, model_kind_label(option));
-                        }
-                    });
-                if kind != editor.import_draft.model_kind {
-                    editor.import_draft.model_kind = kind;
-                    editor.import_draft.files.clear();
-                }
-                if kind == AssetModelKind::Static {
-                    ui.label("Mode pindah di Play");
-                    let mut move_mode = editor.import_draft.move_mode;
-                    egui::ComboBox::from_id_salt("import_move_mode")
-                        .selected_text(move_mode_label(move_mode))
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            for option in AssetMoveMode::ALL {
-                                ui.selectable_value(
-                                    &mut move_mode,
-                                    option,
-                                    move_mode_label(option),
-                                );
-                            }
-                        });
-                    editor.import_draft.move_mode = move_mode;
-                }
-            }
-
-            let slots = editor.import_draft.slots();
-            for (index, slot) in slots.iter().enumerate() {
-                ui.add_space(2.0);
-                ui.label(import_slot_label(*slot));
-                let selected = editor
-                    .import_draft
-                    .file(index)
-                    .and_then(|path| path.file_name())
-                    .map(|name| name.to_string_lossy().to_string());
-                ui.horizontal(|ui| {
-                    ui.label(theme::muted(selected.as_deref().unwrap_or("Belum dipilih")));
-                });
+    let slots = editor.import_draft.slots();
+    for (index, slot) in slots.iter().enumerate() {
+        ui.add_space(4.0);
+        ui.label(import_slot_label(*slot));
+        let selected = editor
+            .import_draft
+            .file(index)
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().to_string());
+        ui.horizontal(|ui| {
+            ui.label(theme::muted(selected.as_deref().unwrap_or("Belum dipilih")));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if ui.button("Pilih file...").clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Aset", editor.import_draft.category.upload_extensions())
-                        .set_title("Pilih file aset")
-                        .pick_file()
+                    && let Some(path) = pick_import_file(editor.import_draft.category)
                 {
                     editor.import_draft.set_file(index, path);
                 }
-            }
-            #[cfg(target_arch = "wasm32")]
-            ui.label(theme::muted("Pemilihan file tersedia di aplikasi desktop."));
-
-            ui.add_space(6.0);
-            let ready = !editor.import_draft.name.trim().is_empty()
-                && slots
-                    .iter()
-                    .enumerate()
-                    .all(|(index, _)| editor.import_draft.file(index).is_some());
-            if ui
-                .add_enabled(
-                    ready && !editor.import_busy,
-                    egui::Button::new("Unggah aset")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .clicked()
-            {
-                editor.requested_import_upload = true;
-            }
-            if editor.import_busy {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(theme::muted("Mengunggah ke server..."));
-                });
-            }
-            if let Some(error) = editor.import_error.clone() {
-                ui.colored_label(theme::color(DARK.destructive), error);
-            }
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(theme::title("Aset impor"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Muat ulang").clicked() {
-                        editor.requested_import_refresh = true;
-                    }
-                });
+                #[cfg(target_arch = "wasm32")]
+                ui.label(theme::muted("Khusus desktop"));
             });
-            let imports = import_rows;
-            if imports.is_empty() {
-                ui.label(theme::muted("Belum ada aset impor di operasi ini."));
-            } else {
-                for row in imports {
-                    draw_import_row(ui, editor, row);
-                }
-            }
         });
+    }
+
+    if editor.import_busy {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(theme::muted("Mengunggah ke server..."));
+        });
+    }
+    if let Some(error) = editor.import_error.clone() {
+        ui.colored_label(theme::color(DARK.destructive), error);
+    }
+}
+
+fn import_ready(editor: &EditorState) -> bool {
+    let slots = editor.import_draft.slots();
+    !editor.import_draft.name.trim().is_empty()
+        && slots
+            .iter()
+            .enumerate()
+            .all(|(index, _)| editor.import_draft.file(index).is_some())
+}
+
+/// Native file picker restricted to the formats the chosen category accepts.
+#[cfg(not(target_arch = "wasm32"))]
+fn pick_import_file(category: AssetCategory) -> Option<std::path::PathBuf> {
+    let dialog = rfd::FileDialog::new();
+    match category {
+        AssetCategory::Model => dialog
+            .add_filter("Model glTF/GLB (*.glb, *.gltf)", &["glb", "gltf"])
+            .set_title("Pilih model .glb/.gltf")
+            .pick_file(),
+        AssetCategory::Texture | AssetCategory::Icon => dialog
+            .add_filter(
+                "Gambar (*.png, *.jpg, *.jpeg, *.webp)",
+                &["png", "jpg", "jpeg", "webp"],
+            )
+            .set_title("Pilih gambar")
+            .pick_file(),
+    }
 }
 
 fn asset_category_label(category: AssetCategory) -> &'static str {

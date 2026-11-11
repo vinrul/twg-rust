@@ -1039,6 +1039,7 @@ impl ClientUi {
                         );
                         self.editor.import_draft.reset();
                         self.editor.import_error = None;
+                        self.editor.import_dialog_open = false;
                         self.imports.insert(0, asset);
                         self.sync_editor_marker_models();
                         self.refresh_imports();
