@@ -82,7 +82,8 @@ pub fn map_input(
     }
 
     let dt = f64::from(time.delta_secs());
-    if !editor_active {
+    // Typing in a text field must not pan, rotate, zoom, or reset the map.
+    if !editor_active && !pointer.keyboard {
         let mut east = 0.0;
         let mut north = 0.0;
         if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
@@ -123,29 +124,33 @@ pub fn map_input(
         }
     }
 
-    if keys.just_pressed(KeyCode::KeyH) {
-        cancel_flight = true;
-        *camera = MapCameraState::default();
-    }
-    if keys.just_pressed(KeyCode::KeyL) {
-        layers.0 = layers.0.next();
-    }
-    if keys.just_pressed(KeyCode::Equal) {
-        cancel_flight = true;
-        camera.zoom_by(0.5);
-    }
-    if keys.just_pressed(KeyCode::Minus) {
-        cancel_flight = true;
-        camera.zoom_by(-0.5);
-    }
+    if !pointer.keyboard {
+        if keys.just_pressed(KeyCode::KeyH) {
+            cancel_flight = true;
+            *camera = MapCameraState::default();
+        }
+        if keys.just_pressed(KeyCode::KeyL) {
+            layers.0 = layers.0.next();
+        }
+        if keys.just_pressed(KeyCode::Equal) {
+            cancel_flight = true;
+            camera.zoom_by(0.5);
+        }
+        if keys.just_pressed(KeyCode::Minus) {
+            cancel_flight = true;
+            camera.zoom_by(-0.5);
+        }
 
-    if cancel_flight {
+        if cancel_flight {
+            flight.0 = None;
+        }
+
+        if keys.just_pressed(KeyCode::KeyN) {
+            let mut target = *camera;
+            target.bearing_degrees = 0.0;
+            flight.0 = Some(CameraFlight::new(*camera, target, 0.5));
+        }
+    } else if cancel_flight {
         flight.0 = None;
-    }
-
-    if keys.just_pressed(KeyCode::KeyN) {
-        let mut target = *camera;
-        target.bearing_degrees = 0.0;
-        flight.0 = Some(CameraFlight::new(*camera, target, 0.5));
     }
 }

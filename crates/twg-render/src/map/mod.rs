@@ -36,10 +36,12 @@ pub struct CameraFlightState(pub Option<CameraFlight>);
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BaseLayerResource(pub BaseLayer);
 
-/// Set by the UI crate so map input can ignore clicks over egui panels.
+/// Set by the UI crate so map input can ignore clicks over egui panels and
+/// keyboard shortcuts while a text field has focus.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UiPointerState {
     pub over_ui: bool,
+    pub keyboard: bool,
 }
 
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]

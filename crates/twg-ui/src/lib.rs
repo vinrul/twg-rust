@@ -170,7 +170,8 @@ fn track_ui_pointer(
         over_ui = true;
     }
     state.over_ui = over_ui;
-    focus.keyboard = context.text_edit_focused();
+    state.keyboard = context.text_edit_focused();
+    focus.keyboard = state.keyboard;
     Ok(())
 }
 

@@ -1153,66 +1153,103 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         .collect::<Vec<_>>();
 
     let mut select = None;
-    egui::CollapsingHeader::new(format!("Rute ({})", filtered.len()))
-        .id_salt("editor_animation_list")
-        .default_open(true)
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            if filtered.is_empty() {
-                ui.label(theme::muted("Tidak ada animasi yang cocok dengan filter."));
-                if ui.button("Reset filter").clicked() {
-                    editor.anim_filter_hidden = false;
-                    editor.anim_filter_locked = false;
-                }
-                return;
-            }
-            for (key, name, marker_id, visible, locked) in &filtered {
-                let marker_name = marker_id.and_then(|id| {
-                    editor.objects.iter().find_map(|object| {
-                        (object.server_id == Some(id)
-                            && matches!(object.kind, EditorKind::Marker(_)))
-                        .then(|| object.name.clone())
-                    })
-                });
-                let marker_label = if marker_name.is_some() {
-                    marker_name.unwrap_or_default()
-                } else if marker_id.is_some() {
-                    "marker hilang".to_owned()
-                } else {
-                    "marker belum dipilih".to_owned()
-                };
-                ui.horizontal(|ui| {
-                    let mut shown = *visible;
-                    if ui
-                        .checkbox(&mut shown, "")
-                        .on_hover_text("Tampilkan animasi di peta")
-                        .changed()
-                    {
-                        if let Some(object) = editor.object_mut(*key) {
-                            object.visible = shown;
+            egui::CollapsingHeader::new(format!("Rute ({})", filtered.len()))
+                .id_salt("editor_animation_list")
+                .default_open(true)
+                .show(ui, |ui| {
+                    if filtered.is_empty() {
+                        ui.label(theme::muted("Tidak ada animasi yang cocok dengan filter."));
+                        if ui.button("Reset filter").clicked() {
+                            editor.anim_filter_hidden = false;
+                            editor.anim_filter_locked = false;
                         }
-                        editor.touch();
+                        return;
                     }
-                    if lock_icon_button(ui, *locked).clicked() {
-                        if *locked {
-                            editor.locked.remove(key);
+                    for (key, name, marker_id, visible, locked) in &filtered {
+                        let marker_name = marker_id.and_then(|id| {
+                            editor.objects.iter().find_map(|object| {
+                                (object.server_id == Some(id)
+                                    && matches!(object.kind, EditorKind::Marker(_)))
+                                .then(|| object.name.clone())
+                            })
+                        });
+                        let marker_label = if marker_name.is_some() {
+                            marker_name.unwrap_or_default()
+                        } else if marker_id.is_some() {
+                            "marker hilang".to_owned()
                         } else {
-                            editor.locked.insert(*key);
-                        }
+                            "marker belum dipilih".to_owned()
+                        };
+                        ui.horizontal_top(|ui| {
+                            let mut shown = *visible;
+                            if ui
+                                .checkbox(&mut shown, "")
+                                .on_hover_text("Tampilkan animasi di peta")
+                                .changed()
+                            {
+                                if let Some(object) = editor.object_mut(*key) {
+                                    object.visible = shown;
+                                }
+                                editor.touch();
+                            }
+                            if lock_icon_button(ui, *locked).clicked() {
+                                if *locked {
+                                    editor.locked.remove(key);
+                                } else {
+                                    editor.locked.insert(*key);
+                                }
+                            }
+                            let selected = editor.selected.contains(key);
+                            let frame = egui::Frame::new()
+                                .inner_margin(egui::Margin::symmetric(4, 2))
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .fill(if selected {
+                                    theme::color_alpha(DARK.ring, 90)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                });
+                            let mut clicked = false;
+                            frame.show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                clicked |= ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(name.as_str()).size(FONT_XS).color(
+                                                if *visible {
+                                                    theme::color(DARK.foreground)
+                                                } else {
+                                                    theme::color(DARK.muted_foreground)
+                                                },
+                                            ),
+                                        )
+                                        .wrap()
+                                        .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked();
+                                clicked |= ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!("· {marker_label}"))
+                                                .size(FONT_XS)
+                                                .color(theme::color(DARK.muted_foreground)),
+                                        )
+                                        .wrap()
+                                        .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked();
+                            });
+                            if clicked {
+                                select = Some(*key);
+                            }
+                        });
                     }
-                    let label = if *visible {
-                        egui::RichText::new(name.as_str())
-                    } else {
-                        theme::muted(name)
-                    };
-                    if ui
-                        .selectable_label(editor.selected.contains(key), label)
-                        .clicked()
-                    {
-                        select = Some(*key);
-                    }
-                    ui.label(theme::muted(&format!("· {marker_label}")));
                 });
-            }
         });
 
     if let Some(key) = select {
