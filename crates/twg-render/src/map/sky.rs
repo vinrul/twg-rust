@@ -184,13 +184,16 @@ fn sky_color(direction: Vec3, sun: Vec3) -> Vec3 {
 fn sky_gradient(direction: Vec3, sun: Vec3) -> Vec3 {
     let zenith = Vec3::new(0.05, 0.16, 0.45);
     let horizon = Vec3::new(0.52, 0.70, 0.94);
-    let ground_near = Vec3::new(0.24, 0.27, 0.31);
-    let ground_far = Vec3::new(0.035, 0.045, 0.055);
+    let deep_ground = Vec3::new(0.08, 0.10, 0.14);
 
     let mut color = if direction.y >= 0.0 {
         horizon.lerp(zenith, direction.y.powf(0.55))
     } else {
-        ground_near.lerp(ground_far, (-direction.y).powf(0.65))
+        // Start exactly at the horizon colour and fade into a dark, slightly
+        // blue ground. Smoothstep keeps the derivative zero at the horizon, so
+        // the band beyond a finite map plane reads as distant haze instead of
+        // a grey stripe with a hard edge.
+        horizon.lerp(deep_ground, smoothstep(0.0, 0.45, -direction.y))
     };
     let glow = direction.dot(sun).max(0.0);
     let sun_amount = glow.powf(96.0) * 0.9 + glow.powf(8.0) * 0.06;
@@ -271,6 +274,21 @@ mod tests {
         let zenith = sky_gradient(Vec3::Y, sun);
         let horizon = sky_gradient(Vec3::X, sun);
         assert!(zenith.z / zenith.x > horizon.z / horizon.x);
+    }
+
+    #[test]
+    fn horizon_colour_is_continuous() {
+        let sun = Vec3::new(0.35, 0.62, -0.70).normalize();
+        let above = sky_gradient(Vec3::new(0.0, 0.0001, -1.0).normalize(), sun);
+        let below = sky_gradient(Vec3::new(0.0, -0.0001, -1.0).normalize(), sun);
+        assert!((above - below).length() < 0.01);
+    }
+
+    #[test]
+    fn below_horizon_starts_as_bluish_haze() {
+        let sun = Vec3::new(0.35, 0.62, -0.70).normalize();
+        let band = sky_gradient(Vec3::new(0.0, -0.09, -1.0).normalize(), sun);
+        assert!(band.z > band.x);
     }
 
     #[test]
