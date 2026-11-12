@@ -998,12 +998,62 @@ enum ModalAction {
     Confirm(ConfirmAction),
 }
 
+/// Shared dark modal shell so every form is a real dialog with a backdrop,
+/// centred on screen and blocking the page behind it.
+fn modal_shell<R>(
+    context: &egui::Context,
+    id: &str,
+    width: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    egui::Modal::new(egui::Id::new(id))
+        .frame(
+            egui::Frame::new()
+                .fill(color(DARK.card))
+                .stroke(egui::Stroke::new(1.0, color(DARK.border)))
+                .corner_radius(egui::CornerRadius::same(10))
+                .inner_margin(egui::Margin::same(18)),
+        )
+        .show(context, |ui| {
+            ui.set_width(width);
+            add(ui)
+        })
+}
+
+fn modal_title(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.label(theme::title(title));
+    ui.label(theme::muted(subtitle));
+    ui.add_space(8.0);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModalFooter {
+    None,
+    Save,
+    Cancel,
+}
+
+fn modal_footer(ui: &mut egui::Ui, save_label: &str) -> ModalFooter {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+    let mut footer = ModalFooter::None;
+    ui.horizontal(|ui| {
+        if widgets::primary_button(ui, save_label).clicked() {
+            footer = ModalFooter::Save;
+        }
+        if widgets::ghost_button(ui, "Batal").clicked() {
+            footer = ModalFooter::Cancel;
+        }
+    });
+    footer
+}
+
 fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
     if !client.modal.is_open() {
         return;
     }
     let mut modal = std::mem::replace(&mut client.modal, Modal::None);
-    let mut open = true;
     let mut request_close = false;
     let mut action = ModalAction::None;
     match &mut modal {
@@ -1013,32 +1063,27 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
             } else {
                 "Operasi baru"
             };
-            egui::Window::new(title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .min_width(360.0)
-                .show(context, |ui| {
-                    widgets::labeled_input(ui, "Nama operasi", &mut form.name);
-                    if client.role().sees_all_satkers() {
-                        let mut satker = form.satker_id.clone();
-                        let options = satker_options(client);
-                        widgets::combo(ui, egui::Id::new("op_satker"), &mut satker, &options);
-                        form.satker_id = satker;
-                    }
-                    if let Some(error) = &form.error {
-                        widgets::error_banner(ui, error);
-                    }
-                    ui.horizontal(|ui| {
-                        if widgets::primary_button(ui, "Simpan").clicked() {
-                            action = ModalAction::SaveOperation;
-                        }
-                        if widgets::ghost_button(ui, "Batal").clicked() {
-                            request_close = true;
-                        }
-                    });
-                });
+            let response = modal_shell(context, "operation_modal", 380.0, |ui| {
+                modal_title(ui, title, "Operasi menjadi wadah untuk kumpulan skenario.");
+                widgets::labeled_input(ui, "Nama operasi", &mut form.name);
+                if client.role().sees_all_satkers() {
+                    let mut satker = form.satker_id.clone();
+                    let options = satker_options(client);
+                    widgets::combo(ui, egui::Id::new("op_satker"), &mut satker, &options);
+                    form.satker_id = satker;
+                }
+                if let Some(error) = &form.error {
+                    widgets::error_banner(ui, error);
+                }
+                match modal_footer(ui, "Simpan") {
+                    ModalFooter::Save => action = ModalAction::SaveOperation,
+                    ModalFooter::Cancel => request_close = true,
+                    ModalFooter::None => {}
+                }
+            });
+            if response.should_close() {
+                request_close = true;
+            }
         }
         Modal::Scenario(form) => {
             let title = if form.copy {
@@ -1048,108 +1093,128 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
             } else {
                 "Skenario baru"
             };
-            egui::Window::new(title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(true)
-                .default_width(460.0)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(context, |ui| {
-                    widgets::labeled_input(ui, "Nama skenario", &mut form.name);
-                    if form.copy {
-                        let mut target = form.target_operasi_id.clone();
+            let subtitle = if form.copy {
+                "Salin skenario beserta seluruh isinya ke operasi tujuan."
+            } else if form.id.is_some() {
+                "Perbarui nama dan pengaturan peta skenario."
+            } else {
+                "Buat skenario baru di operasi yang dipilih; pengaturan peta bisa diubah nanti di editor."
+            };
+            let response = modal_shell(context, "scenario_modal", 480.0, |ui| {
+                modal_title(ui, title, subtitle);
+                widgets::labeled_input(ui, "Nama skenario", &mut form.name);
+                if form.copy {
+                    let mut target = form.target_operasi_id.clone();
+                    let options = client
+                        .data
+                        .operations
+                        .iter()
+                        .map(|operation| (operation.id.to_string(), operation.name.clone()))
+                        .collect::<Vec<_>>();
+                    ui.add_space(4.0);
+                    ui.label(theme::muted("Operasi tujuan"));
+                    widgets::combo(ui, egui::Id::new("copy_target"), &mut target, &options);
+                    form.target_operasi_id = target;
+                } else {
+                    if form.id.is_none() {
+                        ui.add_space(4.0);
+                        ui.label(theme::muted("Operasi"));
+                        let mut operasi = form.operasi_id.clone();
                         let options = client
                             .data
                             .operations
                             .iter()
                             .map(|operation| (operation.id.to_string(), operation.name.clone()))
                             .collect::<Vec<_>>();
-                        widgets::combo(ui, egui::Id::new("copy_target"), &mut target, &options);
-                        form.target_operasi_id = target;
-                    } else {
-                        if form.id.is_none() {
-                            let mut operasi = form.operasi_id.clone();
-                            let options = client
-                                .data
-                                .operations
-                                .iter()
-                                .map(|operation| (operation.id.to_string(), operation.name.clone()))
-                                .collect::<Vec<_>>();
+                        widgets::combo(ui, egui::Id::new("scenario_op"), &mut operasi, &options);
+                        form.operasi_id = operasi;
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(theme::muted("Map mode"));
+                            let mut mode = form.map_mode.clone();
                             widgets::combo(
                                 ui,
-                                egui::Id::new("scenario_op"),
-                                &mut operasi,
-                                &options,
+                                egui::Id::new("map_mode"),
+                                &mut mode,
+                                &[
+                                    ("outdoor".to_owned(), "Outdoor".to_owned()),
+                                    ("indoor".to_owned(), "Indoor".to_owned()),
+                                ],
                             );
-                            form.operasi_id = operasi;
-                        }
-                        ui.horizontal(|ui| {
-                            widgets::labeled_input(ui, "Center X", &mut form.center_x);
-                            widgets::labeled_input(ui, "Center Y", &mut form.center_y);
+                            form.map_mode = mode;
                         });
-                        ui.horizontal(|ui| {
-                            widgets::labeled_input(ui, "Zoom", &mut form.zoom);
-                            widgets::labeled_input(ui, "Min zoom", &mut form.min_zoom);
-                            widgets::labeled_input(ui, "Max zoom", &mut form.max_zoom);
+                        ui.vertical(|ui| {
+                            ui.label(theme::muted("Base layer"));
+                            let mut layer = form.base_layer.clone();
+                            widgets::combo(
+                                ui,
+                                egui::Id::new("base_layer"),
+                                &mut layer,
+                                &[
+                                    ("osm".to_owned(), "OpenStreetMap".to_owned()),
+                                    ("satellite".to_owned(), "Satelit".to_owned()),
+                                    ("grid_dark".to_owned(), "Grid dark".to_owned()),
+                                    ("grid_light".to_owned(), "Grid light".to_owned()),
+                                    ("blank_dark".to_owned(), "Blank dark".to_owned()),
+                                    ("blank_light".to_owned(), "Blank light".to_owned()),
+                                    ("floor_plan".to_owned(), "Floor plan".to_owned()),
+                                ],
+                            );
+                            form.base_layer = layer;
                         });
-                        ui.horizontal(|ui| {
-                            widgets::labeled_input(ui, "Pitch", &mut form.pitch);
-                            widgets::labeled_input(ui, "Bearing", &mut form.bearing);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("Map mode").size(11.0));
-                                let mut mode = form.map_mode.clone();
-                                widgets::combo(
-                                    ui,
-                                    egui::Id::new("map_mode"),
-                                    &mut mode,
-                                    &[
-                                        ("outdoor".to_owned(), "Outdoor".to_owned()),
-                                        ("indoor".to_owned(), "Indoor".to_owned()),
-                                    ],
-                                );
-                                form.map_mode = mode;
-                            });
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("Base layer").size(11.0));
-                                let mut layer = form.base_layer.clone();
-                                widgets::combo(
-                                    ui,
-                                    egui::Id::new("base_layer"),
-                                    &mut layer,
-                                    &[
-                                        ("osm".to_owned(), "OpenStreetMap".to_owned()),
-                                        ("satellite".to_owned(), "Satelit".to_owned()),
-                                        ("grid_dark".to_owned(), "Grid dark".to_owned()),
-                                        ("grid_light".to_owned(), "Grid light".to_owned()),
-                                        ("blank_dark".to_owned(), "Blank dark".to_owned()),
-                                        ("blank_light".to_owned(), "Blank light".to_owned()),
-                                        ("floor_plan".to_owned(), "Floor plan".to_owned()),
-                                    ],
-                                );
-                                form.base_layer = layer;
-                            });
-                        });
-                        ui.label(egui::RichText::new("Indoor config (JSON)").size(11.0));
-                        ui.add(
-                            egui::TextEdit::multiline(&mut form.indoor_config)
-                                .desired_rows(3)
-                                .desired_width(f32::INFINITY),
-                        );
-                    }
-                    if let Some(error) = &form.error {
-                        widgets::error_banner(ui, error);
-                    }
-                    ui.horizontal(|ui| {
-                        if widgets::primary_button(ui, "Simpan").clicked() {
-                            action = ModalAction::SaveScenario;
-                        }
-                        if widgets::ghost_button(ui, "Batal").clicked() {
-                            request_close = true;
-                        }
                     });
-                });
+                    ui.add_space(6.0);
+                    let advanced = if form.id.is_none() {
+                        "Pengaturan peta lanjutan (opsional)"
+                    } else {
+                        "Pengaturan peta"
+                    };
+                    egui::CollapsingHeader::new(advanced)
+                        .id_salt("scenario_advanced")
+                        .default_open(form.id.is_some())
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                widgets::labeled_input(ui, "Center X", &mut form.center_x);
+                                widgets::labeled_input(ui, "Center Y", &mut form.center_y);
+                            });
+                            ui.horizontal(|ui| {
+                                widgets::labeled_input(ui, "Zoom", &mut form.zoom);
+                                widgets::labeled_input(ui, "Min zoom", &mut form.min_zoom);
+                                widgets::labeled_input(ui, "Max zoom", &mut form.max_zoom);
+                            });
+                            ui.horizontal(|ui| {
+                                widgets::labeled_input(ui, "Pitch", &mut form.pitch);
+                                widgets::labeled_input(ui, "Bearing", &mut form.bearing);
+                            });
+                            ui.label(theme::muted("Indoor config (JSON)"));
+                            ui.add(
+                                egui::TextEdit::multiline(&mut form.indoor_config)
+                                    .desired_rows(3)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                }
+                if let Some(error) = &form.error {
+                    widgets::error_banner(ui, error);
+                }
+                let save_label = if form.copy {
+                    "Salin skenario"
+                } else if form.id.is_some() {
+                    "Simpan"
+                } else {
+                    "Buat skenario"
+                };
+                match modal_footer(ui, save_label) {
+                    ModalFooter::Save => action = ModalAction::SaveScenario,
+                    ModalFooter::Cancel => request_close = true,
+                    ModalFooter::None => {}
+                }
+            });
+            if response.should_close() {
+                request_close = true;
+            }
         }
         Modal::User(form) => {
             let title = if form.id.is_some() {
@@ -1157,62 +1222,61 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
             } else {
                 "Pengguna baru"
             };
-            egui::Window::new(title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .min_width(380.0)
-                .show(context, |ui| {
-                    widgets::labeled_input(ui, "Nama", &mut form.name);
-                    ui.add_enabled_ui(form.id.is_none(), |ui| {
-                        widgets::labeled_input(ui, "Username", &mut form.username);
-                    });
-                    if form.id.is_none() {
-                        widgets::password_input(
-                            ui,
-                            "Password",
-                            &mut form.password,
-                            &mut form.password_visible,
-                        );
-                        widgets::password_input(
-                            ui,
-                            "Konfirmasi password",
-                            &mut form.confirm_password,
-                            &mut form.confirm_password_visible,
-                        );
-                    }
-                    let mut role = form.role.clone();
-                    widgets::combo(
-                        ui,
-                        egui::Id::new("user_role"),
-                        &mut role,
-                        &[
-                            ("admin".to_owned(), "Admin".to_owned()),
-                            ("admin_monitor".to_owned(), "Admin monitor".to_owned()),
-                            ("admin_satker".to_owned(), "Admin satker".to_owned()),
-                            ("user_satker".to_owned(), "User satker".to_owned()),
-                            ("user".to_owned(), "User".to_owned()),
-                        ],
-                    );
-                    form.role = role;
-                    let mut satker = form.satker_id.clone();
-                    let options = satker_options(client);
-                    widgets::combo(ui, egui::Id::new("user_satker"), &mut satker, &options);
-                    form.satker_id = satker;
-                    widgets::labeled_input(ui, "Units (JSON)", &mut form.units);
-                    if let Some(error) = &form.error {
-                        widgets::error_banner(ui, error);
-                    }
-                    ui.horizontal(|ui| {
-                        if widgets::primary_button(ui, "Simpan").clicked() {
-                            action = ModalAction::SaveUser;
-                        }
-                        if widgets::ghost_button(ui, "Batal").clicked() {
-                            request_close = true;
-                        }
-                    });
+            let response = modal_shell(context, "user_modal", 400.0, |ui| {
+                modal_title(
+                    ui,
+                    title,
+                    "Akun dipakai untuk masuk ke aplikasi desktop dan admin.",
+                );
+                widgets::labeled_input(ui, "Nama", &mut form.name);
+                ui.add_enabled_ui(form.id.is_none(), |ui| {
+                    widgets::labeled_input(ui, "Username", &mut form.username);
                 });
+                if form.id.is_none() {
+                    widgets::password_input(
+                        ui,
+                        "Password",
+                        &mut form.password,
+                        &mut form.password_visible,
+                    );
+                    widgets::password_input(
+                        ui,
+                        "Konfirmasi password",
+                        &mut form.confirm_password,
+                        &mut form.confirm_password_visible,
+                    );
+                }
+                let mut role = form.role.clone();
+                widgets::combo(
+                    ui,
+                    egui::Id::new("user_role"),
+                    &mut role,
+                    &[
+                        ("admin".to_owned(), "Admin".to_owned()),
+                        ("admin_monitor".to_owned(), "Admin monitor".to_owned()),
+                        ("admin_satker".to_owned(), "Admin satker".to_owned()),
+                        ("user_satker".to_owned(), "User satker".to_owned()),
+                        ("user".to_owned(), "User".to_owned()),
+                    ],
+                );
+                form.role = role;
+                let mut satker = form.satker_id.clone();
+                let options = satker_options(client);
+                widgets::combo(ui, egui::Id::new("user_satker"), &mut satker, &options);
+                form.satker_id = satker;
+                widgets::labeled_input(ui, "Units (JSON)", &mut form.units);
+                if let Some(error) = &form.error {
+                    widgets::error_banner(ui, error);
+                }
+                match modal_footer(ui, "Simpan") {
+                    ModalFooter::Save => action = ModalAction::SaveUser,
+                    ModalFooter::Cancel => request_close = true,
+                    ModalFooter::None => {}
+                }
+            });
+            if response.should_close() {
+                request_close = true;
+            }
         }
         Modal::Satker(form) => {
             let title = if form.id.is_some() {
@@ -1220,52 +1284,49 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
             } else {
                 "Satker baru"
             };
-            egui::Window::new(title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .min_width(340.0)
-                .show(context, |ui| {
-                    widgets::labeled_input(ui, "Kode", &mut form.code);
-                    widgets::labeled_input(ui, "Nama", &mut form.name);
-                    widgets::switch(ui, &mut form.is_active, "Aktif");
-                    if let Some(error) = &form.error {
-                        widgets::error_banner(ui, error);
-                    }
-                    ui.horizontal(|ui| {
-                        if widgets::primary_button(ui, "Simpan").clicked() {
-                            action = ModalAction::SaveSatker;
-                        }
-                        if widgets::ghost_button(ui, "Batal").clicked() {
-                            request_close = true;
-                        }
-                    });
-                });
+            let response = modal_shell(context, "satker_modal", 360.0, |ui| {
+                modal_title(ui, title, "Satuan kerja pemilik operasi.");
+                widgets::labeled_input(ui, "Kode", &mut form.code);
+                widgets::labeled_input(ui, "Nama", &mut form.name);
+                widgets::switch(ui, &mut form.is_active, "Aktif");
+                if let Some(error) = &form.error {
+                    widgets::error_banner(ui, error);
+                }
+                match modal_footer(ui, "Simpan") {
+                    ModalFooter::Save => action = ModalAction::SaveSatker,
+                    ModalFooter::Cancel => request_close = true,
+                    ModalFooter::None => {}
+                }
+            });
+            if response.should_close() {
+                request_close = true;
+            }
         }
         Modal::Confirm(confirm) => {
-            egui::Window::new(&confirm.title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(context, |ui| {
-                    ui.label(&confirm.message);
-                    ui.add_space(SPACE_2);
-                    ui.horizontal(|ui| {
-                        if widgets::danger_button(ui, "Ya, lanjutkan").clicked() {
-                            action = ModalAction::Confirm(confirm.action);
-                        }
-                        if widgets::ghost_button(ui, "Batal").clicked() {
-                            request_close = true;
-                        }
-                    });
+            let response = modal_shell(context, "confirm_modal", 380.0, |ui| {
+                ui.label(theme::title(&confirm.title));
+                ui.add_space(4.0);
+                ui.label(&confirm.message);
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if widgets::danger_button(ui, "Ya, lanjutkan").clicked() {
+                        action = ModalAction::Confirm(confirm.action);
+                    }
+                    if widgets::ghost_button(ui, "Batal").clicked() {
+                        request_close = true;
+                    }
                 });
+            });
+            if response.should_close() {
+                request_close = true;
+            }
         }
         Modal::None => {}
     }
 
-    if !open || request_close {
+    if request_close {
         client.modal = Modal::None;
         return;
     }
