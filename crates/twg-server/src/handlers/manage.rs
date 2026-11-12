@@ -187,6 +187,14 @@ fn normalize_indoor_config(value: Option<&Value>, fallback: Value) -> String {
     }
 }
 
+fn normalize_sky_mode(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "skybox" => "skybox".to_owned(),
+        "environment" | "ibl" | "env" => "environment".to_owned(),
+        _ => "black".to_owned(),
+    }
+}
+
 pub async fn create_scenario(
     State(state): State<AppState>,
     Extension(context): Extension<AuthContext>,
@@ -196,6 +204,7 @@ pub async fn create_scenario(
     let map_mode = normalize_map_mode(&request.map_mode);
     let min_zoom = normalize_min_zoom(request.min_zoom, &map_mode);
     let base_layer = normalize_base_layer(&request.base_layer, &map_mode);
+    let sky_mode = normalize_sky_mode(&request.sky_mode);
     let indoor_config = normalize_indoor_config(
         request.indoor_config.as_ref(),
         Value::Object(serde_json::Map::new()),
@@ -219,6 +228,7 @@ pub async fn create_scenario(
             bearing: request.bearing,
             map_mode,
             base_layer,
+            sky_mode,
             indoor_config,
         })
         .await?;
@@ -255,6 +265,11 @@ pub async fn update_scenario(
     } else {
         normalize_base_layer(&request.base_layer, &map_mode)
     };
+    let sky_mode = if request.sky_mode.trim().is_empty() {
+        normalize_sky_mode(&current.sky_mode)
+    } else {
+        normalize_sky_mode(&request.sky_mode)
+    };
     let indoor_config = normalize_indoor_config(
         request.indoor_config.as_ref(),
         current.indoor_config.clone(),
@@ -272,6 +287,7 @@ pub async fn update_scenario(
                 bearing: request.bearing,
                 map_mode,
                 base_layer,
+                sky_mode,
                 indoor_config,
             },
         )

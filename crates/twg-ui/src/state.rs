@@ -2364,6 +2364,7 @@ impl ClientUi {
             "bearing": form.bearing,
             "map_mode": form.map_mode,
             "base_layer": form.base_layer,
+            "sky_mode": "",
             "indoor_config": indoor_config,
         }));
         let handle = match form.id {

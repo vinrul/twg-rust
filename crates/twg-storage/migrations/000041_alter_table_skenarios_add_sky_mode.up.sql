@@ -1,0 +1,2 @@
+ALTER TABLE skenarios
+    ADD COLUMN IF NOT EXISTS sky_mode VARCHAR(20) DEFAULT 'black';

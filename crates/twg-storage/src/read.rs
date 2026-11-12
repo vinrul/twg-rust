@@ -49,7 +49,7 @@ impl ReadStore {
         let operation = self.operation_by_id(operasi_id).await?;
         let rows = sqlx::query_as::<_, ScenarioRow>(
             "SELECT id, operasi_id, satker_id, name, center_x, center_y, zoom, min_zoom,
-                    max_zoom, pitch, bearing, map_mode, base_layer, indoor_config,
+                    max_zoom, pitch, bearing, map_mode, base_layer, sky_mode, indoor_config,
                     created_at, updated_at
              FROM skenarios
              WHERE operasi_id = $1
@@ -73,7 +73,7 @@ impl ReadStore {
     pub async fn get_scenario(&self, id: Uuid) -> Result<Option<Scenario>, sqlx::Error> {
         let Some(row) = sqlx::query_as::<_, ScenarioRow>(
             "SELECT id, operasi_id, satker_id, name, center_x, center_y, zoom, min_zoom,
-                    max_zoom, pitch, bearing, map_mode, base_layer, indoor_config,
+                    max_zoom, pitch, bearing, map_mode, base_layer, sky_mode, indoor_config,
                     created_at, updated_at
              FROM skenarios
              WHERE id = $1",
@@ -618,6 +618,7 @@ struct ScenarioRow {
     bearing: Option<f64>,
     map_mode: Option<String>,
     base_layer: Option<String>,
+    sky_mode: Option<String>,
     indoor_config: Option<String>,
     created_at: Option<NaiveDateTime>,
     updated_at: Option<NaiveDateTime>,
@@ -639,6 +640,7 @@ impl ScenarioRow {
             bearing: self.bearing.unwrap_or(0.0),
             map_mode: parse_map_mode(self.map_mode.as_deref()),
             base_layer: parse_base_layer(self.base_layer.as_deref()),
+            sky_mode: self.sky_mode.unwrap_or_else(|| "black".to_owned()),
             indoor_config: self
                 .indoor_config
                 .as_deref()

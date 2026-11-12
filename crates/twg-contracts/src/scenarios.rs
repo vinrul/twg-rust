@@ -22,6 +22,8 @@ pub struct Scenario {
     pub bearing: f64,
     pub map_mode: MapMode,
     pub base_layer: BaseLayer,
+    #[serde(default = "default_sky_mode")]
+    pub sky_mode: String,
     #[serde(default = "empty_object")]
     pub indoor_config: Value,
     pub created_at: Timestamp,
@@ -30,6 +32,10 @@ pub struct Scenario {
 
 fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
+}
+
+fn default_sky_mode() -> String {
+    "black".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +58,8 @@ pub struct ScenarioCreateRequest {
     pub map_mode: String,
     #[serde(default)]
     pub base_layer: String,
+    #[serde(default)]
+    pub sky_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indoor_config: Option<Value>,
 }
@@ -75,6 +83,9 @@ pub struct ScenarioUpdateRequest {
     pub map_mode: String,
     #[serde(default)]
     pub base_layer: String,
+    /// Empty keeps the stored sky mode when updating.
+    #[serde(default)]
+    pub sky_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indoor_config: Option<Value>,
 }

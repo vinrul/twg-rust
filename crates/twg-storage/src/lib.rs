@@ -116,6 +116,18 @@ async fn apply_compat_columns(pool: &PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     }
+    let skenarios: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public.skenarios')::text")
+            .fetch_one(pool)
+            .await?;
+    if skenarios.is_some() {
+        sqlx::query(
+            "ALTER TABLE skenarios
+             ADD COLUMN IF NOT EXISTS sky_mode VARCHAR(20) DEFAULT 'black'",
+        )
+        .execute(pool)
+        .await?;
+    }
     let assets: Option<String> = sqlx::query_scalar("SELECT to_regclass('public.assets')::text")
         .fetch_one(pool)
         .await?;

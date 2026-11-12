@@ -19,9 +19,9 @@ use twg_contracts::map::{
 use twg_contracts::scenarios::Scenario;
 use twg_domain::{BaseLayer as DomainBaseLayer, MapMode, Role};
 use twg_map::{BaseLayer, GeoPoint, MapCameraState};
-use twg_render::EditorShapeKind;
 #[cfg(not(target_arch = "wasm32"))]
 use twg_render::cache_asset_path;
+use twg_render::{EditorShapeKind, SkyMode};
 use uuid::Uuid;
 
 use crate::state::{ClientUi, JobKind, ToastKind};
@@ -568,6 +568,7 @@ impl ClientUi {
             "bearing": f64::from(camera.bearing_degrees),
             "map_mode": "",
             "base_layer": base_layer,
+            "sky_mode": self.editor.sky.slug(),
         });
         self.editor.saving_view = true;
         self.editor.save_error = None;
@@ -731,11 +732,12 @@ impl ClientUi {
                             bearing_degrees: scenario.bearing as f32,
                         });
                         self.editor.saved_base_layer = Some(self.editor.base_layer);
+                        self.editor.sky = SkyMode::from_slug(&scenario.sky_mode);
                         let time = chrono::Local::now().format("%H:%M:%S").to_string();
                         self.editor.view_saved_at = Some(time.clone());
                         self.editor.last_save = Some(time);
-                        self.editor.log("Tampilan kamera tersimpan.");
-                        self.toast("Tampilan kamera skenario tersimpan.", ToastKind::Success);
+                        self.editor.log("Tampilan kamera dan langit tersimpan.");
+                        self.toast("Tampilan skenario tersimpan.", ToastKind::Success);
                         self.editor.touch();
                     }
                     Err(error) => {
@@ -796,6 +798,7 @@ impl ClientUi {
                 .unwrap_or(60.0)
                 .clamp(1.0, 10_000.0) as f32,
         ];
+        self.editor.sky = SkyMode::from_slug(&scenario.sky_mode);
         let layer = match scenario.base_layer {
             DomainBaseLayer::Satellite => BaseLayer::ArcGisImagery,
             _ => BaseLayer::OpenStreetMap,

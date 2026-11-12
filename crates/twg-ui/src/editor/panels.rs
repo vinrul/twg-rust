@@ -39,7 +39,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         let editor = &mut client.editor;
         root_ui(context, |ui| {
             if editor.preview {
-                draw_preview_bar(ui, editor);
+                draw_preview_bar(ui, editor, can_admin, &mut action);
             } else {
                 draw_menu(ui, editor, &mut action);
                 draw_toolbar(ui, editor, &mut action);
@@ -123,7 +123,12 @@ fn root_ui<R>(context: &egui::Context, add: impl FnOnce(&mut egui::Ui) -> R) -> 
     add(&mut ui)
 }
 
-fn draw_preview_bar(ui: &mut egui::Ui, editor: &mut EditorState) {
+fn draw_preview_bar(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    can_admin: bool,
+    action: &mut EditorAction,
+) {
     egui::Panel::top("editor_preview_bar")
         .exact_size(34.0)
         .frame(
@@ -161,7 +166,11 @@ fn draw_preview_bar(ui: &mut egui::Ui, editor: &mut EditorState) {
                                 ui.selectable_value(&mut sky, option, sky_mode_label(option));
                             }
                         });
+                    let changed = sky != editor.sky;
                     editor.sky = sky;
+                    if changed && can_admin && editor.loaded && editor.scenario_id.is_some() {
+                        *action = EditorAction::SaveView;
+                    }
                     ui.label("Langit");
                 });
             });
@@ -1773,7 +1782,11 @@ fn draw_scenario_inspector(
                     ui.selectable_value(&mut sky, option, sky_mode_label(option));
                 }
             });
+        let changed = sky != editor.sky;
         editor.sky = sky;
+        if changed && can_admin && editor.loaded && editor.scenario_id.is_some() {
+            *action = EditorAction::SaveView;
+        }
     });
     ui.label(theme::muted(match editor.sky {
         SkyMode::Black => "Latar hitam seperti sebelumnya.",
@@ -1824,7 +1837,7 @@ fn draw_scenario_inspector(
                     egui::Button::new("Simpan tampilan"),
                 )
                 .on_hover_text(
-                    "Simpan pusat, zoom, bearing, pitch, dan base layer sebagai default skenario",
+                    "Simpan pusat, zoom, bearing, pitch, base layer, dan langit sebagai default skenario",
                 );
             if response.clicked() {
                 *action = EditorAction::SaveView;

@@ -77,6 +77,7 @@ pub struct NewScenario {
     pub bearing: f64,
     pub map_mode: String,
     pub base_layer: String,
+    pub sky_mode: String,
     pub indoor_config: String,
 }
 
@@ -91,6 +92,7 @@ pub struct ScenarioUpdate {
     pub bearing: f64,
     pub map_mode: String,
     pub base_layer: String,
+    pub sky_mode: String,
     pub indoor_config: String,
 }
 
@@ -311,8 +313,8 @@ impl WriteStore {
         let id = sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO skenarios (
                  name, operasi_id, satker_id, center_x, center_y, zoom, min_zoom, max_zoom,
-                 pitch, bearing, map_mode, base_layer, indoor_config
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 pitch, bearing, map_mode, base_layer, sky_mode, indoor_config
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              RETURNING id",
         )
         .bind(&new.name)
@@ -327,6 +329,7 @@ impl WriteStore {
         .bind(new.bearing)
         .bind(&new.map_mode)
         .bind(&new.base_layer)
+        .bind(&new.sky_mode)
         .bind(&new.indoor_config)
         .fetch_one(&self.pool)
         .await
@@ -346,7 +349,7 @@ impl WriteStore {
             "UPDATE skenarios
              SET center_x = $2, center_y = $3, zoom = $4, min_zoom = $5, max_zoom = $6,
                  pitch = $7, bearing = $8, map_mode = $9, base_layer = $10,
-                 indoor_config = $11, updated_at = NOW()
+                 sky_mode = $11, indoor_config = $12, updated_at = NOW()
              WHERE id = $1
              RETURNING id, operasi_id",
         )
@@ -360,6 +363,7 @@ impl WriteStore {
         .bind(update.bearing)
         .bind(&update.map_mode)
         .bind(&update.base_layer)
+        .bind(&update.sky_mode)
         .bind(&update.indoor_config)
         .fetch_optional(&self.pool)
         .await?
@@ -411,7 +415,7 @@ impl WriteStore {
 
         let source = sqlx::query_as::<_, CopyScenarioRow>(
             "SELECT id, operasi_id, center_x, center_y, zoom, min_zoom, max_zoom,
-                    pitch, bearing, map_mode, base_layer, indoor_config
+                    pitch, bearing, map_mode, base_layer, sky_mode, indoor_config
              FROM skenarios WHERE id = $1",
         )
         .bind(source_id)
@@ -422,8 +426,8 @@ impl WriteStore {
         let new_id = sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO skenarios (
                  name, operasi_id, center_x, center_y, zoom, min_zoom, max_zoom,
-                 pitch, bearing, map_mode, base_layer, indoor_config
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 pitch, bearing, map_mode, base_layer, sky_mode, indoor_config
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              RETURNING id",
         )
         .bind(name)
@@ -437,6 +441,12 @@ impl WriteStore {
         .bind(source.bearing)
         .bind(&source.map_mode)
         .bind(&source.base_layer)
+        .bind(
+            source
+                .sky_mode
+                .clone()
+                .unwrap_or_else(|| "black".to_owned()),
+        )
         .bind(&source.indoor_config)
         .fetch_one(&mut *transaction)
         .await?;
@@ -3173,6 +3183,7 @@ struct CopyScenarioRow {
     bearing: Option<f64>,
     map_mode: Option<String>,
     base_layer: Option<String>,
+    sky_mode: Option<String>,
     indoor_config: Option<String>,
 }
 

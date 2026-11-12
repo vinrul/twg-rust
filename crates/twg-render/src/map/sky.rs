@@ -40,6 +40,23 @@ pub enum SkyMode {
 
 impl SkyMode {
     pub const ALL: [Self; 3] = [Self::Black, Self::Skybox, Self::Environment];
+
+    /// Stable value stored with the scenario on the server.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Black => "black",
+            Self::Skybox => "skybox",
+            Self::Environment => "environment",
+        }
+    }
+
+    pub fn from_slug(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "skybox" => Self::Skybox,
+            "environment" | "ibl" | "env" => Self::Environment,
+            _ => Self::Black,
+        }
+    }
 }
 
 #[derive(Resource)]
