@@ -1542,6 +1542,32 @@ impl EditorState {
         })
     }
 
+    /// Markers driven by the selected route animations. The editor overlay
+    /// rings them, so the target marker is visible even in scenarios with
+    /// hundreds of markers.
+    pub fn selected_route_markers(&self) -> BTreeSet<ObjectKey> {
+        let mut markers = BTreeSet::new();
+        for key in &self.selected {
+            let Some(object) = self.object(*key) else {
+                continue;
+            };
+            let EditorKind::Line(line) = &object.kind else {
+                continue;
+            };
+            let Some(marker_id) = line.animation.as_ref().and_then(|route| route.marker_id) else {
+                continue;
+            };
+            if let Some(marker) = self.objects.iter().find(|candidate| {
+                candidate.server_id == Some(marker_id)
+                    && matches!(candidate.kind, EditorKind::Marker(_))
+                    && candidate.visible
+            }) {
+                markers.insert(marker.key);
+            }
+        }
+        markers
+    }
+
     pub fn select_only(&mut self, key: ObjectKey) {
         if !self.selected.contains(&key) {
             self.pick_route_marker = None;
@@ -3804,6 +3830,38 @@ mod tests {
             Some(marker_id)
         );
         assert!(object.dirty);
+    }
+
+    #[test]
+    fn selecting_a_route_highlights_its_marker() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.225, -8.648);
+        let marker_key = add_static_marker(
+            &mut editor,
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            point,
+            AssetMoveMode::Free,
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        let end = GeoPoint::from_local_offset(point, 10.0, 0.0).expect("east");
+        editor.add_route(vec![point, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        assert!(editor.selected_route_markers().is_empty());
+
+        editor.assign_route_marker(route_key, marker_id);
+        assert_eq!(
+            editor
+                .selected_route_markers()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![marker_key]
+        );
+
+        // Only the route selection links the marker; selecting the marker
+        // itself does not highlight routes in return.
+        editor.select_only(marker_key);
+        assert!(editor.selected_route_markers().is_empty());
     }
 
     #[test]

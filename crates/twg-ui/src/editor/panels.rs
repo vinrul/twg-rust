@@ -3172,9 +3172,16 @@ fn draw_play_overlay(painter: &egui::Painter, editor: &EditorState) {
 fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
     let selected_stroke = egui::Stroke::new(2.4, theme::color(DARK.warning));
     let hover_stroke = egui::Stroke::new(1.4, theme::color(DARK.foreground));
+    // A selected route animation rings the marker it drives, so the target is
+    // easy to spot on a map with many markers.
+    let route_markers = editor.selected_route_markers();
+    let route_stroke = egui::Stroke::new(2.0, theme::color(DARK.success));
     for (key, _kind, points, selected) in &editor.projected {
+        let is_route_marker = route_markers.contains(key);
         let stroke = if *selected {
             selected_stroke
+        } else if is_route_marker {
+            route_stroke
         } else if editor.hover_key == Some(*key) {
             hover_stroke
         } else {
@@ -3183,7 +3190,11 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
         match _kind {
             ObjectType::Marker | ObjectType::Text => {
                 if let Some(center) = points.first() {
-                    painter.circle_stroke(*center, 15.0, stroke);
+                    if is_route_marker && !*selected {
+                        dashed_ring(painter, *center, 19.0, stroke);
+                    } else {
+                        painter.circle_stroke(*center, 15.0, stroke);
+                    }
                 }
             }
             // Particle effects are their own visual; a crosshair keeps the
@@ -3208,6 +3219,18 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
             }
         }
     }
+}
+
+/// Dashed circle used to mark the marker linked to the selected route.
+fn dashed_ring(painter: &egui::Painter, center: egui::Pos2, radius: f32, stroke: egui::Stroke) {
+    const SEGMENTS: usize = 40;
+    let points = (0..=SEGMENTS)
+        .map(|index| {
+            let angle = index as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            center + egui::vec2(angle.cos() * radius, angle.sin() * radius)
+        })
+        .collect::<Vec<_>>();
+    painter.extend(egui::Shape::dashed_line(&points, stroke, 5.0, 4.0));
 }
 
 fn draw_object_pins(painter: &egui::Painter, editor: &EditorState) {
