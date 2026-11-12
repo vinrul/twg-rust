@@ -128,6 +128,18 @@ async fn apply_compat_columns(pool: &PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     }
+    let plot_lines: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public.plot_lines')::text")
+            .fetch_one(pool)
+            .await?;
+    if plot_lines.is_some() {
+        sqlx::query(
+            "ALTER TABLE plot_lines
+             ADD COLUMN IF NOT EXISTS keterangan TEXT DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+    }
     let assets: Option<String> = sqlx::query_scalar("SELECT to_regclass('public.assets')::text")
         .fetch_one(pool)
         .await?;

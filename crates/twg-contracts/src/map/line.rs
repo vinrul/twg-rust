@@ -15,6 +15,8 @@ pub struct Line {
     pub width: f64,
     pub alpha: f64,
     pub geom: String,
+    #[serde(default)]
+    pub keterangan: String,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -28,6 +30,8 @@ pub struct LineCreateRequest {
     pub width: f64,
     pub alpha: f64,
     pub geom: String,
+    #[serde(default)]
+    pub keterangan: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,6 +40,8 @@ pub struct LineUpdateRequest {
     pub color: String,
     pub width: f64,
     pub alpha: f64,
+    #[serde(default)]
+    pub keterangan: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -523,7 +523,7 @@ impl WriteStore {
         }
 
         let lines = sqlx::query_as::<_, CopyLineRow>(
-            "SELECT name, color, width, alpha, geom
+            "SELECT name, color, width, alpha, geom, keterangan
              FROM plot_lines WHERE skenario_id = $1 ORDER BY created_at DESC",
         )
         .bind(source_id)
@@ -531,8 +531,8 @@ impl WriteStore {
         .await?;
         for line in lines {
             sqlx::query(
-                "INSERT INTO plot_lines (operasi_id, skenario_id, name, color, width, alpha, geom)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                "INSERT INTO plot_lines (operasi_id, skenario_id, name, color, width, alpha, geom, keterangan)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(target_operasi_id)
             .bind(new_id)
@@ -541,6 +541,10 @@ impl WriteStore {
             .bind(line.width)
             .bind(line.alpha)
             .bind(line.geom)
+            .bind(remap_line_keterangan(
+                line.keterangan.as_deref().unwrap_or(""),
+                &replacements,
+            ))
             .execute(&mut *transaction)
             .await?;
         }
@@ -1257,11 +1261,12 @@ impl WriteStore {
         width: f64,
         alpha: f64,
         geom: &str,
+        keterangan: &str,
     ) -> Result<Line, WriteError> {
         let row = sqlx::query_as::<_, LineRow>(
-            "INSERT INTO plot_lines (name, operasi_id, skenario_id, color, width, alpha, geom)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             RETURNING id, skenario_id, name, color, width, alpha, geom, created_at, updated_at",
+            "INSERT INTO plot_lines (name, operasi_id, skenario_id, color, width, alpha, geom, keterangan)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING id, skenario_id, name, color, width, alpha, geom, keterangan, created_at, updated_at",
         )
         .bind(name)
         .bind(operasi_id)
@@ -1270,6 +1275,7 @@ impl WriteStore {
         .bind(width)
         .bind(alpha)
         .bind(geom)
+        .bind(keterangan)
         .fetch_one(&self.pool)
         .await
         .map_err(|error| map_write_error(error, "invalid line"))?;
@@ -1284,18 +1290,20 @@ impl WriteStore {
         color: &str,
         width: f64,
         alpha: f64,
+        keterangan: &str,
     ) -> Result<Line, WriteError> {
         let row = sqlx::query_as::<_, LineRow>(
             "UPDATE plot_lines
-             SET name = $2, color = $3, width = $4, alpha = $5, updated_at = NOW()
+             SET name = $2, color = $3, width = $4, alpha = $5, keterangan = $6, updated_at = NOW()
              WHERE id = $1
-             RETURNING id, skenario_id, name, color, width, alpha, geom, created_at, updated_at",
+             RETURNING id, skenario_id, name, color, width, alpha, geom, keterangan, created_at, updated_at",
         )
         .bind(id)
         .bind(name)
         .bind(color)
         .bind(width)
         .bind(alpha)
+        .bind(keterangan)
         .fetch_optional(&self.pool)
         .await
         .map_err(|error| map_write_error(error, "invalid line"))?
@@ -1308,7 +1316,7 @@ impl WriteStore {
         let row = sqlx::query_as::<_, LineRow>(
             "UPDATE plot_lines SET geom = $2, updated_at = NOW()
              WHERE id = $1
-             RETURNING id, skenario_id, name, color, width, alpha, geom, created_at, updated_at",
+             RETURNING id, skenario_id, name, color, width, alpha, geom, keterangan, created_at, updated_at",
         )
         .bind(id)
         .bind(geom)
@@ -3047,6 +3055,7 @@ struct LineRow {
     width: Option<f64>,
     alpha: Option<f64>,
     geom: Option<String>,
+    keterangan: Option<String>,
     created_at: Option<NaiveDateTime>,
     updated_at: Option<NaiveDateTime>,
 }
@@ -3062,6 +3071,7 @@ impl LineRow {
             width: self.width.unwrap_or(0.0),
             alpha: self.alpha.unwrap_or(0.0),
             geom: self.geom.unwrap_or_default(),
+            keterangan: self.keterangan.unwrap_or_default(),
             created_at: wita(self.created_at),
             updated_at: wita(self.updated_at),
         }
@@ -3225,6 +3235,7 @@ struct CopyLineRow {
     width: Option<f64>,
     alpha: Option<f64>,
     geom: Option<String>,
+    keterangan: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -3366,6 +3377,24 @@ impl AlurWithScenarioRow {
             updated_at: wita(self.updated_at),
         }
     }
+}
+
+/// Rewrites the marker UUID stored in a route line's `keterangan` when a
+/// scenario is copied, so the copy points at the copied marker.
+fn remap_line_keterangan(raw: &str, replacements: &HashMap<String, String>) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return raw.to_owned();
+    }
+    let Ok(mut payload) = serde_json::from_str::<Value>(trimmed) else {
+        return raw.to_owned();
+    };
+    if let Some(Value::String(marker_id)) = payload.pointer_mut("/animation/marker_id")
+        && let Some(replacement) = replacements.get(marker_id)
+    {
+        *marker_id = replacement.clone();
+    }
+    serde_json::to_string(&payload).unwrap_or_else(|_| raw.to_owned())
 }
 
 fn remap_json_data_string(raw: &str, replacements: &HashMap<String, String>) -> String {

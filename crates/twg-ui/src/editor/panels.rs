@@ -6,12 +6,13 @@ use twg_render::{EditorModelShading, EditorShapeKind, SkyMode};
 
 use crate::state::ClientUi;
 use crate::theme;
+use crate::widgets;
 
 use super::input::distance_meters;
 use super::model::{
     AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, marker_color, parse_hex_color,
-    particle_kind_label,
+    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, PlaybackState, marker_color,
+    parse_hex_color, particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +41,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         root_ui(context, |ui| {
             if editor.preview {
                 draw_preview_bar(ui, editor, can_admin, &mut action);
+                draw_animation_play_panel(ui, editor);
             } else {
                 draw_menu(ui, editor, &mut action);
                 draw_toolbar(ui, editor, &mut action);
@@ -174,6 +176,81 @@ fn draw_preview_bar(
                     ui.label("Langit");
                 });
             });
+        });
+}
+
+enum RouteCommand {
+    Play,
+    Pause,
+    Stop,
+}
+
+fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
+    egui::Panel::left("editor_animation_play")
+        .resizable(true)
+        .default_size(230.0)
+        .min_size(190.0)
+        .max_size(340.0)
+        .frame(
+            egui::Frame::new()
+                .fill(theme::color(DARK.card))
+                .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
+                .inner_margin(egui::Margin::same(10)),
+        )
+        .show(ui, |ui| {
+            ui.label(theme::title("Animasi"));
+            ui.label(theme::muted("Kontrol rute selama Play."));
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .id_salt("editor_play_animations")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if editor.play.animations.is_empty() {
+                        ui.label(theme::muted(
+                            "Belum ada animasi rute. Buat rute di tab Animasi saat mengedit skenario.",
+                        ));
+                        return;
+                    }
+                    let mut command: Option<(usize, RouteCommand)> = None;
+                    for (index, animation) in editor.play.animations.iter().enumerate() {
+                        ui.label(egui::RichText::new(&animation.name).strong());
+                        let status = match animation.state {
+                            PlaybackState::Stopped => "Berhenti",
+                            PlaybackState::Paused => "Jeda",
+                            PlaybackState::Playing if animation.is_finished() => "Selesai",
+                            PlaybackState::Playing => "Berjalan",
+                        };
+                        ui.label(theme::muted(status));
+                        if animation.marker_key.is_none() {
+                            ui.label(theme::danger("Marker rute tidak ditemukan."));
+                            ui.separator();
+                            continue;
+                        }
+                        let running = animation.state == PlaybackState::Playing
+                            && !animation.is_finished();
+                        ui.horizontal_wrapped(|ui| {
+                            if !running && ui.button("Play").clicked() {
+                                command = Some((index, RouteCommand::Play));
+                            }
+                            if running && ui.button("Pause").clicked() {
+                                command = Some((index, RouteCommand::Pause));
+                            }
+                            if animation.state != PlaybackState::Stopped
+                                && ui.button("Stop").clicked()
+                            {
+                                command = Some((index, RouteCommand::Stop));
+                            }
+                        });
+                        ui.separator();
+                    }
+                    if let Some((index, command)) = command {
+                        match command {
+                            RouteCommand::Play => editor.play_route_animation(index),
+                            RouteCommand::Pause => editor.pause_route_animation(index),
+                            RouteCommand::Stop => editor.stop_route_animation(index),
+                        }
+                    }
+                });
         });
 }
 
@@ -978,6 +1055,82 @@ fn draw_import_tab(ui: &mut egui::Ui, editor: &mut EditorState, import_rows: &[E
         });
 }
 
+fn draw_animation_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
+    let routes = editor
+        .objects
+        .iter()
+        .filter(|object| object.is_animation_route())
+        .map(|object| {
+            let marker_id = match &object.kind {
+                EditorKind::Line(line) => line.animation.as_ref().and_then(|route| route.marker_id),
+                _ => None,
+            };
+            (object.key, object.name.clone(), marker_id)
+        })
+        .collect::<Vec<_>>();
+
+    ui.add_space(2.0);
+    ui.label(theme::muted(
+        "Rute menggerakkan satu marker mengikuti garis saat Play. Buat rute lewat tombol +, \
+         lalu klik titik-titiknya di peta.",
+    ));
+    ui.add_space(6.0);
+
+    let mut select = None;
+    egui::CollapsingHeader::new(format!("Rute ({})", routes.len()))
+        .id_salt("editor_animation_routes")
+        .default_open(true)
+        .show(ui, |ui| {
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Single marker rute")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Gambar garis rute di peta")
+                .clicked()
+            {
+                editor.begin_route_draw();
+            }
+            if routes.is_empty() {
+                ui.add_space(4.0);
+                ui.label(theme::muted("Belum ada rute."));
+                return;
+            }
+            ui.add_space(4.0);
+            for (key, name, marker_id) in &routes {
+                let marker_name = marker_id.and_then(|id| {
+                    editor.objects.iter().find_map(|object| {
+                        (object.server_id == Some(id)
+                            && matches!(object.kind, EditorKind::Marker(_)))
+                        .then(|| object.name.clone())
+                    })
+                });
+                let marker_label = if marker_name.is_some() {
+                    marker_name.unwrap_or_default()
+                } else if marker_id.is_some() {
+                    "marker hilang".to_owned()
+                } else {
+                    "marker belum dipilih".to_owned()
+                };
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(editor.selected.contains(key), name)
+                        .clicked()
+                    {
+                        select = Some(*key);
+                    }
+                    ui.label(theme::muted(&format!("· {marker_label}")));
+                });
+            }
+        });
+
+    if let Some(key) = select {
+        editor.select_only(key);
+        editor.focus_object(key);
+    }
+}
+
 /// Modal upload form opened from the Import tab.
 fn draw_import_dialog(context: &egui::Context, editor: &mut EditorState) {
     if !editor.import_dialog_open {
@@ -1418,8 +1571,8 @@ fn draw_scene_panel(
 ) {
     egui::Panel::left("editor_scene")
         .resizable(true)
-        .default_size(250.0)
-        .min_size(210.0)
+        .default_size(270.0)
+        .min_size(230.0)
         .max_size(460.0)
         .frame(
             egui::Frame::new()
@@ -1434,6 +1587,7 @@ fn draw_scene_panel(
                 .show(ui, |ui| match editor.left_tab {
                     1 => draw_asset_tab(ui, editor, asset_rows),
                     2 => draw_import_tab(ui, editor, import_rows),
+                    3 => draw_animation_tab(ui, editor),
                     _ => draw_scene_tree(ui, editor),
                 });
         });
@@ -1444,7 +1598,7 @@ fn draw_scene_panel(
 /// scene object count stays aligned to the right edge.
 fn draw_editor_tabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     const TAB_HEIGHT: f32 = 28.0;
-    const TAB_PADDING: f32 = 12.0;
+    const TAB_PADDING: f32 = 8.0;
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), TAB_HEIGHT),
         egui::Sense::hover(),
@@ -1458,13 +1612,16 @@ fn draw_editor_tabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     );
 
     let mut left = rect.left();
-    for (index, label) in ["Scene", "Assets", "Import"].into_iter().enumerate() {
+    for (index, label) in ["Scene", "Assets", "Import", "Animasi"]
+        .into_iter()
+        .enumerate()
+    {
         let galley = painter.layout_no_wrap(
             label.to_owned(),
             egui::FontId::proportional(FONT_XS),
             theme::color(DARK.foreground),
         );
-        let width = (galley.size().x + TAB_PADDING * 2.0).max(60.0);
+        let width = (galley.size().x + TAB_PADDING * 2.0).max(50.0);
         let tab = egui::Rect::from_min_size(
             egui::pos2(left, rect.top()),
             egui::vec2(width, rect.height()),
@@ -1584,7 +1741,10 @@ fn draw_scene_tree(ui: &mut egui::Ui, editor: &mut EditorState) {
                 let rows = editor
                     .objects
                     .iter()
-                    .filter(|object| object.object_type() == object_type)
+                    .filter(|object| {
+                        object.object_type() == object_type
+                            && !(object_type == ObjectType::Line && object.is_animation_route())
+                    })
                     .map(|object| {
                         (
                             object.key,
@@ -2044,6 +2204,51 @@ fn draw_object_inspector(
             changed |= ui.text_edit_multiline(&mut marker.keterangan).changed();
         }
         EditorKind::Line(line) => {
+            if let Some(animation) = &mut line.animation {
+                ui.label(theme::title("Animasi rute"));
+                let speed = drag_row(ui, "Kecepatan", &mut animation.speed, 0.1, 0.5, 1, " m/s");
+                undo |= speed.gained_focus() || speed.drag_started();
+                if speed.changed() {
+                    animation.speed = animation.speed.clamp(0.1, 100.0);
+                    changed = true;
+                }
+                ui.label("Marker yang bergerak");
+                let options = editor.animation_marker_options(key);
+                let mut marker = animation.marker_id;
+                if widgets::combo(
+                    ui,
+                    egui::Id::new(("route_marker", key)),
+                    &mut marker,
+                    &options,
+                )
+                .changed()
+                {
+                    animation.marker_id = marker;
+                    changed = true;
+                }
+                match animation.marker_id {
+                    Some(id) => {
+                        let exists = editor.objects.iter().any(|object| {
+                            object.server_id == Some(id)
+                                && matches!(object.kind, EditorKind::Marker(_))
+                        });
+                        if !exists {
+                            ui.label(theme::danger(
+                                "Marker rute tidak ditemukan. Pilih marker lain lalu simpan.",
+                            ));
+                        }
+                    }
+                    None => {
+                        ui.label(theme::muted(
+                            "Hanya marker yang sudah tersimpan dan bisa bergerak yang muncul di sini.",
+                        ));
+                    }
+                }
+                ui.label(theme::muted(
+                    "Titik, warna, lebar, dan alpha garis tetap bisa diedit seperti line biasa.",
+                ));
+                ui.separator();
+            }
             let editing = editor.point_edit_active(key);
             if ui
                 .button(if editing {

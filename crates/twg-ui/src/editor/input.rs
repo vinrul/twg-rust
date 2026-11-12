@@ -14,7 +14,7 @@ use crate::state::ClientUi;
 
 use super::model::{
     Draft, DragState, EditorKind, EditorState, EditorTool, MIN_MARKER_SCALE, ObjectKey, ObjectType,
-    offset_object,
+    PlaybackState, offset_object,
 };
 
 /// Set by the egui pass so editor shortcuts do not fire while a text field has
@@ -236,6 +236,15 @@ pub fn editor_input(
     play_frame.active = editor.play.active;
     play_frame.units.clear();
     if editor.play.active {
+        let animation_running = editor
+            .play
+            .animations
+            .iter()
+            .filter(|animation| {
+                animation.state == PlaybackState::Playing && !animation.is_finished()
+            })
+            .filter_map(|animation| animation.marker_key)
+            .collect::<std::collections::BTreeSet<_>>();
         play_frame
             .units
             .extend(editor.play.units.iter().map(|(key, unit)| EditorPlayUnit {
@@ -244,7 +253,7 @@ pub fn editor_input(
                 lat: unit.position.latitude,
                 altitude: unit.altitude,
                 heading_deg: unit.heading_deg,
-                moving: unit.target.is_some(),
+                moving: unit.target.is_some() || animation_running.contains(key),
                 animated: unit.animated,
             }));
         // Limited assets are not orderable units, but their root still has to
@@ -259,7 +268,7 @@ pub fn editor_input(
                     lon: unit.position.longitude,
                     lat: unit.position.latitude,
                     altitude: unit.altitude,
-                    heading_deg: 0.0,
+                    heading_deg: unit.heading_deg,
                     moving: false,
                     animated: false,
                 }),
@@ -1065,7 +1074,7 @@ fn mouse_input(
                 }
             }
             EditorTool::Line => {
-                if !matches!(editor.draft, Draft::Line(_)) {
+                if !matches!(editor.draft, Draft::Line(_) | Draft::Route(_)) {
                     editor.draft = Draft::Line(Vec::new());
                 }
                 let double_click = editor.last_click.is_some_and(|(last, position)| {
@@ -1609,6 +1618,10 @@ fn finish_draft(editor: &mut EditorState) {
     match draft {
         Draft::Line(points) if points.len() >= 2 => {
             editor.add_line(points);
+            editor.set_tool(EditorTool::Select);
+        }
+        Draft::Route(points) if points.len() >= 2 => {
+            editor.add_route(points);
             editor.set_tool(EditorTool::Select);
         }
         Draft::Polygon(points) if points.len() >= 3 => {

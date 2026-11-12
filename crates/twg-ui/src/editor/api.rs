@@ -30,8 +30,8 @@ use crate::state::{ClientUi, JobKind, ToastKind};
 use super::model::MarkerAssetModel;
 use super::model::{
     BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, LineObject,
-    MarkerObject, ObjectKey, ObjectType, ParticleObject, ParticleSettings, TextObject,
-    unit_for_uuid,
+    MarkerObject, ObjectKey, ObjectType, ParticleObject, ParticleSettings, RouteAnimation,
+    TextObject, unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1194,6 +1194,7 @@ fn line_object(line: Line) -> EditorObject {
             color: line.color,
             width: line.width,
             alpha: line.alpha,
+            animation: parse_route_animation(&line.keterangan),
         }),
     }
 }
@@ -1450,6 +1451,40 @@ fn line_geom_json(line: &LineObject) -> String {
     serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_owned())
 }
 
+/// Metadata stored in `plot_lines.keterangan` for route animations.
+fn line_keterangan(line: &LineObject) -> String {
+    let Some(animation) = &line.animation else {
+        return String::new();
+    };
+    serde_json::json!({
+        "animation": {
+            "type": "route",
+            "speed": animation.speed,
+            "marker_id": animation.marker_id.map(|id| id.to_string()),
+        }
+    })
+    .to_string()
+}
+
+fn parse_route_animation(raw: &str) -> Option<RouteAnimation> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let animation = value.get("animation")?;
+    if animation.get("type")?.as_str()? != "route" {
+        return None;
+    }
+    Some(RouteAnimation {
+        speed: animation
+            .get("speed")
+            .and_then(Value::as_f64)
+            .unwrap_or(5.0)
+            .clamp(0.1, 100.0),
+        marker_id: animation
+            .get("marker_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok()),
+    })
+}
+
 fn create_request(
     object: &EditorObject,
     operation_id: Uuid,
@@ -1485,6 +1520,7 @@ fn create_request(
                 width: line.width,
                 alpha: line.alpha,
                 geom: line_geom_json(line),
+                keterangan: line_keterangan(line),
             })
             .ok()?,
         ),
@@ -1662,6 +1698,7 @@ fn update_requests(object: &EditorObject) -> Option<Vec<EditorRequest>> {
                     color: line.color.clone(),
                     width: line.width,
                     alpha: line.alpha,
+                    keterangan: line_keterangan(line),
                 })
                 .ok(),
             });
@@ -1865,6 +1902,28 @@ mod tests {
         let (points, altitudes) = parse_line_geom("[[115.2,-8.6],[115.21,-8.61]]");
         assert_eq!(points.len(), 2);
         assert_eq!(altitudes, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn route_metadata_round_trips_through_line_keterangan() {
+        let marker_id = Uuid::new_v4();
+        let mut line = LineObject::new(vec![[115.2, -8.6], [115.21, -8.61]]);
+        line.animation = Some(RouteAnimation {
+            speed: 7.5,
+            marker_id: Some(marker_id),
+        });
+
+        let parsed = parse_route_animation(&line_keterangan(&line)).expect("route metadata");
+        assert!((parsed.speed - 7.5).abs() < 1.0e-9);
+        assert_eq!(parsed.marker_id, Some(marker_id));
+        assert!(parse_route_animation("").is_none());
+        assert!(
+            parse_route_animation(&line_keterangan(&LineObject::new(vec![
+                [115.2, -8.6],
+                [115.21, -8.61]
+            ])))
+            .is_none()
+        );
     }
 
     #[test]

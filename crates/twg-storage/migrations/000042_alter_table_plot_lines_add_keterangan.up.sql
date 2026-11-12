@@ -1,0 +1,2 @@
+ALTER TABLE plot_lines
+    ADD COLUMN IF NOT EXISTS keterangan TEXT DEFAULT '';

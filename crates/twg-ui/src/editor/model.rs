@@ -240,6 +240,38 @@ pub struct PlayLimitedUnit {
     pub radius: f64,
     /// Runtime height, adjustable with the Y handle of the Play gizmo.
     pub altitude: f32,
+    /// Bearing in degrees clockwise from north.
+    pub heading_deg: f32,
+}
+
+/// One authored route animation resolved for Play mode.
+#[derive(Debug, Clone)]
+pub struct PlayRouteAnimation {
+    pub route_key: ObjectKey,
+    pub name: String,
+    /// Marker object that follows the route, when it still exists.
+    pub marker_key: Option<ObjectKey>,
+    pub points: Vec<GeoPoint>,
+    pub altitudes: Vec<f64>,
+    /// Metres per second along the polyline.
+    pub speed: f64,
+    pub length_m: f64,
+    pub progress_m: f64,
+    pub state: PlaybackState,
+}
+
+impl PlayRouteAnimation {
+    pub fn is_finished(&self) -> bool {
+        self.length_m > 0.0 && self.progress_m >= self.length_m - 1.0e-6
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaybackState {
+    #[default]
+    Stopped,
+    Playing,
+    Paused,
 }
 
 /// RTS play mode state: movable animated markers plus static obstacles.
@@ -251,6 +283,10 @@ pub struct PlayState {
     /// Static assets with `Limited` move mode: selected and moved with a gizmo.
     pub limited: BTreeMap<ObjectKey, PlayLimitedUnit>,
     pub obstacles: Vec<PlayObstacle>,
+    /// Authored route animations available in the Play panel.
+    pub animations: Vec<PlayRouteAnimation>,
+    /// Markers controlled by a route animation; manual orders are ignored.
+    pub controlled: BTreeSet<ObjectKey>,
     /// Screen-space marquee while dragging on empty ground.
     pub marquee: Option<(egui::Pos2, egui::Pos2)>,
     /// Right button press position, used to tell a move click from an orbit drag.
@@ -423,6 +459,23 @@ impl MarkerObject {
 }
 
 #[derive(Clone, Debug)]
+pub struct RouteAnimation {
+    /// Metres per second along the polyline.
+    pub speed: f64,
+    /// Server id of the marker that follows the route.
+    pub marker_id: Option<Uuid>,
+}
+
+impl Default for RouteAnimation {
+    fn default() -> Self {
+        Self {
+            speed: 5.0,
+            marker_id: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct LineObject {
     pub points: Vec<[f64; 2]>,
     /// Height in meters for each point, parallel to `points`.
@@ -430,6 +483,8 @@ pub struct LineObject {
     pub color: String,
     pub width: f64,
     pub alpha: f64,
+    /// Set for lines that animate a marker when Play starts.
+    pub animation: Option<RouteAnimation>,
 }
 
 impl LineObject {
@@ -441,6 +496,7 @@ impl LineObject {
             color: "#00b8ff".to_owned(),
             width: 4.0,
             alpha: 0.9,
+            animation: None,
         }
     }
 
@@ -962,6 +1018,11 @@ impl EditorObject {
     pub fn object_type(&self) -> ObjectType {
         self.kind.object_type()
     }
+
+    /// Route lines live in the Animasi tab instead of the Scene tree.
+    pub fn is_animation_route(&self) -> bool {
+        matches!(&self.kind, EditorKind::Line(line) if line.animation.is_some())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1026,6 +1087,7 @@ pub enum Draft {
     #[default]
     None,
     Line(Vec<GeoPoint>),
+    Route(Vec<GeoPoint>),
     Polygon(Vec<GeoPoint>),
 }
 
@@ -1033,7 +1095,7 @@ impl Draft {
     pub fn points(&self) -> &[GeoPoint] {
         match self {
             Self::None => &[],
-            Self::Line(points) | Self::Polygon(points) => points,
+            Self::Line(points) | Self::Route(points) | Self::Polygon(points) => points,
         }
     }
 
@@ -1044,7 +1106,7 @@ impl Draft {
     pub fn push(&mut self, point: GeoPoint) {
         match self {
             Self::None => {}
-            Self::Line(points) | Self::Polygon(points) => points.push(point),
+            Self::Line(points) | Self::Route(points) | Self::Polygon(points) => points.push(point),
         }
     }
 
@@ -1598,6 +1660,7 @@ impl EditorState {
                                 position: point,
                                 radius,
                                 altitude: marker.altitude as f32,
+                                heading_deg: 180.0 - marker.rot_y as f32,
                             },
                         );
                         // Limited assets still block free-moving units; the
@@ -1633,9 +1696,60 @@ impl EditorState {
                 _ => {}
             }
         }
+        self.init_play_animations();
     }
 
-    /// Leaves Play mode. Marker authoring positions were never modified.
+    /// Resolves authored routes into Play state and records which markers they
+    /// control, so the normal RTS order logic leaves those markers alone.
+    fn init_play_animations(&mut self) {
+        let mut animations = Vec::new();
+        let mut controlled = BTreeSet::new();
+        for object in &self.objects {
+            if !object.visible || !self.visible.allows(ObjectType::Line) {
+                continue;
+            }
+            let EditorKind::Line(line) = &object.kind else {
+                continue;
+            };
+            let Some(route) = &line.animation else {
+                continue;
+            };
+            let points = line
+                .points
+                .iter()
+                .map(|point| GeoPoint::new(point[0], point[1]))
+                .collect::<Vec<_>>();
+            if points.len() < 2 {
+                continue;
+            }
+            let marker_key = route.marker_id.and_then(|id| {
+                self.objects.iter().find_map(|candidate| {
+                    let EditorKind::Marker(marker) = &candidate.kind else {
+                        return None;
+                    };
+                    (candidate.server_id == Some(id) && self.marker_is_animatable(marker))
+                        .then_some(candidate.key)
+                })
+            });
+            if let Some(key) = marker_key {
+                controlled.insert(key);
+            }
+            animations.push(PlayRouteAnimation {
+                route_key: object.key,
+                name: object.name.clone(),
+                marker_key,
+                points: points.clone(),
+                altitudes: line.altitudes.clone(),
+                speed: route.speed.clamp(0.1, 100.0),
+                length_m: polyline_length(&points),
+                progress_m: 0.0,
+                state: PlaybackState::Stopped,
+            });
+        }
+        self.play.animations = animations;
+        self.play.controlled = controlled;
+    }
+
     pub fn stop_play(&mut self) {
         self.play = PlayState::default();
         self.selected.clear();
@@ -1666,6 +1780,9 @@ impl EditorState {
                 }),
         );
         for (key, unit) in self.play.units.iter_mut() {
+            if self.play.controlled.contains(key) {
+                continue;
+            }
             let Some(target) = unit.target else {
                 continue;
             };
@@ -1712,6 +1829,83 @@ impl EditorState {
             }
             unit.position = candidate;
         }
+
+        let mut updated = Vec::new();
+        for (index, animation) in self.play.animations.iter_mut().enumerate() {
+            if animation.state != PlaybackState::Playing || animation.is_finished() {
+                continue;
+            }
+            animation.progress_m =
+                (animation.progress_m + animation.speed * dt).min(animation.length_m);
+            updated.push(index);
+        }
+        for index in updated {
+            self.apply_route_animation(index);
+        }
+    }
+
+    /// Starts or resumes a route. A finished route restarts from the first point.
+    pub fn play_route_animation(&mut self, index: usize) {
+        let Some(animation) = self.play.animations.get_mut(index) else {
+            return;
+        };
+        if animation.length_m <= 0.0 {
+            return;
+        }
+        if animation.progress_m >= animation.length_m {
+            animation.progress_m = 0.0;
+        }
+        animation.state = PlaybackState::Playing;
+        self.apply_route_animation(index);
+    }
+
+    pub fn pause_route_animation(&mut self, index: usize) {
+        if let Some(animation) = self.play.animations.get_mut(index)
+            && animation.state == PlaybackState::Playing
+        {
+            animation.state = PlaybackState::Paused;
+        }
+    }
+
+    /// Stops a route and puts its marker back at the first point.
+    pub fn stop_route_animation(&mut self, index: usize) {
+        if let Some(animation) = self.play.animations.get_mut(index) {
+            animation.progress_m = 0.0;
+            animation.state = PlaybackState::Stopped;
+        }
+        self.apply_route_animation(index);
+    }
+
+    fn apply_route_animation(&mut self, index: usize) {
+        let Some(animation) = self.play.animations.get(index) else {
+            return;
+        };
+        let Some(marker_key) = animation.marker_key else {
+            return;
+        };
+        let Some((position, altitude, heading)) = route_sample(
+            &animation.points,
+            &animation.altitudes,
+            animation.progress_m,
+        ) else {
+            return;
+        };
+        if let Some(unit) = self.play.units.get_mut(&marker_key) {
+            unit.position = position;
+            unit.altitude = altitude as f32;
+            unit.heading_deg = heading;
+            unit.target = None;
+        }
+        if let Some(unit) = self.play.limited.get_mut(&marker_key) {
+            unit.position = position;
+            unit.altitude = altitude as f32;
+            unit.heading_deg = heading;
+        }
+        for obstacle in &mut self.play.obstacles {
+            if obstacle.key == Some(marker_key) {
+                obstacle.center = position;
+            }
+        }
     }
 
     /// Sends the selected units to `target` in a grid formation (rows grow
@@ -1724,7 +1918,7 @@ impl EditorState {
             .selected
             .iter()
             .copied()
-            .filter(|key| self.play.units.contains_key(key))
+            .filter(|key| self.play.units.contains_key(key) && !self.play.controlled.contains(key))
             .collect::<Vec<_>>();
         if keys.is_empty() {
             return;
@@ -1992,18 +2186,113 @@ impl EditorState {
             name: format!("Garis {key}"),
             visible: true,
             dirty: true,
-            kind: EditorKind::Line(LineObject {
-                points: coordinates,
-                altitudes: vec![0.0; points.len()],
-                color: "#00b8ff".to_owned(),
-                width: 4.0,
-                alpha: 0.9,
-            }),
+            kind: EditorKind::Line(LineObject::new(coordinates)),
         });
         self.selected.clear();
         self.selected.insert(key);
         self.dirty = true;
         self.touch();
+    }
+
+    /// Creates the line behind a route animation and selects it so the
+    /// Inspector shows its speed and marker settings.
+    pub fn add_route(&mut self, points: Vec<GeoPoint>) {
+        if points.len() < 2 {
+            return;
+        }
+        self.push_undo();
+        let key = self.alloc_key();
+        let coordinates = points
+            .iter()
+            .map(|point| [point.longitude, point.latitude])
+            .collect::<Vec<_>>();
+        let mut line = LineObject::new(coordinates);
+        line.color = "#ffb020".to_owned();
+        line.animation = Some(RouteAnimation::default());
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name: format!("Single marker rute {key}"),
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Line(line),
+        });
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+        self.log("Rute dibuat. Atur kecepatan dan marker di Inspector.");
+    }
+
+    /// Starts drawing a new route from the Animasi tab.
+    pub fn begin_route_draw(&mut self) {
+        if !self.loaded {
+            return;
+        }
+        self.end_point_edit();
+        self.selected.clear();
+        self.set_tool(EditorTool::Line);
+        self.draft = Draft::Route(Vec::new());
+        self.last_click = None;
+        self.log("Klik titik rute di peta. Enter atau klik dua kali untuk selesai.");
+    }
+
+    /// Marker assets that Play can move: animated models and static `Free` or
+    /// `Limited` assets.
+    pub fn marker_is_animatable(&self, marker: &MarkerObject) -> bool {
+        self.marker_models
+            .get(&marker.unit_id)
+            .is_some_and(|model| {
+                (model.animated && model.animation_path.is_some())
+                    || matches!(
+                        model.move_mode,
+                        AssetMoveMode::Free | AssetMoveMode::Limited
+                    )
+            })
+    }
+
+    /// Saved markers that can be assigned to `route_key`, excluding markers
+    /// already used by another route.
+    pub fn animation_marker_options(&self, route_key: ObjectKey) -> Vec<(Option<Uuid>, String)> {
+        let mut used = BTreeSet::new();
+        let mut current = None;
+        for object in &self.objects {
+            let EditorKind::Line(line) = &object.kind else {
+                continue;
+            };
+            let Some(animation) = &line.animation else {
+                continue;
+            };
+            let Some(marker_id) = animation.marker_id else {
+                continue;
+            };
+            if object.key == route_key {
+                current = Some(marker_id);
+            } else {
+                used.insert(marker_id);
+            }
+        }
+        let mut options = self
+            .objects
+            .iter()
+            .filter_map(|object| {
+                let EditorKind::Marker(marker) = &object.kind else {
+                    return None;
+                };
+                let id = object.server_id?;
+                if !self.marker_is_animatable(marker) {
+                    return None;
+                }
+                if used.contains(&id) && Some(id) != current {
+                    return None;
+                }
+                Some((Some(id), object.name.clone()))
+            })
+            .collect::<Vec<_>>();
+        options.sort_by_key(|left| left.1.to_lowercase());
+        let mut result = vec![(None, "— Pilih marker —".to_owned())];
+        result.extend(options);
+        result
     }
 
     pub fn add_polygon(&mut self, points: Vec<GeoPoint>) {
@@ -2121,6 +2410,12 @@ impl EditorState {
             object.server_id = None;
             object.dirty = true;
             object.name = format!("{} copy", object.name);
+            // A route copy must not fight the original over the same marker.
+            if let EditorKind::Line(line) = &mut object.kind
+                && let Some(animation) = &mut line.animation
+            {
+                animation.marker_id = None;
+            }
             offset_object(&mut object.kind, 8.0, -8.0);
             new_selection.insert(key);
             self.objects.push(object);
@@ -2729,6 +3024,55 @@ fn play_speed(kategori: &str) -> f64 {
     }
 }
 
+fn polyline_length(points: &[GeoPoint]) -> f64 {
+    points
+        .windows(2)
+        .filter_map(|pair| pair[1].local_offset(pair[0]).ok())
+        .map(|offset| offset.east_meters.hypot(offset.north_meters))
+        .sum()
+}
+
+/// Position, altitude, and heading at `distance` metres along a polyline.
+fn route_sample(
+    points: &[GeoPoint],
+    altitudes: &[f64],
+    distance: f64,
+) -> Option<(GeoPoint, f64, f32)> {
+    if points.len() < 2 {
+        return None;
+    }
+    let mut remaining = distance.max(0.0);
+    let last = points.len() - 2;
+    for index in 0..=last {
+        let from = points[index];
+        let to = points[index + 1];
+        let Ok(offset) = to.local_offset(from) else {
+            continue;
+        };
+        let segment = offset.east_meters.hypot(offset.north_meters);
+        let heading = offset.east_meters.atan2(offset.north_meters).to_degrees() as f32;
+        if remaining <= segment || index == last {
+            let t = if segment > 1.0e-6 {
+                (remaining / segment).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let position =
+                GeoPoint::from_local_offset(from, offset.east_meters * t, offset.north_meters * t)
+                    .unwrap_or(to);
+            let start_altitude = altitudes.get(index).copied().unwrap_or(0.0);
+            let end_altitude = altitudes.get(index + 1).copied().unwrap_or(start_altitude);
+            return Some((
+                position,
+                start_altitude + (end_altitude - start_altitude) * t,
+                heading,
+            ));
+        }
+        remaining -= segment;
+    }
+    None
+}
+
 /// Ground-plane radius of a 3D shape used for Play obstacle avoidance. Custom
 /// meshes use the farthest footprint vertex, so the circle encloses the whole
 /// outline and units cannot clip through a corner.
@@ -3279,6 +3623,58 @@ mod tests {
         assert!(editor.play.obstacles.is_empty());
         let unit = editor.play.units.get(&key).expect("free static unit");
         assert!(!unit.animated);
+    }
+
+    #[test]
+    fn route_sample_interpolates_distance_altitude_and_heading() {
+        let start = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(start, 100.0, 0.0).expect("east");
+        let points = vec![start, end];
+        let altitudes = vec![0.0, 10.0];
+
+        assert!((polyline_length(&points) - 100.0).abs() < 0.5);
+        let (mid, altitude, heading) = route_sample(&points, &altitudes, 50.0).expect("midpoint");
+        let offset = mid.local_offset(start).expect("offset");
+        assert!((offset.east_meters - 50.0).abs() < 0.5);
+        assert!((altitude - 5.0).abs() < 0.5);
+        assert!((heading - 90.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn route_animation_moves_the_selected_marker_at_constant_speed() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", base);
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        let end = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("east");
+        editor.add_route(vec![base, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        if let Some(object) = editor.object_mut(route_key)
+            && let EditorKind::Line(line) = &mut object.kind
+        {
+            line.animation = Some(RouteAnimation {
+                speed: 50.0,
+                marker_id: Some(marker_id),
+            });
+        }
+
+        editor.start_play();
+        assert_eq!(editor.play.animations.len(), 1);
+        assert!(editor.play.controlled.contains(&marker_key));
+
+        editor.play_route_animation(0);
+        editor.play_tick(0.1);
+        let unit = editor.play.units.get(&marker_key).expect("animated unit");
+        let offset = unit.position.local_offset(base).expect("offset");
+        assert!((offset.east_meters - 5.0).abs() < 0.8);
+        assert!(unit.target.is_none());
+
+        editor.stop_route_animation(0);
+        let unit = editor.play.units.get(&marker_key).expect("animated unit");
+        let offset = unit.position.local_offset(base).expect("offset");
+        assert!(offset.east_meters.abs() < 0.1);
     }
 
     #[test]

@@ -136,7 +136,7 @@ impl ReadStore {
             return Ok(Vec::new());
         };
         let rows = sqlx::query_as::<_, LineRow>(
-            "SELECT id, name, color, width, alpha, geom, created_at, updated_at
+            "SELECT id, name, color, width, alpha, geom, keterangan, created_at, updated_at
              FROM plot_lines
              WHERE skenario_id = $1
              ORDER BY created_at DESC",
@@ -745,6 +745,7 @@ struct LineRow {
     width: Option<f64>,
     alpha: Option<f64>,
     geom: Option<String>,
+    keterangan: Option<String>,
     created_at: Option<NaiveDateTime>,
     updated_at: Option<NaiveDateTime>,
 }
@@ -760,6 +761,7 @@ impl LineRow {
             width: self.width.unwrap_or(0.0),
             alpha: self.alpha.unwrap_or(0.0),
             geom: self.geom.unwrap_or_default(),
+            keterangan: self.keterangan.unwrap_or_default(),
             created_at: wita(self.created_at),
             updated_at: wita(self.updated_at),
         }

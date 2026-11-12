@@ -98,6 +98,7 @@ pub async fn create_line(
             request.width,
             request.alpha,
             &request.geom,
+            &request.keterangan,
         )
         .await?;
     Ok((StatusCode::CREATED, Json(SingleResponse::success(line))))
@@ -115,6 +116,7 @@ pub async fn update_line(
             &request.color,
             request.width,
             request.alpha,
+            &request.keterangan,
         )
         .await?;
     Ok(Json(SingleResponse::success(line)))
