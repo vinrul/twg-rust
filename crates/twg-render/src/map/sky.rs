@@ -16,9 +16,12 @@ use super::camera::MapCamera;
 use super::environment::GroundPlane;
 
 /// Cubemap face resolution. `GeneratedEnvironmentMapLight` requires a square
-/// power-of-two cubemap; 64 px is plenty for a smooth gradient.
-const SKY_FACE_SIZE: u32 = 64;
-const SKY_BRIGHTNESS: f32 = 1.1;
+/// power-of-two cubemap; 128 px keeps the clouds readable without a big asset.
+const SKY_FACE_SIZE: u32 = 128;
+/// Bevy multiplies skybox brightness by the camera exposure, which is about
+/// 0.0011 with the default `Exposure` (EV100 9.7). A small value would render
+/// almost black, so the sky is authored in the same range as Bevy's examples.
+const SKY_BRIGHTNESS: f32 = 900.0;
 const IBL_INTENSITY: f32 = 1_200.0;
 const AMBIENT_BRIGHTNESS: f32 = 900.0;
 const IBL_AMBIENT_BRIGHTNESS: f32 = 150.0;
@@ -162,6 +165,23 @@ fn face_direction(face: usize, u: f32, v: f32) -> Vec3 {
 }
 
 fn sky_color(direction: Vec3, sun: Vec3) -> Vec3 {
+    let mut color = sky_gradient(direction, sun);
+
+    // Project the upper hemisphere onto a virtual cloud plane. The noise is
+    // evaluated from world-space directions, so it stays continuous across
+    // cubemap faces, and it fades out at the horizon.
+    let height = smoothstep(0.03, 0.22, direction.y);
+    if height > 0.0 {
+        let uv = Vec2::new(direction.x, direction.z) / (direction.y + 0.35);
+        let coverage = fbm(uv.x * 1.7 + 3.1, uv.y * 1.7 - 1.7);
+        let clouds = smoothstep(0.48, 0.70, coverage) * height;
+        let cloud_color = Vec3::new(0.86, 0.89, 0.93);
+        color = color.lerp(cloud_color, clouds * 0.85);
+    }
+    color
+}
+
+fn sky_gradient(direction: Vec3, sun: Vec3) -> Vec3 {
     let zenith = Vec3::new(0.05, 0.16, 0.45);
     let horizon = Vec3::new(0.52, 0.70, 0.94);
     let ground_near = Vec3::new(0.24, 0.27, 0.31);
@@ -176,6 +196,47 @@ fn sky_color(direction: Vec3, sun: Vec3) -> Vec3 {
     let sun_amount = glow.powf(96.0) * 0.9 + glow.powf(8.0) * 0.06;
     color += Vec3::new(1.0, 0.92, 0.78) * sun_amount;
     color
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn fbm(x: f32, y: f32) -> f32 {
+    let mut value = 0.0;
+    let mut amplitude = 0.5;
+    let mut frequency = 1.0;
+    for _ in 0..4 {
+        value += value_noise(x * frequency, y * frequency) * amplitude;
+        frequency *= 2.03;
+        amplitude *= 0.5;
+    }
+    value
+}
+
+fn value_noise(x: f32, y: f32) -> f32 {
+    let x0 = x.floor();
+    let y0 = y.floor();
+    let fx = x - x0;
+    let fy = y - y0;
+    let ux = fx * fx * (3.0 - 2.0 * fx);
+    let uy = fy * fy * (3.0 - 2.0 * fy);
+    let x0 = x0 as i32;
+    let y0 = y0 as i32;
+    let a = hash_2d(x0, y0);
+    let b = hash_2d(x0 + 1, y0);
+    let c = hash_2d(x0, y0 + 1);
+    let d = hash_2d(x0 + 1, y0 + 1);
+    let top = a + (b - a) * ux;
+    let bottom = c + (d - c) * ux;
+    top + (bottom - top) * uy
+}
+
+fn hash_2d(x: i32, y: i32) -> f32 {
+    let mut hash = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
+    hash = (hash ^ (hash >> 13)).wrapping_mul(1_274_126_177);
+    ((hash ^ (hash >> 16)) & 0xffff) as f32 / 65_535.0
 }
 
 fn to_byte(value: f32) -> u8 {
@@ -207,8 +268,65 @@ mod tests {
     #[test]
     fn zenith_is_bluer_than_the_horizon() {
         let sun = Vec3::new(0.35, 0.62, -0.70).normalize();
-        let zenith = sky_color(Vec3::Y, sun);
-        let horizon = sky_color(Vec3::X, sun);
+        let zenith = sky_gradient(Vec3::Y, sun);
+        let horizon = sky_gradient(Vec3::X, sun);
         assert!(zenith.z / zenith.x > horizon.z / horizon.x);
+    }
+
+    #[test]
+    fn cubemap_contains_visible_colors() {
+        let image = sky_cubemap(16);
+        let data = image.data.expect("sky cubemap data");
+        let max = data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|pixel| &pixel[..3])
+            .copied()
+            .max()
+            .unwrap_or(0);
+        assert!(max > 128, "cubemap looks too dark (max {max})");
+    }
+
+    #[test]
+    fn skybox_brightness_compensates_the_camera_exposure() {
+        let exposure = bevy::camera::Exposure::default().exposure();
+        let effective = SKY_BRIGHTNESS * exposure;
+        assert!(
+            (0.5..=2.0).contains(&effective),
+            "sky would be too dark or blown out (effective {effective})"
+        );
+    }
+
+    #[test]
+    fn sky_mode_attaches_and_removes_the_camera_skybox() {
+        let mut world = World::new();
+        world.init_resource::<SkyMode>();
+        world.insert_resource(SkyCubemap(Handle::default()));
+        let camera = world.spawn(MapCamera).id();
+        world.spawn((GroundPlane, Visibility::Inherited));
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(apply_sky_mode);
+
+        *world.resource_mut::<SkyMode>() = SkyMode::Skybox;
+        schedule.run(&mut world);
+        assert!(world.entity(camera).contains::<Skybox>());
+        let mut grounds = world.query_filtered::<&Visibility, With<GroundPlane>>();
+        assert!(
+            grounds
+                .iter(&world)
+                .all(|visibility| *visibility == Visibility::Hidden)
+        );
+
+        *world.resource_mut::<SkyMode>() = SkyMode::Black;
+        schedule.run(&mut world);
+        assert!(!world.entity(camera).contains::<Skybox>());
+        let mut grounds = world.query_filtered::<&Visibility, With<GroundPlane>>();
+        assert!(
+            grounds
+                .iter(&world)
+                .all(|visibility| *visibility == Visibility::Inherited)
+        );
     }
 }
