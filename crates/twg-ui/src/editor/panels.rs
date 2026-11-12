@@ -230,8 +230,11 @@ fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
                         }
                         let running = animation.state == PlaybackState::Playing
                             && !animation.is_finished();
+                        let resume = animation.state == PlaybackState::Paused;
                         ui.horizontal_wrapped(|ui| {
-                            if !running && ui.button("Play").clicked() {
+                            if !running
+                                && ui.button(if resume { "Resume" } else { "Play" }).clicked()
+                            {
                                 command = Some((index, RouteCommand::Play));
                             }
                             if running && ui.button("Pause").clicked() {
@@ -1573,8 +1576,8 @@ fn draw_scene_panel(
 ) {
     egui::Panel::left("editor_scene")
         .resizable(true)
-        .default_size(270.0)
-        .min_size(230.0)
+        .default_size(250.0)
+        .min_size(210.0)
         .max_size(460.0)
         .frame(
             egui::Frame::new()
@@ -1589,10 +1592,42 @@ fn draw_scene_panel(
                 .show(ui, |ui| match editor.left_tab {
                     1 => draw_asset_tab(ui, editor, asset_rows),
                     2 => draw_import_tab(ui, editor, import_rows),
-                    3 => draw_animation_tab(ui, editor),
-                    _ => draw_scene_tree(ui, editor),
+                    _ => {
+                        draw_scene_subtabs(ui, editor);
+                        match editor.scene_tab {
+                            1 => draw_animation_tab(ui, editor),
+                            _ => draw_scene_tree(ui, editor),
+                        }
+                    }
                 });
         });
+}
+
+/// Secondary tab strip inside Scene. "Layers" is the existing scene tree;
+/// "Animasi" lists the route animations authored for this scenario.
+fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
+    ui.horizontal(|ui| {
+        let width = ((ui.available_width() - 6.0) / 2.0).max(60.0);
+        if ui
+            .add_sized(
+                [width, 24.0],
+                egui::Button::new("Layers").selected(editor.scene_tab == 0),
+            )
+            .clicked()
+        {
+            editor.scene_tab = 0;
+        }
+        if ui
+            .add_sized(
+                [width, 24.0],
+                egui::Button::new("Animasi").selected(editor.scene_tab == 1),
+            )
+            .clicked()
+        {
+            editor.scene_tab = 1;
+        }
+    });
+    ui.separator();
 }
 
 /// Flat tab strip for the left editor panel. The bar spans the full panel
@@ -1601,6 +1636,9 @@ fn draw_scene_panel(
 fn draw_editor_tabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     const TAB_HEIGHT: f32 = 28.0;
     const TAB_PADDING: f32 = 8.0;
+    if editor.left_tab > 2 {
+        editor.left_tab = 0;
+    }
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), TAB_HEIGHT),
         egui::Sense::hover(),
@@ -1614,10 +1652,7 @@ fn draw_editor_tabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     );
 
     let mut left = rect.left();
-    for (index, label) in ["Scene", "Assets", "Import", "Animasi"]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, label) in ["Scene", "Assets", "Import"].into_iter().enumerate() {
         let galley = painter.layout_no_wrap(
             label.to_owned(),
             egui::FontId::proportional(FONT_XS),
@@ -2214,6 +2249,10 @@ fn draw_object_inspector(
                     animation.speed = animation.speed.clamp(0.1, 100.0);
                     changed = true;
                 }
+                changed |= ui
+                    .checkbox(&mut animation.repeat, "Ulangi (repeat)")
+                    .on_hover_text("Mulai lagi dari titik pertama setelah mencapai ujung rute.")
+                    .changed();
                 ui.label("Marker yang bergerak");
                 ui.horizontal(|ui| {
                     ui.label(theme::muted("Cari"));

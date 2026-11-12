@@ -258,6 +258,7 @@ pub struct PlayRouteAnimation {
     pub length_m: f64,
     pub progress_m: f64,
     pub state: PlaybackState,
+    pub repeat: bool,
 }
 
 impl PlayRouteAnimation {
@@ -464,6 +465,8 @@ pub struct RouteAnimation {
     pub speed: f64,
     /// Server id of the marker that follows the route.
     pub marker_id: Option<Uuid>,
+    /// Restart from the first point after reaching the end.
+    pub repeat: bool,
 }
 
 impl Default for RouteAnimation {
@@ -471,6 +474,7 @@ impl Default for RouteAnimation {
         Self {
             speed: 5.0,
             marker_id: None,
+            repeat: false,
         }
     }
 }
@@ -1226,6 +1230,8 @@ pub struct EditorState {
     pub show_console: bool,
     /// Left panel tab: 0 = Scene, 1 = Assets, 2 = Import.
     pub left_tab: usize,
+    /// Sub-tab inside Scene: 0 = Layers, 1 = Animasi.
+    pub scene_tab: usize,
     /// Viewport shading for imported models (Texture/Solid/Wireframe).
     pub model_shading: EditorModelShading,
     pub confirm_close: bool,
@@ -1367,6 +1373,7 @@ impl EditorState {
             particle_preview: true,
             show_console: true,
             left_tab: 0,
+            scene_tab: 0,
             model_shading: EditorModelShading::Textured,
             confirm_close: false,
             confirm_reload: false,
@@ -1756,6 +1763,7 @@ impl EditorState {
                 length_m: polyline_length(&points),
                 progress_m: 0.0,
                 state: PlaybackState::Stopped,
+                repeat: route.repeat,
             });
         }
         self.play.animations = animations;
@@ -1844,11 +1852,18 @@ impl EditorState {
 
         let mut updated = Vec::new();
         for (index, animation) in self.play.animations.iter_mut().enumerate() {
-            if animation.state != PlaybackState::Playing || animation.is_finished() {
+            if animation.state != PlaybackState::Playing || animation.length_m <= 0.0 {
                 continue;
             }
-            animation.progress_m =
-                (animation.progress_m + animation.speed * dt).min(animation.length_m);
+            if !animation.repeat && animation.is_finished() {
+                continue;
+            }
+            animation.progress_m += animation.speed * dt;
+            if animation.repeat {
+                animation.progress_m %= animation.length_m;
+            } else {
+                animation.progress_m = animation.progress_m.min(animation.length_m);
+            }
             updated.push(index);
         }
         for index in updated {
@@ -2220,6 +2235,7 @@ impl EditorState {
             .collect::<Vec<_>>();
         let mut line = LineObject::new(coordinates);
         line.color = "#ffb020".to_owned();
+        line.width = 0.5;
         line.animation = Some(RouteAnimation::default());
         self.objects.push(EditorObject {
             key,
@@ -2798,6 +2814,10 @@ impl EditorState {
         let mut objects = Vec::new();
         for object in &self.objects {
             if !object.visible || !self.visible.allows(object.object_type()) {
+                continue;
+            }
+            // Routes are authoring guides; hide them while the scenario plays.
+            if self.preview && object.is_animation_route() {
                 continue;
             }
             let Some(point) = object.point() else {
@@ -3693,6 +3713,7 @@ mod tests {
             line.animation = Some(RouteAnimation {
                 speed: 50.0,
                 marker_id: Some(marker_id),
+                repeat: false,
             });
         }
 
@@ -3708,6 +3729,45 @@ mod tests {
         assert!(unit.target.is_none());
 
         editor.stop_route_animation(0);
+        let unit = editor.play.units.get(&marker_key).expect("animated unit");
+        let offset = unit.position.local_offset(base).expect("offset");
+        assert!(offset.east_meters.abs() < 0.1);
+    }
+
+    #[test]
+    fn repeating_route_wraps_back_to_the_first_point() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", base);
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        let end = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("east");
+        editor.add_route(vec![base, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        if let Some(object) = editor.object_mut(route_key)
+            && let EditorKind::Line(line) = &mut object.kind
+        {
+            assert!((line.width - 0.5).abs() < 1.0e-9);
+            line.animation = Some(RouteAnimation {
+                speed: 50.0,
+                marker_id: Some(marker_id),
+                repeat: true,
+            });
+        }
+
+        editor.start_play();
+        editor.play_route_animation(0);
+        editor.play_tick(0.1);
+        editor.play_tick(0.1);
+
+        let animation = &editor.play.animations[0];
+        assert!(
+            animation.progress_m < 0.1,
+            "progress {}",
+            animation.progress_m
+        );
+        assert_eq!(animation.state, PlaybackState::Playing);
         let unit = editor.play.units.get(&marker_key).expect("animated unit");
         let offset = unit.position.local_offset(base).expect("offset");
         assert!(offset.east_meters.abs() < 0.1);

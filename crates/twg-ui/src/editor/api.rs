@@ -1461,6 +1461,7 @@ fn line_keterangan(line: &LineObject) -> String {
             "type": "route",
             "speed": animation.speed,
             "marker_id": animation.marker_id.map(|id| id.to_string()),
+            "repeat": animation.repeat,
         }
     })
     .to_string()
@@ -1482,6 +1483,10 @@ fn parse_route_animation(raw: &str) -> Option<RouteAnimation> {
             .get("marker_id")
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok()),
+        repeat: animation
+            .get("repeat")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -1911,11 +1916,13 @@ mod tests {
         line.animation = Some(RouteAnimation {
             speed: 7.5,
             marker_id: Some(marker_id),
+            repeat: true,
         });
 
         let parsed = parse_route_animation(&line_keterangan(&line)).expect("route metadata");
         assert!((parsed.speed - 7.5).abs() < 1.0e-9);
         assert_eq!(parsed.marker_id, Some(marker_id));
+        assert!(parsed.repeat);
         assert!(parse_route_animation("").is_none());
         assert!(
             parse_route_animation(&line_keterangan(&LineObject::new(vec![
