@@ -107,15 +107,19 @@ pub struct ScenarioForm {
     pub operasi_id: String,
     pub target_operasi_id: String,
     pub name: String,
-    pub center_x: String,
-    pub center_y: String,
-    pub zoom: String,
-    pub min_zoom: String,
-    pub max_zoom: String,
-    pub pitch: String,
-    pub bearing: String,
+    /// Longitude (server `center_x`).
+    pub center_x: f64,
+    /// Latitude (server `center_y`).
+    pub center_y: f64,
+    pub zoom: f64,
+    pub min_zoom: f64,
+    pub max_zoom: f64,
+    pub pitch: f64,
+    pub bearing: f64,
     pub map_mode: String,
     pub base_layer: String,
+    /// Metres between grid lines for indoor grid layers.
+    pub grid_size_m: f64,
     pub indoor_config: String,
     pub copy: bool,
     pub error: Option<String>,
@@ -375,6 +379,10 @@ pub struct ClientUi {
     pub last_screen: Screen,
     pub editor: EditorState,
     pub assets: Vec<Asset>,
+    /// Interactive map preview state for the scenario form (tile cache).
+    pub scenario_preview: crate::scenario_preview::ScenarioPreview,
+    /// Tile proxy from `TWG_TILE_PROXY`, mirrored from the render plugin.
+    pub tile_proxy: Option<String>,
     /// Import assets of the operation loaded in the editor (all users of the
     /// operation share them).
     pub imports: Vec<Asset>,
@@ -472,6 +480,8 @@ impl ClientUi {
             last_screen: Screen::Boot,
             editor: EditorState::new(),
             assets: Vec::new(),
+            scenario_preview: crate::scenario_preview::ScenarioPreview::default(),
+            tile_proxy: None,
             imports: Vec::new(),
             asset_filter: None,
             asset_group_filter: None,
@@ -2260,71 +2270,18 @@ impl ClientUi {
             form.error = Some("Nama skenario wajib diisi.".to_owned());
             return;
         }
-        let number = |value: &str, fallback: f64| -> Result<f64, String> {
-            if value.trim().is_empty() {
-                Ok(fallback)
+        let mut indoor_config: Value =
+            serde_json::from_str(if form.indoor_config.trim().is_empty() {
+                "{}"
             } else {
-                value
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|_| format!("Nilai '{value}' bukan angka."))
-            }
-        };
-        let center_x = match number(&form.center_x, 0.0) {
-            Ok(value) => value,
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        };
-        let center_y = match number(&form.center_y, 0.0) {
-            Ok(value) => value,
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        };
-        let zoom = match number(&form.zoom, 2.0) {
-            Ok(value) => value,
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        };
-        let min_zoom = match number(&form.min_zoom, 2.0) {
-            Ok(value) => value,
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        };
-        let max_zoom = match number(&form.max_zoom, 26.0) {
-            Ok(value) => value,
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        };
-        let pitch = match number(&form.pitch, 0.0) {
-            Ok(value) => value,
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        };
-        let bearing = match number(&form.bearing, 0.0) {
-            Ok(value) => value,
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        };
-        let indoor_config: Value = serde_json::from_str(if form.indoor_config.trim().is_empty() {
-            "{}"
-        } else {
-            form.indoor_config.trim()
-        })
-        .unwrap_or(Value::Object(serde_json::Map::new()));
+                form.indoor_config.trim()
+            })
+            .unwrap_or(Value::Object(serde_json::Map::new()));
+        if form.map_mode == "indoor"
+            && let Value::Object(map) = &mut indoor_config
+        {
+            map.insert("grid_size_m".to_owned(), json!(form.grid_size_m));
+        }
 
         if form.copy {
             let target = match Uuid::parse_str(form.target_operasi_id.trim()) {
@@ -2354,13 +2311,13 @@ impl ClientUi {
         let body = Some(json!({
             "name": name,
             "operasi_id": operasi_id,
-            "center_x": center_x,
-            "center_y": center_y,
-            "zoom": zoom,
-            "min_zoom": min_zoom,
-            "max_zoom": max_zoom,
-            "pitch": pitch,
-            "bearing": bearing,
+            "center_x": form.center_x,
+            "center_y": form.center_y,
+            "zoom": form.zoom,
+            "min_zoom": form.min_zoom,
+            "max_zoom": form.max_zoom,
+            "pitch": form.pitch,
+            "bearing": form.bearing,
             "map_mode": form.map_mode,
             "base_layer": form.base_layer,
             "indoor_config": indoor_config,

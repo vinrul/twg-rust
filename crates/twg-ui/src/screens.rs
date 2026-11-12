@@ -1049,6 +1049,49 @@ fn modal_footer(ui: &mut egui::Ui, save_label: &str) -> ModalFooter {
     footer
 }
 
+/// Base layers offered for each map mode. Floor plan is hidden for now.
+fn scenario_layers(map_mode: &str) -> &'static [(&'static str, &'static str)] {
+    if map_mode == "indoor" {
+        &[
+            ("grid_dark", "Grid dark"),
+            ("grid_light", "Grid light"),
+            ("blank_dark", "Blank dark"),
+            ("blank_light", "Blank light"),
+        ]
+    } else {
+        &[("osm", "OpenStreetMap"), ("satellite", "Satelit")]
+    }
+}
+
+/// Labelled numeric field with minus/plus buttons and a draggable value.
+fn number_spinner(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f64,
+    step: f64,
+    min: f64,
+    max: f64,
+    decimals: usize,
+) {
+    ui.vertical(|ui| {
+        ui.label(theme::muted(label));
+        ui.horizontal(|ui| {
+            if ui.small_button("-").clicked() {
+                *value = (*value - step).clamp(min, max);
+            }
+            ui.add(
+                egui::DragValue::new(value)
+                    .speed(step)
+                    .range(min..=max)
+                    .max_decimals(decimals),
+            );
+            if ui.small_button("+").clicked() {
+                *value = (*value + step).clamp(min, max);
+            }
+        });
+    });
+}
+
 fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
     if !client.modal.is_open() {
         return;
@@ -1098,104 +1141,203 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
             } else if form.id.is_some() {
                 "Perbarui nama dan pengaturan peta skenario."
             } else {
-                "Buat skenario baru di operasi yang dipilih; pengaturan peta bisa diubah nanti di editor."
+                "Buat skenario baru, lalu atur posisi peta dengan menggeser pratinjaunya."
             };
-            let response = modal_shell(context, "scenario_modal", 480.0, |ui| {
+            let operations = client
+                .data
+                .operations
+                .iter()
+                .map(|operation| (operation.id.to_string(), operation.name.clone()))
+                .collect::<Vec<_>>();
+            let tile_proxy = client.tile_proxy.clone();
+            let response = modal_shell(context, "scenario_modal", 520.0, |ui| {
                 modal_title(ui, title, subtitle);
-                widgets::labeled_input(ui, "Nama skenario", &mut form.name);
-                if form.copy {
-                    let mut target = form.target_operasi_id.clone();
-                    let options = client
-                        .data
-                        .operations
-                        .iter()
-                        .map(|operation| (operation.id.to_string(), operation.name.clone()))
-                        .collect::<Vec<_>>();
-                    ui.add_space(4.0);
-                    ui.label(theme::muted("Operasi tujuan"));
-                    widgets::combo(ui, egui::Id::new("copy_target"), &mut target, &options);
-                    form.target_operasi_id = target;
-                } else {
-                    if form.id.is_none() {
-                        ui.add_space(4.0);
-                        ui.label(theme::muted("Operasi"));
-                        let mut operasi = form.operasi_id.clone();
-                        let options = client
-                            .data
-                            .operations
-                            .iter()
-                            .map(|operation| (operation.id.to_string(), operation.name.clone()))
-                            .collect::<Vec<_>>();
-                        widgets::combo(ui, egui::Id::new("scenario_op"), &mut operasi, &options);
-                        form.operasi_id = operasi;
-                    }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(theme::muted("Map mode"));
-                            let mut mode = form.map_mode.clone();
+                egui::ScrollArea::vertical()
+                    .id_salt("scenario_form_scroll")
+                    .max_height(560.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        widgets::labeled_input(ui, "Nama skenario", &mut form.name);
+                        if form.copy {
+                            ui.add_space(4.0);
+                            ui.label(theme::muted("Operasi tujuan"));
+                            let mut target = form.target_operasi_id.clone();
                             widgets::combo(
                                 ui,
-                                egui::Id::new("map_mode"),
-                                &mut mode,
-                                &[
-                                    ("outdoor".to_owned(), "Outdoor".to_owned()),
-                                    ("indoor".to_owned(), "Indoor".to_owned()),
-                                ],
+                                egui::Id::new("copy_target"),
+                                &mut target,
+                                &operations,
                             );
-                            form.map_mode = mode;
-                        });
-                        ui.vertical(|ui| {
-                            ui.label(theme::muted("Base layer"));
-                            let mut layer = form.base_layer.clone();
-                            widgets::combo(
-                                ui,
-                                egui::Id::new("base_layer"),
-                                &mut layer,
-                                &[
-                                    ("osm".to_owned(), "OpenStreetMap".to_owned()),
-                                    ("satellite".to_owned(), "Satelit".to_owned()),
-                                    ("grid_dark".to_owned(), "Grid dark".to_owned()),
-                                    ("grid_light".to_owned(), "Grid light".to_owned()),
-                                    ("blank_dark".to_owned(), "Blank dark".to_owned()),
-                                    ("blank_light".to_owned(), "Blank light".to_owned()),
-                                    ("floor_plan".to_owned(), "Floor plan".to_owned()),
-                                ],
-                            );
-                            form.base_layer = layer;
-                        });
+                            form.target_operasi_id = target;
+                            ui.label(theme::muted(
+                                "Pengaturan peta dan seluruh objek disalin dari skenario sumber.",
+                            ));
+                        } else {
+                            if form.id.is_none() {
+                                ui.add_space(4.0);
+                                ui.label(theme::muted("Operasi"));
+                                let mut operasi = form.operasi_id.clone();
+                                widgets::combo(
+                                    ui,
+                                    egui::Id::new("scenario_op"),
+                                    &mut operasi,
+                                    &operations,
+                                );
+                                form.operasi_id = operasi;
+                            }
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(theme::muted("Map mode"));
+                                    let mut mode = form.map_mode.clone();
+                                    let previous = mode.clone();
+                                    widgets::combo(
+                                        ui,
+                                        egui::Id::new("map_mode"),
+                                        &mut mode,
+                                        &[
+                                            ("outdoor".to_owned(), "Outdoor".to_owned()),
+                                            ("indoor".to_owned(), "Indoor".to_owned()),
+                                        ],
+                                    );
+                                    if mode != previous {
+                                        form.map_mode = mode.clone();
+                                        if !scenario_layers(&mode)
+                                            .iter()
+                                            .any(|(value, _)| *value == form.base_layer.as_str())
+                                        {
+                                            form.base_layer =
+                                                scenario_layers(&mode)[0].0.to_owned();
+                                        }
+                                    }
+                                });
+                                ui.vertical(|ui| {
+                                    ui.label(theme::muted("Base layer"));
+                                    let mut layer = form.base_layer.clone();
+                                    let options = scenario_layers(&form.map_mode)
+                                        .iter()
+                                        .map(|(value, label)| ((*value).to_owned(), (*label).to_owned()))
+                                        .collect::<Vec<_>>();
+                                    widgets::combo(
+                                        ui,
+                                        egui::Id::new("base_layer"),
+                                        &mut layer,
+                                        &options,
+                                    );
+                                    form.base_layer = layer;
+                                });
+                            });
+                            if form.base_layer.starts_with("grid_") {
+                                ui.horizontal(|ui| {
+                                    ui.label(theme::muted("Ukuran grid"));
+                                    let mut size = form.grid_size_m;
+                                    let mut options = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+                                        .into_iter()
+                                        .map(|value| (value, format!("{value} m")))
+                                        .collect::<Vec<_>>();
+                                    if !options
+                                        .iter()
+                                        .any(|(value, _)| (*value - form.grid_size_m).abs() < 0.001)
+                                    {
+                                        options.push((
+                                            form.grid_size_m,
+                                            format!("{} m", form.grid_size_m),
+                                        ));
+                                    }
+                                    options.sort_by(|a, b| {
+                                        a.0.partial_cmp(&b.0)
+                                            .unwrap_or(std::cmp::Ordering::Equal)
+                                    });
+                                    widgets::combo(
+                                        ui,
+                                        egui::Id::new("scenario_grid_size"),
+                                        &mut size,
+                                        &options,
+                                    );
+                                    form.grid_size_m = size;
+                                });
+                            }
+
+                            ui.add_space(6.0);
+                            ui.label(theme::muted("Pratinjau peta"));
+                            client
+                                .scenario_preview
+                                .show(ui, form, tile_proxy.as_deref());
+
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.label(theme::title("Pengaturan peta"));
+                            ui.horizontal(|ui| {
+                                number_spinner(
+                                    ui,
+                                    "Longitude (X)",
+                                    &mut form.center_x,
+                                    0.000_001,
+                                    -180.0,
+                                    180.0,
+                                    8,
+                                );
+                                number_spinner(
+                                    ui,
+                                    "Latitude (Y)",
+                                    &mut form.center_y,
+                                    0.000_001,
+                                    -85.0,
+                                    85.0,
+                                    8,
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                number_spinner(ui, "Zoom", &mut form.zoom, 0.5, 2.0, 26.0, 1);
+                                number_spinner(ui, "Pitch", &mut form.pitch, 1.0, 0.0, 85.0, 0);
+                                number_spinner(
+                                    ui,
+                                    "Bearing",
+                                    &mut form.bearing,
+                                    1.0,
+                                    0.0,
+                                    360.0,
+                                    0,
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                number_spinner(
+                                    ui,
+                                    "Min zoom",
+                                    &mut form.min_zoom,
+                                    1.0,
+                                    0.0,
+                                    26.0,
+                                    0,
+                                );
+                                number_spinner(
+                                    ui,
+                                    "Max zoom",
+                                    &mut form.max_zoom,
+                                    1.0,
+                                    0.0,
+                                    26.0,
+                                    0,
+                                );
+                            });
+                            ui.label(theme::muted(
+                                "Peta di atas mengubah longitude, latitude, zoom, pitch, dan bearing. \
+                                 Min/max zoom tidak ikut berubah.",
+                            ));
+                            if form.map_mode == "indoor" {
+                                egui::CollapsingHeader::new("Konfigurasi indoor lainnya (JSON)")
+                                    .id_salt("scenario_indoor_json")
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut form.indoor_config)
+                                                .desired_rows(3)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                    });
+                            }
+                        }
                     });
-                    ui.add_space(6.0);
-                    let advanced = if form.id.is_none() {
-                        "Pengaturan peta lanjutan (opsional)"
-                    } else {
-                        "Pengaturan peta"
-                    };
-                    egui::CollapsingHeader::new(advanced)
-                        .id_salt("scenario_advanced")
-                        .default_open(form.id.is_some())
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                widgets::labeled_input(ui, "Center X", &mut form.center_x);
-                                widgets::labeled_input(ui, "Center Y", &mut form.center_y);
-                            });
-                            ui.horizontal(|ui| {
-                                widgets::labeled_input(ui, "Zoom", &mut form.zoom);
-                                widgets::labeled_input(ui, "Min zoom", &mut form.min_zoom);
-                                widgets::labeled_input(ui, "Max zoom", &mut form.max_zoom);
-                            });
-                            ui.horizontal(|ui| {
-                                widgets::labeled_input(ui, "Pitch", &mut form.pitch);
-                                widgets::labeled_input(ui, "Bearing", &mut form.bearing);
-                            });
-                            ui.label(theme::muted("Indoor config (JSON)"));
-                            ui.add(
-                                egui::TextEdit::multiline(&mut form.indoor_config)
-                                    .desired_rows(3)
-                                    .desired_width(f32::INFINITY),
-                            );
-                        });
-                }
                 if let Some(error) = &form.error {
                     widgets::error_banner(ui, error);
                 }
@@ -1425,15 +1567,17 @@ fn new_scenario_form(client: &ClientUi) -> ScenarioForm {
             .unwrap_or_default(),
         target_operasi_id: String::new(),
         name: String::new(),
-        center_x: "-8.648393".to_owned(),
-        center_y: "115.225287".to_owned(),
-        zoom: "15".to_owned(),
-        min_zoom: "2".to_owned(),
-        max_zoom: "26".to_owned(),
-        pitch: "0".to_owned(),
-        bearing: "0".to_owned(),
+        // The server names the pair (center_x, center_y) = (longitude, latitude).
+        center_x: 115.225_263_767_569_5,
+        center_y: -8.649_177_158_946_946,
+        zoom: 18.0,
+        min_zoom: 5.0,
+        max_zoom: 26.0,
+        pitch: 0.0,
+        bearing: 0.0,
         map_mode: "outdoor".to_owned(),
         base_layer: "osm".to_owned(),
+        grid_size_m: 1.0,
         indoor_config: "{}".to_owned(),
         copy: false,
         error: None,
@@ -1441,20 +1585,36 @@ fn new_scenario_form(client: &ClientUi) -> ScenarioForm {
 }
 
 fn scenario_form(scenario: Scenario) -> ScenarioForm {
+    let map_mode = format!("{:?}", scenario.map_mode).to_lowercase();
+    let mut base_layer = format!("{:?}", scenario.base_layer).to_lowercase();
+    if base_layer == "floor_plan" {
+        // Floor plan is temporarily hidden from the form.
+        base_layer = "grid_dark".to_owned();
+    }
+    if !scenario_layers(&map_mode)
+        .iter()
+        .any(|(value, _)| *value == base_layer.as_str())
+    {
+        base_layer = scenario_layers(&map_mode)[0].0.to_owned();
+    }
     ScenarioForm {
         id: Some(scenario.id),
         operasi_id: scenario.operasi.id.to_string(),
         target_operasi_id: String::new(),
         name: scenario.name,
-        center_x: scenario.center_x.to_string(),
-        center_y: scenario.center_y.to_string(),
-        zoom: scenario.zoom.to_string(),
-        min_zoom: scenario.min_zoom.to_string(),
-        max_zoom: scenario.max_zoom.to_string(),
-        pitch: scenario.pitch.to_string(),
-        bearing: scenario.bearing.to_string(),
+        center_x: scenario.center_x,
+        center_y: scenario.center_y,
+        zoom: scenario.zoom,
+        min_zoom: scenario.min_zoom,
+        max_zoom: scenario.max_zoom,
+        pitch: scenario.pitch,
+        bearing: scenario.bearing,
         map_mode: format!("{:?}", scenario.map_mode).to_lowercase(),
-        base_layer: format!("{:?}", scenario.base_layer).to_lowercase(),
+        base_layer,
+        grid_size_m: scenario.indoor_config["grid_size_m"]
+            .as_f64()
+            .unwrap_or(1.0)
+            .clamp(0.1, 50.0),
         indoor_config: scenario.indoor_config.to_string(),
         copy: false,
         error: None,

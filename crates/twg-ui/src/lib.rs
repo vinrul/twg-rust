@@ -13,8 +13,8 @@ use twg_contracts::assets::{AssetSourceSlot, AssetVariantKind};
 use twg_render::PreviewPhase;
 use twg_render::{
     AssetPreview, AssetPreviewRequest, MapUpdateSet, MarkerModelOverride, MarkerModelPath,
-    MarkerModelReload, PREVIEW_SLOTS, PreviewOrbitInput, PreviewOrbitInputs, UiPointerState,
-    cache_asset_path,
+    MarkerModelReload, PREVIEW_SLOTS, PreviewOrbitInput, PreviewOrbitInputs, TileProxyConfig,
+    UiPointerState, cache_asset_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
@@ -24,6 +24,7 @@ mod assets_screen;
 mod compass_panel;
 pub mod editor;
 mod map_panel;
+mod scenario_preview;
 mod screens;
 pub mod state;
 mod stress_panel;
@@ -92,6 +93,7 @@ impl Plugin for TacticalUiPlugin {
                 (
                     editor::input::sync_editor_mode,
                     editor::input::editor_input,
+                    sync_tile_proxy,
                     collect_file_drops,
                     publish_preview_request,
                     sync_active_asset,
@@ -126,6 +128,13 @@ fn apply_theme(mut contexts: EguiContexts, mut applied: Local<bool>) -> Result {
         *applied = true;
     }
     Ok(())
+}
+
+fn sync_tile_proxy(proxy: Res<TileProxyConfig>, mut client: ResMut<ClientUi>) {
+    if client.tile_proxy != proxy.0 {
+        client.tile_proxy.clone_from(&proxy.0);
+        client.scenario_preview.clear_tile_cache();
+    }
 }
 
 /// Attaches the egui primary context to the camera that renders to the window.
