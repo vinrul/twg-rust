@@ -4,7 +4,7 @@ name: twg
 
 services:
   db:
-    image: postgres:16.11-alpine
+    image: postgres:18.4-alpine
     container_name: twg-db-local
     restart: unless-stopped
     environment:
@@ -14,7 +14,10 @@ services:
     ports:
       - "${POSTGRES_PORT:-55432}:5432"
     volumes:
-      - twg-db-data:/var/lib/postgresql/data
+      # PostgreSQL 18 stores its cluster in /var/lib/postgresql/<major>/docker,
+      # so the volume must cover the parent directory. Mounting
+      # /var/lib/postgresql/data is rejected by the 18+ entrypoint.
+      - twg-db-data:/var/lib/postgresql
     healthcheck:
       test:
         [
@@ -27,7 +30,7 @@ services:
       start_period: 5s
 
   centrifugo:
-    image: centrifugo/centrifugo:v6.10
+    image: centrifugo/centrifugo:v6.2.5
     container_name: twg-centrifugo-local
     restart: unless-stopped
     ports:
