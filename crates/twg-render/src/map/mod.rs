@@ -5,6 +5,7 @@ mod environment;
 mod input;
 mod marker;
 mod overlay;
+mod sky;
 mod tile_cache;
 mod tiles;
 
@@ -14,6 +15,7 @@ use twg_map::{BaseLayer, CameraFlight, MapCameraState, MapCursor};
 pub use anchors::GeoAnchor;
 pub use camera::{CAMERA_FOV_Y, GIZMO_RENDER_LAYER, MapCamera};
 pub use marker::DemoMarker;
+pub use sky::SkyMode;
 pub use tiles::{Tile, TileWorld};
 
 /// Update systems that move the camera and re-anchor map objects. Editor
@@ -54,11 +56,13 @@ impl Plugin for MapRenderPlugin {
             .init_resource::<UiPointerState>()
             .init_resource::<TileProxyConfig>()
             .init_resource::<TileWorld>()
+            .init_resource::<SkyMode>()
             .add_systems(
                 Startup,
                 (
                     camera::spawn_camera,
                     environment::spawn_environment,
+                    sky::spawn_sky_cubemap,
                     tiles::spawn_tile_assets,
                     overlay::spawn_overlays,
                     marker::spawn_demo_marker,
@@ -77,6 +81,7 @@ impl Plugin for MapRenderPlugin {
                     tiles::update_error_tiles,
                     tiles::update_tile_transforms,
                     environment::update_ground,
+                    sky::apply_sky_mode,
                     hide_demo_content_when_editing,
                 )
                     .chain()

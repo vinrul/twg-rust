@@ -9,7 +9,7 @@ use twg_map::{BaseLayer, GeoPoint, MapCameraState};
 use twg_render::{
     EditorGizmo, EditorGizmoAxis, EditorGizmoMode, EditorGrid, EditorModelShading,
     EditorParticleKind, EditorParticleSettings, EditorPlayModel, EditorScene, EditorSceneKind,
-    EditorSceneObject, EditorShapeKind,
+    EditorSceneObject, EditorShapeKind, SkyMode,
 };
 use uuid::Uuid;
 
@@ -1244,6 +1244,8 @@ pub struct EditorState {
     pub requested_north: bool,
     pub requested_geocode: bool,
     pub base_layer: BaseLayer,
+    /// Background style shared by the editor viewport and Play mode.
+    pub sky: SkyMode,
     /// RTS play mode state, rebuilt every time Play starts.
     pub play: PlayState,
     /// Screen-space ground rings for the RTS selection overlay, rebuilt every
@@ -1357,6 +1359,7 @@ impl EditorState {
             requested_north: false,
             requested_geocode: false,
             base_layer: BaseLayer::OpenStreetMap,
+            sky: SkyMode::Black,
             play: PlayState::default(),
             play_rings: Vec::new(),
             save_pending: 0,
@@ -1372,8 +1375,10 @@ impl EditorState {
 
     pub fn reset(&mut self) {
         let scenario_id = self.scenario_id;
+        let sky = self.sky;
         *self = Self::new();
         self.scenario_id = scenario_id;
+        self.sky = sky;
     }
 
     pub fn clear_scene(&mut self) {

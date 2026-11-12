@@ -7,7 +7,7 @@ use twg_map::{CameraFlight, GeoPoint};
 use twg_render::{
     BaseLayerResource, CameraFlightState, EditorGizmoAxis, EditorGizmoMode, EditorMode,
     EditorPlayFrame, EditorPlayUnit, EditorScene, EditorShapeKind, MapCamera, MapCameraResource,
-    MapCursorResource, UiPointerState,
+    MapCursorResource, SkyMode, UiPointerState,
 };
 
 use crate::state::ClientUi;
@@ -24,11 +24,18 @@ pub struct EditorInputFocus {
     pub keyboard: bool,
 }
 
-pub fn sync_editor_mode(client: Res<ClientUi>, mut mode: ResMut<EditorMode>) {
+pub fn sync_editor_mode(
+    client: Res<ClientUi>,
+    mut mode: ResMut<EditorMode>,
+    mut sky: ResMut<SkyMode>,
+) {
     let active = client.state.screen == twg_client::session::Screen::MapEditor;
     mode.active = active;
     mode.preview = active && client.editor.preview;
     mode.particles_animate = client.editor.particle_preview;
+    if *sky != client.editor.sky {
+        *sky = client.editor.sky;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

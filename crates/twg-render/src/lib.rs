@@ -13,8 +13,8 @@ pub use editor::{
 };
 pub use map::{
     BaseLayerResource, CAMERA_FOV_Y, CameraFlightState, DemoMarker, GeoAnchor, MapCamera,
-    MapCameraResource, MapCursorResource, MapRenderPlugin, MapUpdateSet, Tile, TileProxyConfig,
-    TileWorld, UiPointerState,
+    MapCameraResource, MapCursorResource, MapRenderPlugin, MapUpdateSet, SkyMode, Tile,
+    TileProxyConfig, TileWorld, UiPointerState,
 };
 pub use preview::{
     AssetPreview, AssetPreviewPlugin, AssetPreviewRequest, ImagePreviewKey, ModelPreviewKey,

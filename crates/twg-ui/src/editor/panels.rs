@@ -2,7 +2,7 @@ use bevy_egui::egui;
 use twg_client::design::{DARK, FONT_SM, FONT_XS};
 use twg_contracts::assets::{AssetCategory, AssetModelKind, AssetMoveMode, AssetSourceSlot};
 use twg_map::{BaseLayer, GeoPoint};
-use twg_render::{EditorModelShading, EditorShapeKind};
+use twg_render::{EditorModelShading, EditorShapeKind, SkyMode};
 
 use crate::state::ClientUi;
 use crate::theme;
@@ -152,6 +152,17 @@ fn draw_preview_bar(ui: &mut egui::Ui, editor: &mut EditorState) {
                         editor.preview = false;
                         editor.touch();
                     }
+                    let mut sky = editor.sky;
+                    egui::ComboBox::from_id_salt("play_sky_mode")
+                        .selected_text(sky_mode_label(sky))
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            for option in SkyMode::ALL {
+                                ui.selectable_value(&mut sky, option, sky_mode_label(option));
+                            }
+                        });
+                    editor.sky = sky;
+                    ui.label("Langit");
                 });
             });
         });
@@ -1211,6 +1222,14 @@ fn import_ready(editor: &EditorState) -> bool {
             .all(|(index, _)| editor.import_draft.file(index).is_some())
 }
 
+fn sky_mode_label(mode: SkyMode) -> &'static str {
+    match mode {
+        SkyMode::Black => "Hitam",
+        SkyMode::Skybox => "Skybox",
+        SkyMode::Environment => "Environment (IBL)",
+    }
+}
+
 fn asset_category_label(category: AssetCategory) -> &'static str {
     match category {
         AssetCategory::Model => "Model 3D",
@@ -1743,6 +1762,24 @@ fn draw_scenario_inspector(
                 .range(0.1..=50.0),
         );
     });
+    ui.horizontal(|ui| {
+        ui.label("Langit");
+        let mut sky = editor.sky;
+        egui::ComboBox::from_id_salt("editor_sky_mode")
+            .selected_text(sky_mode_label(sky))
+            .width(170.0)
+            .show_ui(ui, |ui| {
+                for option in SkyMode::ALL {
+                    ui.selectable_value(&mut sky, option, sky_mode_label(option));
+                }
+            });
+        editor.sky = sky;
+    });
+    ui.label(theme::muted(match editor.sky {
+        SkyMode::Black => "Latar hitam seperti sebelumnya.",
+        SkyMode::Skybox => "Langit bergradasi tanpa mengubah pencahayaan.",
+        SkyMode::Environment => "Langit + environment map (IBL) untuk pencahayaan.",
+    }));
     ui.add_space(8.0);
     ui.separator();
     ui.label(theme::title("Tampilan kamera"));
