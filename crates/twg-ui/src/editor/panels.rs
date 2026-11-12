@@ -1060,7 +1060,38 @@ fn draw_import_tab(ui: &mut egui::Ui, editor: &mut EditorState, import_rows: &[E
         });
 }
 
-fn draw_animation_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
+fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
+    ui.add_space(2.0);
+    ui.label(theme::title("Buat animasi"));
+    ui.label(theme::muted(
+        "Pilih jenis animasi lalu gambar di peta. Animasi yang sudah dibuat \
+         tampil di Scene → Layers Animasi.",
+    ));
+    ui.add_space(6.0);
+
+    egui::CollapsingHeader::new("Rute")
+        .id_salt("editor_animation_create")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(theme::muted(
+                "Menggerakkan satu marker mengikuti garis dengan kecepatan tetap.",
+            ));
+            ui.add_space(4.0);
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Single marker rute")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Gambar garis rute di peta")
+                .clicked()
+            {
+                editor.begin_route_draw();
+            }
+        });
+}
+
+fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
     let routes = editor
         .objects
         .iter()
@@ -1076,33 +1107,23 @@ fn draw_animation_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
 
     ui.add_space(2.0);
     ui.label(theme::muted(
-        "Rute menggerakkan satu marker mengikuti garis saat Play. Buat rute lewat tombol +, \
-         lalu klik titik-titiknya di peta.",
+        "Animasi yang sudah dibuat di skenario ini. Klik untuk memilih dan mengatur di Inspector.",
     ));
     ui.add_space(6.0);
+    if routes.is_empty() {
+        ui.label(theme::muted("Belum ada animasi di skenario ini."));
+        if ui.button("Buka tab Animasi").clicked() {
+            editor.left_tab = 3;
+            editor.scene_tab = 0;
+        }
+        return;
+    }
 
     let mut select = None;
     egui::CollapsingHeader::new(format!("Rute ({})", routes.len()))
-        .id_salt("editor_animation_routes")
+        .id_salt("editor_animation_list")
         .default_open(true)
         .show(ui, |ui| {
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Single marker rute")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Gambar garis rute di peta")
-                .clicked()
-            {
-                editor.begin_route_draw();
-            }
-            if routes.is_empty() {
-                ui.add_space(4.0);
-                ui.label(theme::muted("Belum ada rute."));
-                return;
-            }
-            ui.add_space(4.0);
             for (key, name, marker_id) in &routes {
                 let marker_name = marker_id.and_then(|id| {
                     editor.objects.iter().find_map(|object| {
@@ -1576,8 +1597,8 @@ fn draw_scene_panel(
 ) {
     egui::Panel::left("editor_scene")
         .resizable(true)
-        .default_size(250.0)
-        .min_size(210.0)
+        .default_size(260.0)
+        .min_size(230.0)
         .max_size(460.0)
         .frame(
             egui::Frame::new()
@@ -1592,10 +1613,11 @@ fn draw_scene_panel(
                 .show(ui, |ui| match editor.left_tab {
                     1 => draw_asset_tab(ui, editor, asset_rows),
                     2 => draw_import_tab(ui, editor, import_rows),
+                    3 => draw_animation_create_tab(ui, editor),
                     _ => {
                         draw_scene_subtabs(ui, editor);
                         match editor.scene_tab {
-                            1 => draw_animation_tab(ui, editor),
+                            1 => draw_animation_list_tab(ui, editor),
                             _ => draw_scene_tree(ui, editor),
                         }
                     }
@@ -1620,7 +1642,7 @@ fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
         if ui
             .add_sized(
                 [width, 24.0],
-                egui::Button::new("Animasi").selected(editor.scene_tab == 1),
+                egui::Button::new("Layers Animasi").selected(editor.scene_tab == 1),
             )
             .clicked()
         {
@@ -1636,7 +1658,7 @@ fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
 fn draw_editor_tabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     const TAB_HEIGHT: f32 = 28.0;
     const TAB_PADDING: f32 = 8.0;
-    if editor.left_tab > 2 {
+    if editor.left_tab > 3 {
         editor.left_tab = 0;
     }
     let (rect, _) = ui.allocate_exact_size(
@@ -1652,7 +1674,10 @@ fn draw_editor_tabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     );
 
     let mut left = rect.left();
-    for (index, label) in ["Scene", "Assets", "Import"].into_iter().enumerate() {
+    for (index, label) in ["Scene", "Assets", "Import", "Animasi"]
+        .into_iter()
+        .enumerate()
+    {
         let galley = painter.layout_no_wrap(
             label.to_owned(),
             egui::FontId::proportional(FONT_XS),
