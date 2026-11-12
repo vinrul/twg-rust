@@ -125,7 +125,7 @@ impl ScenarioPreview {
             (fy * f64::from(TILE_PX)) as f32,
         );
         let cos_pitch = form.pitch.to_radians().cos().max(0.12) as f32;
-        let bearing = form.bearing.to_radians() as f32;
+        let bearing = screen_bearing(form) as f32;
         let half_w = rect.width() * 0.5 / scale;
         let half_h = rect.height() * 0.5 / (scale * cos_pitch);
         let radius = ((half_w.hypot(half_h) / TILE_PX).ceil() as i32 + 1).clamp(1, 6);
@@ -300,6 +300,14 @@ fn handle_input(ui: &egui::Ui, response: &egui::Response, form: &mut ScenarioFor
     }
 }
 
+/// Screen-space rotation applied to map coordinates. The editor rotates the
+/// view clockwise for a positive bearing, so the map itself rotates by the
+/// negative angle. Keeping this in one place keeps the preview's drag
+/// direction identical to the scenario editor.
+fn screen_bearing(form: &ScenarioForm) -> f64 {
+    -form.bearing.to_radians()
+}
+
 fn orbit(form: &mut ScenarioForm, delta: egui::Vec2) {
     // Same sensitivity and directions as the scenario editor: drag right to
     // turn the view, drag up to raise the pitch.
@@ -315,7 +323,7 @@ fn pan(form: &mut ScenarioForm, delta: egui::Vec2) {
         return;
     };
     let cos_pitch = form.pitch.to_radians().cos().max(0.12);
-    let bearing = form.bearing.to_radians();
+    let bearing = screen_bearing(form);
     let (sin, cos) = bearing.sin_cos();
     let dx = f64::from(delta.x);
     let dy = f64::from(delta.y);
@@ -346,7 +354,7 @@ fn draw_grid(ui: &mut egui::Ui, rect: egui::Rect, form: &ScenarioForm, dark: boo
     let z = tile_zoom(form.zoom);
     let scale = preview_scale(form.zoom) as f32;
     let cos_pitch = form.pitch.to_radians().cos().max(0.12) as f32;
-    let bearing = form.bearing.to_radians() as f32;
+    let bearing = screen_bearing(form) as f32;
     let center = GeoPoint::new(form.center_x, form.center_y);
     let Ok((fx, fy)) = center.tile_fraction(z) else {
         return;
@@ -593,6 +601,33 @@ mod tests {
         pan(&mut form, egui::vec2(120.0, 0.0));
         assert!(form.center_x < before.0);
         assert!((form.center_y - before.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn north_points_left_at_bearing_90_like_the_editor() {
+        let mut form = form();
+        form.bearing = 90.0;
+        let center = egui::pos2(50.0, 50.0);
+        let north = transform_map(
+            egui::vec2(0.0, -100.0),
+            egui::Vec2::ZERO,
+            center,
+            1.0,
+            screen_bearing(&form) as f32,
+            1.0,
+        );
+        assert!(north.x < center.x);
+        assert!((north.y - center.y).abs() < 1.0);
+    }
+
+    #[test]
+    fn pan_at_bearing_90_moves_the_center_north_when_dragging_east() {
+        let mut form = form();
+        form.bearing = 90.0;
+        let before = (form.center_x, form.center_y);
+        pan(&mut form, egui::vec2(120.0, 0.0));
+        assert!(form.center_y > before.1);
+        assert!((form.center_x - before.0).abs() < 1e-9);
     }
 
     #[test]
