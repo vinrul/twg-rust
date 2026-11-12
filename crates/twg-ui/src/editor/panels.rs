@@ -1101,7 +1101,13 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                 EditorKind::Line(line) => line.animation.as_ref().and_then(|route| route.marker_id),
                 _ => None,
             };
-            (object.key, object.name.clone(), marker_id)
+            (
+                object.key,
+                object.name.clone(),
+                marker_id,
+                object.visible,
+                editor.locked.contains(&object.key),
+            )
         })
         .collect::<Vec<_>>();
 
@@ -1119,12 +1125,47 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         return;
     }
 
+    ui.horizontal(|ui| {
+        ui.label(theme::muted("Filter"));
+        if ui
+            .selectable_label(editor.anim_filter_hidden, "Tersembunyi")
+            .on_hover_text("Hanya tampilkan animasi yang disembunyikan dari peta")
+            .clicked()
+        {
+            editor.anim_filter_hidden = !editor.anim_filter_hidden;
+        }
+        if ui
+            .selectable_label(editor.anim_filter_locked, "Terkunci")
+            .on_hover_text("Hanya tampilkan animasi yang dikunci")
+            .clicked()
+        {
+            editor.anim_filter_locked = !editor.anim_filter_locked;
+        }
+    });
+    ui.add_space(4.0);
+
+    let filtered = routes
+        .iter()
+        .filter(|(_, _, _, visible, locked)| {
+            (!editor.anim_filter_hidden || !*visible) && (!editor.anim_filter_locked || *locked)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
     let mut select = None;
-    egui::CollapsingHeader::new(format!("Rute ({})", routes.len()))
+    egui::CollapsingHeader::new(format!("Rute ({})", filtered.len()))
         .id_salt("editor_animation_list")
         .default_open(true)
         .show(ui, |ui| {
-            for (key, name, marker_id) in &routes {
+            if filtered.is_empty() {
+                ui.label(theme::muted("Tidak ada animasi yang cocok dengan filter."));
+                if ui.button("Reset filter").clicked() {
+                    editor.anim_filter_hidden = false;
+                    editor.anim_filter_locked = false;
+                }
+                return;
+            }
+            for (key, name, marker_id, visible, locked) in &filtered {
                 let marker_name = marker_id.and_then(|id| {
                     editor.objects.iter().find_map(|object| {
                         (object.server_id == Some(id)
@@ -1140,8 +1181,31 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                     "marker belum dipilih".to_owned()
                 };
                 ui.horizontal(|ui| {
+                    let mut shown = *visible;
                     if ui
-                        .selectable_label(editor.selected.contains(key), name)
+                        .checkbox(&mut shown, "")
+                        .on_hover_text("Tampilkan animasi di peta")
+                        .changed()
+                    {
+                        if let Some(object) = editor.object_mut(*key) {
+                            object.visible = shown;
+                        }
+                        editor.touch();
+                    }
+                    if lock_icon_button(ui, *locked).clicked() {
+                        if *locked {
+                            editor.locked.remove(key);
+                        } else {
+                            editor.locked.insert(*key);
+                        }
+                    }
+                    let label = if *visible {
+                        egui::RichText::new(name.as_str())
+                    } else {
+                        theme::muted(name)
+                    };
+                    if ui
+                        .selectable_label(editor.selected.contains(key), label)
                         .clicked()
                     {
                         select = Some(*key);
@@ -1155,6 +1219,46 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         editor.select_only(key);
         editor.focus_object(key);
     }
+}
+
+/// Padlock toggle for a route row. Locked routes stay visible on the map but
+/// cannot be picked or box-selected there.
+fn lock_icon_button(ui: &mut egui::Ui, locked: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    let color = if locked {
+        theme::color(DARK.warning)
+    } else if response.hovered() {
+        theme::color(DARK.foreground)
+    } else {
+        theme::color(DARK.muted_foreground)
+    };
+    let painter = ui.painter();
+    let center = rect.center();
+    // Body of the padlock, then the shackle arc above it. The unlocked state
+    // shifts the arc right so the open side is visible at a glance.
+    let body = egui::Rect::from_center_size(center + egui::vec2(0.0, 2.5), egui::vec2(9.0, 7.0));
+    painter.rect_filled(body, 1.5, color);
+    let shackle = if locked {
+        center + egui::vec2(0.0, -1.0)
+    } else {
+        center + egui::vec2(2.5, -2.5)
+    };
+    let radius = 3.5;
+    let arc = (0..=12)
+        .map(|step| {
+            let angle = std::f32::consts::PI + step as f32 / 12.0 * std::f32::consts::PI;
+            shackle + egui::vec2(angle.cos() * radius, angle.sin() * radius)
+        })
+        .collect::<Vec<_>>();
+    painter.add(egui::Shape::line(arc, egui::Stroke::new(1.6, color)));
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.on_hover_text(if locked {
+        "Buka kunci rute"
+    } else {
+        "Kunci rute (tidak bisa dipilih di peta)"
+    })
 }
 
 /// Modal upload form opened from the Import tab.

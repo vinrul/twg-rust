@@ -1318,6 +1318,12 @@ pub struct EditorState {
     pub route_marker_search: String,
     /// Route waiting for a marker picked directly on the map.
     pub pick_route_marker: Option<ObjectKey>,
+    /// Daftar Anim filter: list only route animations hidden from the map.
+    pub anim_filter_hidden: bool,
+    /// Daftar Anim filter: list only locked route animations.
+    pub anim_filter_locked: bool,
+    /// Routes locked from map picking (editor session only).
+    pub locked: BTreeSet<ObjectKey>,
     /// RTS play mode state, rebuilt every time Play starts.
     pub play: PlayState,
     /// Screen-space ground rings for the RTS selection overlay, rebuilt every
@@ -1435,6 +1441,9 @@ impl EditorState {
             sky: SkyMode::Black,
             route_marker_search: String::new(),
             pick_route_marker: None,
+            anim_filter_hidden: false,
+            anim_filter_locked: false,
+            locked: BTreeSet::new(),
             play: PlayState::default(),
             play_rings: Vec::new(),
             save_pending: 0,
@@ -1460,6 +1469,7 @@ impl EditorState {
         self.objects.clear();
         self.deleted.clear();
         self.selected.clear();
+        self.locked.clear();
         self.undo.clear();
         self.redo.clear();
         self.next_key = 1;
@@ -1513,6 +1523,11 @@ impl EditorState {
         self.objects.iter_mut().find(|object| object.key == key)
     }
 
+    /// True when the object is locked from map selection in Daftar Anim.
+    pub fn is_locked(&self, key: ObjectKey) -> bool {
+        self.locked.contains(&key)
+    }
+
     pub fn primary_selected(&self) -> Option<&EditorObject> {
         self.selected
             .iter()
@@ -1535,7 +1550,7 @@ impl EditorState {
     pub fn primary_transform(&self) -> Option<(ObjectKey, ObjectTransform)> {
         self.selected.iter().find_map(|key| {
             let object = self.object(*key)?;
-            if !object.visible {
+            if !object.visible || self.locked.contains(key) {
                 return None;
             }
             object.kind.transform().map(|transform| (*key, transform))
@@ -1551,6 +1566,10 @@ impl EditorState {
             let Some(object) = self.object(*key) else {
                 continue;
             };
+            // A route hidden from the map should not ring its marker either.
+            if !object.visible {
+                continue;
+            }
             let EditorKind::Line(line) = &object.kind else {
                 continue;
             };
@@ -1750,7 +1769,9 @@ impl EditorState {
         let mut animations = Vec::new();
         let mut controlled = BTreeSet::new();
         for object in &self.objects {
-            if !object.visible || !self.visible.allows(ObjectType::Line) {
+            // Hiding a route only declutters the editor map; the animation still
+            // runs in Play, where route lines are never drawn.
+            if !self.visible.allows(ObjectType::Line) {
                 continue;
             }
             let EditorKind::Line(line) = &object.kind else {
@@ -2458,6 +2479,7 @@ impl EditorState {
         self.push_undo();
         let selected = self.selected.clone();
         for key in &selected {
+            self.locked.remove(key);
             if let Some(index) = self.objects.iter().position(|object| object.key == *key) {
                 let object = self.objects.remove(index);
                 if let Some(id) = object.server_id {
@@ -3593,6 +3615,19 @@ mod tests {
     }
 
     #[test]
+    fn locked_objects_do_not_show_a_gizmo() {
+        let mut editor = editor();
+        editor.add_marker(GeoPoint::new(115.225, -8.648), 0);
+        let key = *editor.selected.iter().next().expect("marker selected");
+        editor.set_tool(EditorTool::Move);
+        assert!(editor.primary_transform().is_some());
+
+        editor.locked.insert(key);
+        assert!(editor.primary_transform().is_none());
+        assert!(editor.build_scene().gizmo.is_none());
+    }
+
+    #[test]
     fn snap_moves_the_point_at_most_half_the_grid() {
         let mut editor = editor();
         editor.snap_meters = 5.0;
@@ -3797,6 +3832,19 @@ mod tests {
         let unit = editor.play.units.get(&marker_key).expect("animated unit");
         let offset = unit.position.local_offset(base).expect("offset");
         assert!(offset.east_meters.abs() < 0.1);
+    }
+
+    #[test]
+    fn hidden_route_is_still_registered_for_play() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("east");
+        editor.add_route(vec![base, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        editor.object_mut(route_key).expect("route").visible = false;
+
+        editor.start_play();
+        assert_eq!(editor.play.animations.len(), 1);
     }
 
     #[test]

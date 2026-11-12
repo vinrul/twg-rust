@@ -617,6 +617,10 @@ fn project_geo(
 fn pick_object(editor: &EditorState, pointer: egui::Pos2) -> Option<ObjectKey> {
     let mut best: Option<(f32, ObjectKey)> = None;
     for (key, kind, points, _) in &editor.projected {
+        // Locked routes stay visible but ignore map clicks.
+        if editor.is_locked(*key) {
+            continue;
+        }
         let score = match kind {
             ObjectType::Marker | ObjectType::Text => {
                 let distance = points
@@ -1183,6 +1187,9 @@ fn mouse_input(
             if rect.width() > 4.0 || rect.height() > 4.0 {
                 editor.selected.clear();
                 for (key, _, points, _) in &editor.projected {
+                    if editor.is_locked(*key) {
+                        continue;
+                    }
                     if points
                         .first()
                         .is_some_and(|position| rect.contains(*position))
@@ -1719,6 +1726,27 @@ mod tests {
 
         assert_eq!(editor.tool, EditorTool::Select);
         assert_eq!(editor.objects.len(), 1);
+    }
+
+    #[test]
+    fn locked_route_ignores_map_picking() {
+        let mut editor = EditorState::new();
+        editor.loaded = true;
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("east");
+        editor.add_route(vec![base, end]);
+        let key = *editor.selected.iter().next().expect("route selected");
+        editor.projected.push((
+            key,
+            ObjectType::Line,
+            vec![egui::pos2(100.0, 100.0), egui::pos2(200.0, 100.0)],
+            true,
+        ));
+        let pointer = egui::pos2(150.0, 100.0);
+        assert_eq!(pick_object(&editor, pointer), Some(key));
+
+        editor.locked.insert(key);
+        assert_eq!(pick_object(&editor, pointer), None);
     }
 
     #[test]
