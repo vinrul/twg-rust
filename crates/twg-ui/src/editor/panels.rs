@@ -10,9 +10,9 @@ use crate::widgets;
 
 use super::input::distance_meters;
 use super::model::{
-    AnimationSort, AnimationSortKey, AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState,
-    EditorTextureRow, EditorTool, MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings,
-    PlaybackState, marker_color, parse_hex_color, particle_kind_label,
+    AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
+    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, PlaybackState, marker_color,
+    parse_hex_color, particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,22 +211,8 @@ fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
                         ));
                         return;
                     }
-                    let order = {
-                        let keys = editor
-                            .play
-                            .animations
-                            .iter()
-                            .map(|animation| AnimationSortKey {
-                                name: animation.name.as_str(),
-                                speed: animation.speed,
-                                length: animation.length_m,
-                            })
-                            .collect::<Vec<_>>();
-                        editor.anim_sort.order(&keys)
-                    };
                     let mut command: Option<(usize, RouteCommand)> = None;
-                    for index in order {
-                        let animation = &editor.play.animations[index];
+                    for (index, animation) in editor.play.animations.iter().enumerate() {
                         ui.label(egui::RichText::new(&animation.name).strong());
                         let status = match animation.state {
                             PlaybackState::Stopped => "Berhenti",
@@ -1116,25 +1102,8 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                 object.name.clone(),
                 object.visible,
                 editor.locked.contains(&object.key),
-                object.route_speed(),
-                object.route_length_m(),
             )
         })
-        .collect::<Vec<_>>();
-    let order = {
-        let keys = routes
-            .iter()
-            .map(|(_, name, _, _, speed, length)| AnimationSortKey {
-                name: name.as_str(),
-                speed: *speed,
-                length: *length,
-            })
-            .collect::<Vec<_>>();
-        editor.anim_sort.order(&keys)
-    };
-    let routes = order
-        .into_iter()
-        .map(|index| routes[index].clone())
         .collect::<Vec<_>>();
 
     ui.add_space(2.0);
@@ -1172,7 +1141,7 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
 
     let filtered = routes
         .iter()
-        .filter(|(_, _, visible, locked, _, _)| {
+        .filter(|(_, _, visible, locked)| {
             (!editor.anim_filter_hidden || !*visible) && (!editor.anim_filter_locked || *locked)
         })
         .cloned()
@@ -1194,7 +1163,7 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                         }
                         return;
                     }
-                    for (key, name, visible, locked, _, _) in &filtered {
+                    for (key, name, visible, locked) in &filtered {
                         ui.horizontal_top(|ui| {
                             let mut shown = *visible;
                             if ui
@@ -2090,17 +2059,81 @@ fn draw_inspector(
         });
 }
 
-/// "Urutan" tab in the right panel: ordering shared by the Daftar Anim list
-/// and the Play animation panel.
+/// "Urutan" tab in the right panel: flat list of route animations that can be
+/// reordered with the arrow buttons. The order is stored in the route metadata
+/// and drives the Play animation list.
 fn draw_animation_order_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
     ui.label(theme::title("Urutan Anim"));
     ui.label(theme::muted(
-        "Mengatur urutan daftar animasi di Daftar Anim dan panel Animasi saat Play.",
+        "Urutan animasi saat Play. Urutan tersimpan bersama skenario.",
     ));
     ui.add_space(8.0);
-    for option in AnimationSort::ALL {
-        ui.radio_value(&mut editor.anim_sort, option, option.label());
+
+    let rows = editor
+        .ordered_route_keys()
+        .into_iter()
+        .filter_map(|key| {
+            let object = editor.object(key)?;
+            Some((key, object.name.clone()))
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        ui.label(theme::muted("Belum ada animasi di skenario ini."));
+        return;
     }
+
+    let mut move_request = None;
+    let last = rows.len().saturating_sub(1);
+    for (index, (key, name)) in rows.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if reorder_arrow_button(ui, true, index > 0) {
+                move_request = Some((*key, -1));
+            }
+            if reorder_arrow_button(ui, false, index < last) {
+                move_request = Some((*key, 1));
+            }
+            ui.add(egui::Label::new(egui::RichText::new(name.as_str()).size(FONT_XS)).wrap());
+        });
+    }
+
+    if let Some((key, delta)) = move_request {
+        editor.move_route_order(key, delta);
+    }
+}
+
+/// Small triangle button used by the Urutan list. Unavailable slots still
+/// reserve their width so names stay aligned across rows.
+fn reorder_arrow_button(ui: &mut egui::Ui, up: bool, available: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    if !available {
+        return false;
+    }
+    let color = if response.hovered() {
+        theme::color(DARK.foreground)
+    } else {
+        theme::color(DARK.muted_foreground)
+    };
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect_filled(rect, 3.0, theme::color(DARK.secondary));
+    }
+    let center = rect.center();
+    let direction = if up { -1.0 } else { 1.0 };
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            center + egui::vec2(0.0, direction * 4.0),
+            center + egui::vec2(-4.0, -direction * 2.5),
+            center + egui::vec2(4.0, -direction * 2.5),
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+        .on_hover_text(if up { "Naikkan" } else { "Turunkan" })
+        .clicked()
 }
 
 fn draw_scenario_inspector(

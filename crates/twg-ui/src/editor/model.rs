@@ -259,6 +259,8 @@ pub struct PlayRouteAnimation {
     pub progress_m: f64,
     pub state: PlaybackState,
     pub repeat: bool,
+    /// Persisted play order shared with the scenario editor.
+    pub order: i32,
 }
 
 impl PlayRouteAnimation {
@@ -273,97 +275,6 @@ pub enum PlaybackState {
     Stopped,
     Playing,
     Paused,
-}
-
-/// Ordering for the animation lists (Daftar Anim and the Play panel).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AnimationSort {
-    /// Insertion order, i.e. the order the routes were created.
-    #[default]
-    Created,
-    NameAsc,
-    NameDesc,
-    SpeedAsc,
-    SpeedDesc,
-    LengthAsc,
-    LengthDesc,
-}
-
-impl AnimationSort {
-    pub const ALL: [Self; 7] = [
-        Self::Created,
-        Self::NameAsc,
-        Self::NameDesc,
-        Self::SpeedAsc,
-        Self::SpeedDesc,
-        Self::LengthAsc,
-        Self::LengthDesc,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Created => "Sesuai urutan dibuat",
-            Self::NameAsc => "Nama A–Z",
-            Self::NameDesc => "Nama Z–A",
-            Self::SpeedAsc => "Kecepatan terendah",
-            Self::SpeedDesc => "Kecepatan tertinggi",
-            Self::LengthAsc => "Rute terpendek",
-            Self::LengthDesc => "Rute terpanjang",
-        }
-    }
-
-    /// Display order as indices into `keys`.
-    pub fn order(self, keys: &[AnimationSortKey<'_>]) -> Vec<usize> {
-        let mut order = (0..keys.len()).collect::<Vec<_>>();
-        let names = keys
-            .iter()
-            .map(|key| key.name.to_lowercase())
-            .collect::<Vec<_>>();
-        match self {
-            Self::Created => {}
-            Self::NameAsc => order.sort_by_cached_key(|&index| names[index].clone()),
-            Self::NameDesc => {
-                order.sort_by_cached_key(|&index| std::cmp::Reverse(names[index].clone()));
-            }
-            Self::SpeedAsc => order.sort_by(|&a, &b| {
-                keys[a]
-                    .speed
-                    .total_cmp(&keys[b].speed)
-                    .then_with(|| names[a].cmp(&names[b]))
-                    .then_with(|| a.cmp(&b))
-            }),
-            Self::SpeedDesc => order.sort_by(|&a, &b| {
-                keys[b]
-                    .speed
-                    .total_cmp(&keys[a].speed)
-                    .then_with(|| names[a].cmp(&names[b]))
-                    .then_with(|| a.cmp(&b))
-            }),
-            Self::LengthAsc => order.sort_by(|&a, &b| {
-                keys[a]
-                    .length
-                    .total_cmp(&keys[b].length)
-                    .then_with(|| names[a].cmp(&names[b]))
-                    .then_with(|| a.cmp(&b))
-            }),
-            Self::LengthDesc => order.sort_by(|&a, &b| {
-                keys[b]
-                    .length
-                    .total_cmp(&keys[a].length)
-                    .then_with(|| names[a].cmp(&names[b]))
-                    .then_with(|| a.cmp(&b))
-            }),
-        }
-        order
-    }
-}
-
-/// Sortable fields of one route animation row.
-#[derive(Clone, Copy, Debug)]
-pub struct AnimationSortKey<'a> {
-    pub name: &'a str,
-    pub speed: f64,
-    pub length: f64,
 }
 
 /// RTS play mode state: movable animated markers plus static obstacles.
@@ -558,6 +469,8 @@ pub struct RouteAnimation {
     pub marker_id: Option<Uuid>,
     /// Restart from the first point after reaching the end.
     pub repeat: bool,
+    /// Position in the Play animation order, persisted in the route metadata.
+    pub order: i32,
 }
 
 impl Default for RouteAnimation {
@@ -566,6 +479,7 @@ impl Default for RouteAnimation {
             speed: 5.0,
             marker_id: None,
             repeat: false,
+            order: 0,
         }
     }
 }
@@ -1119,32 +1033,16 @@ impl EditorObject {
         matches!(&self.kind, EditorKind::Line(line) if line.animation.is_some())
     }
 
-    /// Route speed in metres per second, used by the animation sort.
-    pub fn route_speed(&self) -> f64 {
+    /// Position of this route in the persisted Play order.
+    pub fn route_order(&self) -> i32 {
         match &self.kind {
             EditorKind::Line(line) => line
                 .animation
                 .as_ref()
-                .map(|route| route.speed)
-                .unwrap_or(0.0),
-            _ => 0.0,
+                .map(|route| route.order)
+                .unwrap_or(0),
+            _ => 0,
         }
-    }
-
-    /// Route length in metres, used by the animation sort.
-    pub fn route_length_m(&self) -> f64 {
-        let EditorKind::Line(line) = &self.kind else {
-            return 0.0;
-        };
-        line.points
-            .windows(2)
-            .filter_map(|pair| {
-                let start = GeoPoint::new(pair[0][0], pair[0][1]);
-                let end = GeoPoint::new(pair[1][0], pair[1][1]);
-                end.local_offset(start).ok()
-            })
-            .map(|offset| offset.east_meters.hypot(offset.north_meters))
-            .sum()
     }
 }
 
@@ -1353,8 +1251,6 @@ pub struct EditorState {
     pub scene_tab: usize,
     /// Right panel tab: 0 = Inspector, 1 = Urutan Anim.
     pub inspector_tab: usize,
-    /// Ordering shared by the Daftar Anim and Play animation lists.
-    pub anim_sort: AnimationSort,
     /// Viewport shading for imported models (Texture/Solid/Wireframe).
     pub model_shading: EditorModelShading,
     pub confirm_close: bool,
@@ -1504,7 +1400,6 @@ impl EditorState {
             left_tab: 0,
             scene_tab: 0,
             inspector_tab: 0,
-            anim_sort: AnimationSort::default(),
             model_shading: EditorModelShading::Textured,
             confirm_close: false,
             confirm_reload: false,
@@ -1936,8 +1831,11 @@ impl EditorState {
                 progress_m: 0.0,
                 state: PlaybackState::Stopped,
                 repeat: route.repeat,
+                order: route.order,
             });
         }
+        // Play follows the order authored in the editor's Urutan tab.
+        animations.sort_by_key(|animation| animation.order);
         self.play.animations = animations;
         self.play.controlled = controlled;
     }
@@ -2408,7 +2306,10 @@ impl EditorState {
         let mut line = LineObject::new(coordinates);
         line.color = "#ffb020".to_owned();
         line.width = 0.5;
-        line.animation = Some(RouteAnimation::default());
+        line.animation = Some(RouteAnimation {
+            order: self.next_route_order(),
+            ..RouteAnimation::default()
+        });
         self.objects.push(EditorObject {
             key,
             server_id: None,
@@ -2517,6 +2418,64 @@ impl EditorState {
             self.touch();
             self.log("Marker rute dipilih dari peta.");
         }
+    }
+
+    /// Route keys ordered by the persisted Play order. Ties keep creation
+    /// order so legacy scenarios without order metadata stay stable.
+    pub fn ordered_route_keys(&self) -> Vec<ObjectKey> {
+        let mut routes = self
+            .objects
+            .iter()
+            .filter(|object| object.is_animation_route())
+            .map(|object| (object.key, object.route_order()))
+            .collect::<Vec<_>>();
+        routes.sort_by_key(|(_, order)| *order);
+        routes.into_iter().map(|(key, _)| key).collect()
+    }
+
+    /// Moves a route one slot up (`-1`) or down (`+1`) in the Play order and
+    /// rewrites sequential order values, marking changed lines dirty so the
+    /// order is saved with the scenario.
+    pub fn move_route_order(&mut self, key: ObjectKey, delta: isize) -> bool {
+        let mut keys = self.ordered_route_keys();
+        let Some(index) = keys.iter().position(|candidate| *candidate == key) else {
+            return false;
+        };
+        let target = index as isize + delta;
+        if target < 0 || target as usize >= keys.len() {
+            return false;
+        }
+        let target = target as usize;
+        self.push_undo();
+        keys.swap(index, target);
+        for (position, route_key) in keys.iter().enumerate() {
+            let Some(object) = self.object_mut(*route_key) else {
+                continue;
+            };
+            if let EditorKind::Line(line) = &mut object.kind
+                && let Some(animation) = &mut line.animation
+            {
+                let position = position as i32;
+                if animation.order != position {
+                    animation.order = position;
+                    object.dirty = true;
+                }
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Next Play order value for a new or duplicated route.
+    fn next_route_order(&self) -> i32 {
+        self.objects
+            .iter()
+            .filter_map(|object| match &object.kind {
+                EditorKind::Line(line) => line.animation.as_ref().map(|route| route.order),
+                _ => None,
+            })
+            .max()
+            .map_or(0, |max| max.saturating_add(1))
     }
 
     pub fn add_polygon(&mut self, points: Vec<GeoPoint>) {
@@ -2629,17 +2588,21 @@ impl EditorState {
             .cloned()
             .collect::<Vec<_>>();
         let mut new_selection = BTreeSet::new();
+        let mut next_order = self.next_route_order();
         for mut object in originals {
             let key = self.alloc_key();
             object.key = key;
             object.server_id = None;
             object.dirty = true;
             object.name = format!("{} copy", object.name);
-            // A route copy must not fight the original over the same marker.
+            // A route copy must not fight the original over the same marker,
+            // and it goes to the end of the Play order.
             if let EditorKind::Line(line) = &mut object.kind
                 && let Some(animation) = &mut line.animation
             {
                 animation.marker_id = None;
+                animation.order = next_order;
+                next_order = next_order.saturating_add(1);
             }
             offset_object(&mut object.kind, 8.0, -8.0);
             new_selection.insert(key);
@@ -3900,6 +3863,7 @@ mod tests {
                 speed: 50.0,
                 marker_id: Some(marker_id),
                 repeat: false,
+                order: 0,
             });
         }
 
@@ -3939,6 +3903,7 @@ mod tests {
                 speed: 50.0,
                 marker_id: Some(marker_id),
                 repeat: true,
+                order: 0,
             });
         }
 
@@ -3973,31 +3938,34 @@ mod tests {
     }
 
     #[test]
-    fn animation_sort_orders_names_speed_and_length() {
-        let keys = [
-            AnimationSortKey {
-                name: "Bravo",
-                speed: 5.0,
-                length: 30.0,
-            },
-            AnimationSortKey {
-                name: "alpha",
-                speed: 2.0,
-                length: 50.0,
-            },
-            AnimationSortKey {
-                name: "Charlie",
-                speed: 8.0,
-                length: 10.0,
-            },
-        ];
-        assert_eq!(AnimationSort::Created.order(&keys), vec![0, 1, 2]);
-        assert_eq!(AnimationSort::NameAsc.order(&keys), vec![1, 0, 2]);
-        assert_eq!(AnimationSort::NameDesc.order(&keys), vec![2, 0, 1]);
-        assert_eq!(AnimationSort::SpeedAsc.order(&keys), vec![1, 0, 2]);
-        assert_eq!(AnimationSort::SpeedDesc.order(&keys), vec![2, 0, 1]);
-        assert_eq!(AnimationSort::LengthAsc.order(&keys), vec![2, 0, 1]);
-        assert_eq!(AnimationSort::LengthDesc.order(&keys), vec![1, 0, 2]);
+    fn route_order_moves_and_drives_play_order() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let add = |editor: &mut EditorState, east: f64| {
+            let end = GeoPoint::from_local_offset(base, east, 0.0).expect("east");
+            editor.add_route(vec![base, end]);
+            *editor.selected.iter().next().expect("route selected")
+        };
+        let first = add(&mut editor, 10.0);
+        let second = add(&mut editor, 20.0);
+        let third = add(&mut editor, 30.0);
+        assert_eq!(editor.ordered_route_keys(), vec![first, second, third]);
+
+        assert!(editor.move_route_order(third, -1));
+        assert_eq!(editor.ordered_route_keys(), vec![first, third, second]);
+
+        // The top row cannot move up and the last row cannot move down.
+        assert!(!editor.move_route_order(first, -1));
+        assert!(!editor.move_route_order(second, 1));
+
+        editor.start_play();
+        let play_order = editor
+            .play
+            .animations
+            .iter()
+            .map(|animation| animation.route_key)
+            .collect::<Vec<_>>();
+        assert_eq!(play_order, vec![first, third, second]);
     }
 
     #[test]
