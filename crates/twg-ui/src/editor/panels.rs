@@ -3622,6 +3622,12 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
     let Some((position, key)) = editor.context_menu else {
         return;
     };
+    let is_route = editor
+        .object(key)
+        .is_some_and(|object| object.is_animation_route());
+    let visible = editor.object(key).is_some_and(|object| object.visible);
+    let locked = editor.is_locked(key);
+    let locked_route = is_route && locked;
     let mut close = false;
     let area = egui::Area::new(egui::Id::new("editor_context_menu"))
         .fixed_pos(position)
@@ -3634,12 +3640,40 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
                 .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
                     ui.set_min_width(150.0);
-                    if ui.button("Duplicate").clicked() {
+                    if is_route {
+                        let hide_label = if visible { "Sembunyikan" } else { "Tampilkan" };
+                        if ui.button(hide_label).clicked() {
+                            if let Some(object) = editor.object_mut(key) {
+                                object.visible = !object.visible;
+                            }
+                            editor.touch();
+                            close = true;
+                        }
+                        let lock_label = if locked { "Buka kunci" } else { "Kunci rute" };
+                        if ui.button(lock_label).clicked() {
+                            if locked {
+                                editor.locked.remove(&key);
+                            } else {
+                                editor.locked.insert(key);
+                            }
+                            close = true;
+                        }
+                        ui.separator();
+                    }
+                    let duplicate = ui.add_enabled(!locked_route, egui::Button::new("Duplicate"));
+                    if duplicate
+                        .on_disabled_hover_text("Rute terkunci — buka kunci dulu")
+                        .clicked()
+                    {
                         editor.select_only(key);
                         editor.duplicate_selected();
                         close = true;
                     }
-                    if ui.button("Hapus").clicked() {
+                    let delete = ui.add_enabled(!locked_route, egui::Button::new("Hapus"));
+                    if delete
+                        .on_disabled_hover_text("Rute terkunci — buka kunci dulu")
+                        .clicked()
+                    {
                         editor.select_only(key);
                         editor.request_delete_selected();
                         close = true;

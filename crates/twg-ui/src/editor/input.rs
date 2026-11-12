@@ -193,8 +193,12 @@ pub fn editor_input(
             && let (Some(start), Some(position)) = (editor.right_press.take(), pointer_pos)
             && start.distance(position) < 5.0
             && let Some(key) = pick_object(editor, position)
+                .or_else(|| pick_object_ignoring_lock(editor, position))
         {
-            editor.select_only(key);
+            // A locked route gets its context menu without being selected.
+            if !editor.is_locked(key) {
+                editor.select_only(key);
+            }
             editor.context_menu = Some((position, key));
         }
         keyboard_shortcuts(editor, &keys, &mouse, focus.keyboard);
@@ -615,10 +619,24 @@ fn project_geo(
 }
 
 fn pick_object(editor: &EditorState, pointer: egui::Pos2) -> Option<ObjectKey> {
+    pick_object_inner(editor, pointer, false)
+}
+
+/// Picks including locked objects. The context menu uses this so a locked
+/// route can still be unlocked from the map.
+fn pick_object_ignoring_lock(editor: &EditorState, pointer: egui::Pos2) -> Option<ObjectKey> {
+    pick_object_inner(editor, pointer, true)
+}
+
+fn pick_object_inner(
+    editor: &EditorState,
+    pointer: egui::Pos2,
+    include_locked: bool,
+) -> Option<ObjectKey> {
     let mut best: Option<(f32, ObjectKey)> = None;
     for (key, kind, points, _) in &editor.projected {
         // Locked routes stay visible but ignore map clicks.
-        if editor.is_locked(*key) {
+        if !include_locked && editor.is_locked(*key) {
             continue;
         }
         let score = match kind {
@@ -1747,6 +1765,8 @@ mod tests {
 
         editor.locked.insert(key);
         assert_eq!(pick_object(&editor, pointer), None);
+        // The context menu still finds the locked route so it can be unlocked.
+        assert_eq!(pick_object_ignoring_lock(&editor, pointer), Some(key));
     }
 
     #[test]
