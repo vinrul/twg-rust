@@ -505,7 +505,11 @@ fn draw_toolbar(ui: &mut egui::Ui, editor: &mut EditorState, action: &mut Editor
                     editor.preview = true;
                     editor.touch();
                 }
-                if ui.button("◀").on_hover_text("Kembali").clicked() {
+                if ui
+                    .button("Tutup editor")
+                    .on_hover_text("Kembali ke daftar skenario")
+                    .clicked()
+                {
                     if editor.dirty {
                         editor.confirm_close = true;
                     } else {
@@ -2086,12 +2090,16 @@ fn draw_animation_order_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
     let last = rows.len().saturating_sub(1);
     for (index, (key, name)) in rows.iter().enumerate() {
         ui.horizontal(|ui| {
+            // Keep the two arrows close together; the name gets a little
+            // breathing room after them.
+            ui.spacing_mut().item_spacing.x = 2.0;
             if reorder_arrow_button(ui, true, index > 0) {
                 move_request = Some((*key, -1));
             }
             if reorder_arrow_button(ui, false, index < last) {
                 move_request = Some((*key, 1));
             }
+            ui.add_space(4.0);
             ui.add(egui::Label::new(egui::RichText::new(name.as_str()).size(FONT_XS)).wrap());
         });
     }
