@@ -1065,7 +1065,7 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
     ui.label(theme::title("Buat animasi"));
     ui.label(theme::muted(
         "Pilih jenis animasi lalu gambar di peta. Animasi yang sudah dibuat \
-         tampil di Scene → Layers Animasi.",
+         tampil di Scene → Daftar Anim.",
     ));
     ui.add_space(6.0);
 
@@ -1626,7 +1626,7 @@ fn draw_scene_panel(
 }
 
 /// Secondary tab strip inside Scene. "Layers" is the existing scene tree;
-/// "Animasi" lists the route animations authored for this scenario.
+/// "Daftar Anim" lists the route animations authored for this scenario.
 fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     const HEIGHT: f32 = 24.0;
     let (rect, _) = ui.allocate_exact_size(
@@ -1636,7 +1636,7 @@ fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 5.0, theme::color(DARK.secondary));
     let width = rect.width() / 2.0;
-    for (index, label) in ["Layers", "Animasi"].into_iter().enumerate() {
+    for (index, label) in ["Layers", "Daftar Anim"].into_iter().enumerate() {
         let tab = egui::Rect::from_min_size(
             egui::pos2(rect.left() + width * index as f32, rect.top()),
             egui::vec2(width, rect.height()),
