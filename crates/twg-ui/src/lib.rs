@@ -23,6 +23,7 @@ mod asset_groups_screen;
 mod assets_screen;
 mod compass_panel;
 pub mod editor;
+mod file_picker;
 mod map_panel;
 mod scenario_preview;
 mod screens;

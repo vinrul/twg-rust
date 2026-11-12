@@ -782,7 +782,8 @@ fn draw_upload_form(ui: &mut egui::Ui, client: &mut ClientUi) {
     ui.add_space(SPACE_2);
     ui.label(theme::heading("Unggah aset"));
     ui.label(theme::muted(
-        "Tarik & lepas file ke jendela aplikasi. Model animasi membutuhkan dua file: idle dan animasi.",
+        "Tarik & lepas file ke jendela aplikasi atau klik Pilih file. Model animasi \
+         membutuhkan dua file: idle dan animasi.",
     ));
     ui.add_space(SPACE_2);
 
@@ -866,21 +867,44 @@ fn draw_upload_form(ui: &mut egui::Ui, client: &mut ClientUi) {
                     .size(FONT_XS)
                     .color(color(DARK.muted_foreground)),
             );
-            match client.asset_upload.files.get(index) {
-                Some(path) => {
-                    ui.label(
-                        egui::RichText::new(
-                            path.file_name()
-                                .and_then(|value| value.to_str())
-                                .unwrap_or("file"),
-                        )
-                        .size(FONT_SM),
-                    );
+            let selected = client
+                .asset_upload
+                .files
+                .get(index)
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| {
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("file")
+                        .to_owned()
+                });
+            match selected {
+                Some(name) => {
+                    ui.label(egui::RichText::new(name).size(FONT_SM));
                 }
                 None => {
-                    ui.label(theme::muted("(belum ada — tarik file ke jendela)"));
+                    ui.label(theme::muted("(belum ada — tarik file atau pilih)"));
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if widgets::secondary_button(ui, "Pilih file...").clicked()
+                    && let Some(path) =
+                        crate::file_picker::pick_asset_file(client.asset_upload.category)
+                {
+                    if client.asset_upload.name.trim().is_empty() {
+                        client.asset_upload.name = path
+                            .file_stem()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or("aset")
+                            .to_owned();
+                    }
+                    client.asset_upload.set_file(index, path);
+                    client.asset_upload.error = None;
+                }
+                #[cfg(target_arch = "wasm32")]
+                ui.label(theme::muted("Khusus desktop"));
+            });
         });
     }
 

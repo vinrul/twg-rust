@@ -206,6 +206,24 @@ impl AssetUploadDraft {
         }
     }
 
+    /// Required slots that actually hold a file. Picking a slot out of order
+    /// leaves empty placeholders until the missing files arrive.
+    pub fn filled_files(&self) -> usize {
+        self.files
+            .iter()
+            .take(self.required_files().len())
+            .filter(|path| !path.as_os_str().is_empty())
+            .count()
+    }
+
+    /// Assigns a file to one source slot without disturbing the others.
+    pub fn set_file(&mut self, index: usize, path: PathBuf) {
+        if self.files.len() <= index {
+            self.files.resize(index + 1, PathBuf::new());
+        }
+        self.files[index] = path;
+    }
+
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -1614,7 +1632,7 @@ impl ClientUi {
         }
         let draft = &mut self.asset_upload;
         let required = draft.required_files().len();
-        if draft.files.len() >= required {
+        if draft.filled_files() >= required {
             draft.files.clear();
             draft.name.clear();
         }
@@ -1625,7 +1643,15 @@ impl ClientUi {
                 .unwrap_or("aset")
                 .to_owned();
         }
-        draft.files.push(path);
+        if let Some(index) = draft
+            .files
+            .iter()
+            .position(|file| file.as_os_str().is_empty())
+        {
+            draft.files[index] = path;
+        } else {
+            draft.files.push(path);
+        }
         draft.error = None;
     }
 
@@ -1647,10 +1673,10 @@ impl ClientUi {
             return;
         }
         let required = self.asset_upload.required_files().len();
-        if self.asset_upload.files.len() != required {
+        let filled = self.asset_upload.filled_files();
+        if self.asset_upload.files.len() != required || filled != required {
             self.asset_upload.error = Some(format!(
-                "Butuh {required} file untuk kategori ini ({} terisi).",
-                self.asset_upload.files.len()
+                "Butuh {required} file untuk kategori ini ({filled} terisi).",
             ));
             return;
         }

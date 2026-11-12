@@ -1179,7 +1179,8 @@ fn draw_import_form(ui: &mut egui::Ui, editor: &mut EditorState) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if ui.button("Pilih file...").clicked()
-                    && let Some(path) = pick_import_file(editor.import_draft.category)
+                    && let Some(path) =
+                        crate::file_picker::pick_asset_file(editor.import_draft.category)
                 {
                     editor.import_draft.set_file(index, path);
                 }
@@ -1208,25 +1209,6 @@ fn import_ready(editor: &EditorState) -> bool {
             .iter()
             .enumerate()
             .all(|(index, _)| editor.import_draft.file(index).is_some())
-}
-
-/// Native file picker restricted to the formats the chosen category accepts.
-#[cfg(not(target_arch = "wasm32"))]
-fn pick_import_file(category: AssetCategory) -> Option<std::path::PathBuf> {
-    let dialog = rfd::FileDialog::new();
-    match category {
-        AssetCategory::Model => dialog
-            .add_filter("Model glTF/GLB (*.glb, *.gltf)", &["glb", "gltf"])
-            .set_title("Pilih model .glb/.gltf")
-            .pick_file(),
-        AssetCategory::Texture | AssetCategory::Icon => dialog
-            .add_filter(
-                "Gambar (*.png, *.jpg, *.jpeg, *.webp)",
-                &["png", "jpg", "jpeg", "webp"],
-            )
-            .set_title("Pilih gambar")
-            .pick_file(),
-    }
 }
 
 fn asset_category_label(category: AssetCategory) -> &'static str {
