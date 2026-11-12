@@ -1097,14 +1097,9 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         .iter()
         .filter(|object| object.is_animation_route())
         .map(|object| {
-            let marker_id = match &object.kind {
-                EditorKind::Line(line) => line.animation.as_ref().and_then(|route| route.marker_id),
-                _ => None,
-            };
             (
                 object.key,
                 object.name.clone(),
-                marker_id,
                 object.visible,
                 editor.locked.contains(&object.key),
             )
@@ -1146,7 +1141,7 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
 
     let filtered = routes
         .iter()
-        .filter(|(_, _, _, visible, locked)| {
+        .filter(|(_, _, visible, locked)| {
             (!editor.anim_filter_hidden || !*visible) && (!editor.anim_filter_locked || *locked)
         })
         .cloned()
@@ -1168,21 +1163,7 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                         }
                         return;
                     }
-                    for (key, name, marker_id, visible, locked) in &filtered {
-                        let marker_name = marker_id.and_then(|id| {
-                            editor.objects.iter().find_map(|object| {
-                                (object.server_id == Some(id)
-                                    && matches!(object.kind, EditorKind::Marker(_)))
-                                .then(|| object.name.clone())
-                            })
-                        });
-                        let marker_label = if marker_name.is_some() {
-                            marker_name.unwrap_or_default()
-                        } else if marker_id.is_some() {
-                            "marker hilang".to_owned()
-                        } else {
-                            "marker belum dipilih".to_owned()
-                        };
+                    for (key, name, visible, locked) in &filtered {
                         ui.horizontal_top(|ui| {
                             let mut shown = *visible;
                             if ui
@@ -1214,7 +1195,6 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                             let mut clicked = false;
                             frame.show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 1.0;
                                 clicked |= ui
                                     .add(
                                         egui::Label::new(
@@ -1225,18 +1205,6 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                                                     theme::color(DARK.muted_foreground)
                                                 },
                                             ),
-                                        )
-                                        .wrap()
-                                        .sense(egui::Sense::click()),
-                                    )
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked();
-                                clicked |= ui
-                                    .add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!("· {marker_label}"))
-                                                .size(FONT_XS)
-                                                .color(theme::color(DARK.muted_foreground)),
                                         )
                                         .wrap()
                                         .sense(egui::Sense::click()),
