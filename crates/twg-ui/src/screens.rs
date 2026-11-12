@@ -1154,7 +1154,7 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
                 modal_title(ui, title, subtitle);
                 egui::ScrollArea::vertical()
                     .id_salt("scenario_form_scroll")
-                    .max_height(560.0)
+                    .max_height(300.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         widgets::labeled_input(ui, "Nama skenario", &mut form.name);
@@ -1258,12 +1258,6 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
                                 });
                             }
 
-                            ui.add_space(6.0);
-                            ui.label(theme::muted("Pratinjau peta"));
-                            client
-                                .scenario_preview
-                                .show(ui, form, tile_proxy.as_deref());
-
                             ui.add_space(8.0);
                             ui.separator();
                             ui.label(theme::title("Pengaturan peta"));
@@ -1321,7 +1315,7 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
                                 );
                             });
                             ui.label(theme::muted(
-                                "Peta di atas mengubah longitude, latitude, zoom, pitch, dan bearing. \
+                                "Peta di bawah mengubah longitude, latitude, zoom, pitch, dan bearing. \
                                  Min/max zoom tidak ikut berubah.",
                             ));
                             if form.map_mode == "indoor" {
@@ -1338,6 +1332,12 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
                             }
                         }
                     });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(theme::title("Pratinjau peta"));
+                client
+                    .scenario_preview
+                    .show(ui, form, tile_proxy.as_deref());
                 if let Some(error) = &form.error {
                     widgets::error_banner(ui, error);
                 }
@@ -1577,7 +1577,7 @@ fn new_scenario_form(client: &ClientUi) -> ScenarioForm {
         bearing: 0.0,
         map_mode: "outdoor".to_owned(),
         base_layer: "osm".to_owned(),
-        grid_size_m: 1.0,
+        grid_size_m: 5.0,
         indoor_config: "{}".to_owned(),
         copy: false,
         error: None,
@@ -1613,7 +1613,7 @@ fn scenario_form(scenario: Scenario) -> ScenarioForm {
         base_layer,
         grid_size_m: scenario.indoor_config["grid_size_m"]
             .as_f64()
-            .unwrap_or(1.0)
+            .unwrap_or(5.0)
             .clamp(0.1, 50.0),
         indoor_config: scenario.indoor_config.to_string(),
         copy: false,

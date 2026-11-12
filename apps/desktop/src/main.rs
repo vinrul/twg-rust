@@ -2,7 +2,7 @@ use bevy::asset::io::file::FileAssetReader;
 use bevy::asset::io::{AssetSourceBuilder, AssetSourceId};
 use bevy::asset::{AssetApp, AssetMetaCheck, AssetPlugin};
 use bevy::prelude::*;
-use bevy::window::{PresentMode, WindowPlugin};
+use bevy::window::{PresentMode, PrimaryWindow, WindowPlugin};
 use bevy::winit::WinitSettings;
 use std::sync::Arc;
 use twg_client::ApiClient;
@@ -81,6 +81,7 @@ fn main() {
         TacticalUiPlugin::new(client_backend())
     };
     app.add_plugins((TacticalRenderPlugin, ui));
+    app.add_systems(PostStartup, maximize_window);
 
     if cli.zoom.is_some() || cli.pitch.is_some() || cli.bearing.is_some() {
         let mut camera = MapCameraState::default();
@@ -100,6 +101,12 @@ fn main() {
     }
 
     app.run();
+}
+
+fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+    if let Ok(mut window) = windows.single_mut() {
+        window.set_maximized(true);
+    }
 }
 
 fn client_backend() -> ClientBackend {

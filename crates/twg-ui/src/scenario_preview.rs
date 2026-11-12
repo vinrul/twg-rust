@@ -68,7 +68,7 @@ impl ScenarioPreview {
         }
         let outdoor = form.map_mode != "indoor";
         let width = ui.available_width().max(220.0);
-        let height = (width * 0.55).clamp(180.0, 300.0);
+        let height = (width * 0.45).clamp(170.0, 260.0);
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
         let dark = form.base_layer.ends_with("dark");
@@ -279,8 +279,15 @@ fn handle_input(ui: &egui::Ui, response: &egui::Response, form: &mut ScenarioFor
             pan(form, delta);
         }
     }
-    if response.dragged_by(egui::PointerButton::Secondary) {
-        orbit(form, response.drag_delta());
+    // Right-drag orbits like the scenario editor. Read the raw pointer so the
+    // gesture works even if egui does not start a secondary drag on the image.
+    if response.hovered()
+        && ui.input(|input| input.pointer.button_down(egui::PointerButton::Secondary))
+    {
+        let delta = ui.input(|input| input.pointer.delta());
+        if delta != egui::Vec2::ZERO {
+            orbit(form, delta);
+        }
     }
     if response.hovered() {
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
@@ -294,8 +301,10 @@ fn handle_input(ui: &egui::Ui, response: &egui::Response, form: &mut ScenarioFor
 }
 
 fn orbit(form: &mut ScenarioForm, delta: egui::Vec2) {
-    form.bearing = (form.bearing + f64::from(delta.x) * 0.4).rem_euclid(360.0);
-    form.pitch = (form.pitch + f64::from(delta.y) * 0.3).clamp(MIN_PITCH, MAX_PITCH);
+    // Same sensitivity and directions as the scenario editor: drag right to
+    // turn the view, drag up to raise the pitch.
+    form.bearing = (form.bearing + f64::from(delta.x) * 0.25).rem_euclid(360.0);
+    form.pitch = (form.pitch - f64::from(delta.y) * 0.25).clamp(MIN_PITCH, MAX_PITCH);
 }
 
 fn pan(form: &mut ScenarioForm, delta: egui::Vec2) {
@@ -496,7 +505,7 @@ fn draw_overlay(ui: &egui::Ui, rect: egui::Rect, form: &ScenarioForm, outdoor: b
     );
     painter.circle_stroke(center, 3.0, stroke);
 
-    let hint = "Seret: geser · Shift+seret: pitch/bearing · Scroll: zoom";
+    let hint = "Seret: geser · Klik kanan/Shift+seret: pitch & bearing · Scroll: zoom";
     let galley = painter.layout_no_wrap(
         hint.to_owned(),
         egui::FontId::proportional(10.5),
@@ -590,7 +599,7 @@ mod tests {
     fn orbit_clamps_pitch_and_wraps_bearing() {
         let mut form = form();
         form.bearing = 359.0;
-        orbit(&mut form, egui::vec2(10.0, 500.0));
+        orbit(&mut form, egui::vec2(10.0, -500.0));
         assert_eq!(form.pitch, MAX_PITCH);
         assert!((0.0..360.0).contains(&form.bearing));
     }
