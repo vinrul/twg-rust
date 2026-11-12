@@ -10,9 +10,9 @@ use crate::widgets;
 
 use super::input::distance_meters;
 use super::model::{
-    AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, PlaybackState, marker_color,
-    parse_hex_color, particle_kind_label,
+    AnimationSort, AnimationSortKey, AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState,
+    EditorTextureRow, EditorTool, MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings,
+    PlaybackState, marker_color, parse_hex_color, particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,8 +211,22 @@ fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
                         ));
                         return;
                     }
+                    let order = {
+                        let keys = editor
+                            .play
+                            .animations
+                            .iter()
+                            .map(|animation| AnimationSortKey {
+                                name: animation.name.as_str(),
+                                speed: animation.speed,
+                                length: animation.length_m,
+                            })
+                            .collect::<Vec<_>>();
+                        editor.anim_sort.order(&keys)
+                    };
                     let mut command: Option<(usize, RouteCommand)> = None;
-                    for (index, animation) in editor.play.animations.iter().enumerate() {
+                    for index in order {
+                        let animation = &editor.play.animations[index];
                         ui.label(egui::RichText::new(&animation.name).strong());
                         let status = match animation.state {
                             PlaybackState::Stopped => "Berhenti",
@@ -1102,8 +1116,25 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                 object.name.clone(),
                 object.visible,
                 editor.locked.contains(&object.key),
+                object.route_speed(),
+                object.route_length_m(),
             )
         })
+        .collect::<Vec<_>>();
+    let order = {
+        let keys = routes
+            .iter()
+            .map(|(_, name, _, _, speed, length)| AnimationSortKey {
+                name: name.as_str(),
+                speed: *speed,
+                length: *length,
+            })
+            .collect::<Vec<_>>();
+        editor.anim_sort.order(&keys)
+    };
+    let routes = order
+        .into_iter()
+        .map(|index| routes[index].clone())
         .collect::<Vec<_>>();
 
     ui.add_space(2.0);
@@ -1141,7 +1172,7 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
 
     let filtered = routes
         .iter()
-        .filter(|(_, _, visible, locked)| {
+        .filter(|(_, _, visible, locked, _, _)| {
             (!editor.anim_filter_hidden || !*visible) && (!editor.anim_filter_locked || *locked)
         })
         .cloned()
@@ -1163,7 +1194,7 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                         }
                         return;
                     }
-                    for (key, name, visible, locked) in &filtered {
+                    for (key, name, visible, locked, _, _) in &filtered {
                         ui.horizontal_top(|ui| {
                             let mut shown = *visible;
                             if ui
@@ -1737,6 +1768,18 @@ fn draw_scene_panel(
 /// Secondary tab strip inside Scene. "Layers" is the existing scene tree;
 /// "Daftar Anim" lists the route animations authored for this scenario.
 fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
+    draw_subtab_strip(
+        ui,
+        "editor-scene-tab",
+        &["Layers", "Daftar Anim"],
+        &mut editor.scene_tab,
+    );
+}
+
+/// Painted sub-tab strip shared by Scene and the right panel. `egui::Button`
+/// selected states are nearly invisible on the dark theme, so the active tab
+/// gets a lighter block and an accent underline.
+fn draw_subtab_strip(ui: &mut egui::Ui, id_salt: &str, labels: &[&str], current: &mut usize) {
     const HEIGHT: f32 = 24.0;
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), HEIGHT),
@@ -1744,18 +1787,14 @@ fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
     );
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 5.0, theme::color(DARK.secondary));
-    let width = rect.width() / 2.0;
-    for (index, label) in ["Layers", "Daftar Anim"].into_iter().enumerate() {
+    let width = rect.width() / labels.len().max(1) as f32;
+    for (index, label) in labels.iter().enumerate() {
         let tab = egui::Rect::from_min_size(
             egui::pos2(rect.left() + width * index as f32, rect.top()),
             egui::vec2(width, rect.height()),
         );
-        let response = ui.interact(
-            tab,
-            ui.id().with(("editor-scene-tab", index)),
-            egui::Sense::click(),
-        );
-        let selected = editor.scene_tab == index;
+        let response = ui.interact(tab, ui.id().with((id_salt, index)), egui::Sense::click());
+        let selected = *current == index;
         if selected {
             painter.rect_filled(tab.shrink(2.0), 4.0, theme::color(DARK.input));
             painter.hline(
@@ -1769,7 +1808,7 @@ fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
         painter.text(
             tab.center(),
             egui::Align2::CENTER_CENTER,
-            label,
+            *label,
             egui::FontId::proportional(FONT_XS),
             theme::color(if selected {
                 DARK.foreground
@@ -1781,7 +1820,7 @@ fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if response.clicked() {
-            editor.scene_tab = index;
+            *current = index;
         }
     }
     ui.add_space(6.0);
@@ -2021,12 +2060,18 @@ fn draw_inspector(
                 .inner_margin(egui::Margin::same(10)),
         )
         .show(ui, |ui| {
-            ui.label(theme::title("Inspector"));
-            ui.separator();
+            draw_subtab_strip(
+                ui,
+                "editor-inspector-tab",
+                &["Inspector", "Urutan"],
+                &mut editor.inspector_tab,
+            );
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if editor.selected.len() == 1 {
+                    if editor.inspector_tab == 1 {
+                        draw_animation_order_tab(ui, editor);
+                    } else if editor.selected.len() == 1 {
                         let key = *editor.selected.iter().next().unwrap_or(&0);
                         draw_object_inspector(editor, key, ui, texture_rows);
                     } else if editor.selected.len() > 1 {
@@ -2043,6 +2088,19 @@ fn draw_inspector(
                     }
                 });
         });
+}
+
+/// "Urutan" tab in the right panel: ordering shared by the Daftar Anim list
+/// and the Play animation panel.
+fn draw_animation_order_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
+    ui.label(theme::title("Urutan Anim"));
+    ui.label(theme::muted(
+        "Mengatur urutan daftar animasi di Daftar Anim dan panel Animasi saat Play.",
+    ));
+    ui.add_space(8.0);
+    for option in AnimationSort::ALL {
+        ui.radio_value(&mut editor.anim_sort, option, option.label());
+    }
 }
 
 fn draw_scenario_inspector(

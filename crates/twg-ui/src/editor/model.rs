@@ -275,6 +275,97 @@ pub enum PlaybackState {
     Paused,
 }
 
+/// Ordering for the animation lists (Daftar Anim and the Play panel).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimationSort {
+    /// Insertion order, i.e. the order the routes were created.
+    #[default]
+    Created,
+    NameAsc,
+    NameDesc,
+    SpeedAsc,
+    SpeedDesc,
+    LengthAsc,
+    LengthDesc,
+}
+
+impl AnimationSort {
+    pub const ALL: [Self; 7] = [
+        Self::Created,
+        Self::NameAsc,
+        Self::NameDesc,
+        Self::SpeedAsc,
+        Self::SpeedDesc,
+        Self::LengthAsc,
+        Self::LengthDesc,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Created => "Sesuai urutan dibuat",
+            Self::NameAsc => "Nama A–Z",
+            Self::NameDesc => "Nama Z–A",
+            Self::SpeedAsc => "Kecepatan terendah",
+            Self::SpeedDesc => "Kecepatan tertinggi",
+            Self::LengthAsc => "Rute terpendek",
+            Self::LengthDesc => "Rute terpanjang",
+        }
+    }
+
+    /// Display order as indices into `keys`.
+    pub fn order(self, keys: &[AnimationSortKey<'_>]) -> Vec<usize> {
+        let mut order = (0..keys.len()).collect::<Vec<_>>();
+        let names = keys
+            .iter()
+            .map(|key| key.name.to_lowercase())
+            .collect::<Vec<_>>();
+        match self {
+            Self::Created => {}
+            Self::NameAsc => order.sort_by_cached_key(|&index| names[index].clone()),
+            Self::NameDesc => {
+                order.sort_by_cached_key(|&index| std::cmp::Reverse(names[index].clone()));
+            }
+            Self::SpeedAsc => order.sort_by(|&a, &b| {
+                keys[a]
+                    .speed
+                    .total_cmp(&keys[b].speed)
+                    .then_with(|| names[a].cmp(&names[b]))
+                    .then_with(|| a.cmp(&b))
+            }),
+            Self::SpeedDesc => order.sort_by(|&a, &b| {
+                keys[b]
+                    .speed
+                    .total_cmp(&keys[a].speed)
+                    .then_with(|| names[a].cmp(&names[b]))
+                    .then_with(|| a.cmp(&b))
+            }),
+            Self::LengthAsc => order.sort_by(|&a, &b| {
+                keys[a]
+                    .length
+                    .total_cmp(&keys[b].length)
+                    .then_with(|| names[a].cmp(&names[b]))
+                    .then_with(|| a.cmp(&b))
+            }),
+            Self::LengthDesc => order.sort_by(|&a, &b| {
+                keys[b]
+                    .length
+                    .total_cmp(&keys[a].length)
+                    .then_with(|| names[a].cmp(&names[b]))
+                    .then_with(|| a.cmp(&b))
+            }),
+        }
+        order
+    }
+}
+
+/// Sortable fields of one route animation row.
+#[derive(Clone, Copy, Debug)]
+pub struct AnimationSortKey<'a> {
+    pub name: &'a str,
+    pub speed: f64,
+    pub length: f64,
+}
+
 /// RTS play mode state: movable animated markers plus static obstacles.
 #[derive(Debug, Clone, Default)]
 pub struct PlayState {
@@ -1027,6 +1118,34 @@ impl EditorObject {
     pub fn is_animation_route(&self) -> bool {
         matches!(&self.kind, EditorKind::Line(line) if line.animation.is_some())
     }
+
+    /// Route speed in metres per second, used by the animation sort.
+    pub fn route_speed(&self) -> f64 {
+        match &self.kind {
+            EditorKind::Line(line) => line
+                .animation
+                .as_ref()
+                .map(|route| route.speed)
+                .unwrap_or(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// Route length in metres, used by the animation sort.
+    pub fn route_length_m(&self) -> f64 {
+        let EditorKind::Line(line) = &self.kind else {
+            return 0.0;
+        };
+        line.points
+            .windows(2)
+            .filter_map(|pair| {
+                let start = GeoPoint::new(pair[0][0], pair[0][1]);
+                let end = GeoPoint::new(pair[1][0], pair[1][1]);
+                end.local_offset(start).ok()
+            })
+            .map(|offset| offset.east_meters.hypot(offset.north_meters))
+            .sum()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1232,6 +1351,10 @@ pub struct EditorState {
     pub left_tab: usize,
     /// Sub-tab inside Scene: 0 = Layers, 1 = Animasi.
     pub scene_tab: usize,
+    /// Right panel tab: 0 = Inspector, 1 = Urutan Anim.
+    pub inspector_tab: usize,
+    /// Ordering shared by the Daftar Anim and Play animation lists.
+    pub anim_sort: AnimationSort,
     /// Viewport shading for imported models (Texture/Solid/Wireframe).
     pub model_shading: EditorModelShading,
     pub confirm_close: bool,
@@ -1380,6 +1503,8 @@ impl EditorState {
             show_console: true,
             left_tab: 0,
             scene_tab: 0,
+            inspector_tab: 0,
+            anim_sort: AnimationSort::default(),
             model_shading: EditorModelShading::Textured,
             confirm_close: false,
             confirm_reload: false,
@@ -3845,6 +3970,34 @@ mod tests {
 
         editor.start_play();
         assert_eq!(editor.play.animations.len(), 1);
+    }
+
+    #[test]
+    fn animation_sort_orders_names_speed_and_length() {
+        let keys = [
+            AnimationSortKey {
+                name: "Bravo",
+                speed: 5.0,
+                length: 30.0,
+            },
+            AnimationSortKey {
+                name: "alpha",
+                speed: 2.0,
+                length: 50.0,
+            },
+            AnimationSortKey {
+                name: "Charlie",
+                speed: 8.0,
+                length: 10.0,
+            },
+        ];
+        assert_eq!(AnimationSort::Created.order(&keys), vec![0, 1, 2]);
+        assert_eq!(AnimationSort::NameAsc.order(&keys), vec![1, 0, 2]);
+        assert_eq!(AnimationSort::NameDesc.order(&keys), vec![2, 0, 1]);
+        assert_eq!(AnimationSort::SpeedAsc.order(&keys), vec![1, 0, 2]);
+        assert_eq!(AnimationSort::SpeedDesc.order(&keys), vec![2, 0, 1]);
+        assert_eq!(AnimationSort::LengthAsc.order(&keys), vec![2, 0, 1]);
+        assert_eq!(AnimationSort::LengthDesc.order(&keys), vec![1, 0, 2]);
     }
 
     #[test]
