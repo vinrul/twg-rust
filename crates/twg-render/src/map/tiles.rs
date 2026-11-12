@@ -244,8 +244,12 @@ pub fn update_tile_transforms(
 fn tile_transform(state: &MapCameraState, tile: TileId, max_zoom: u8) -> Transform {
     let (center_x, center_y) = state.tile_fraction_for(max_zoom);
     let size = state.tile_world_size_for(max_zoom);
-    let x = (f64::from(tile.x) - center_x) as f32 * size;
-    let z = (f64::from(tile.y) - center_y) as f32 * size;
+    // `tile.x` is the tile's top-left corner in fractional tile units; the
+    // quad is centred on its transform, so add half a tile. Without this the
+    // whole raster is shifted by half a tile against geo-anchored objects, and
+    // that shift grows 16x every four zoom levels (markers drift on zoom).
+    let x = (f64::from(tile.x) + 0.5 - center_x) as f32 * size;
+    let z = (f64::from(tile.y) + 0.5 - center_y) as f32 * size;
     Transform::from_xyz(x, 0.0, z).with_scale(Vec3::splat(size))
 }
 
@@ -263,5 +267,32 @@ mod tests {
         assert!(transform.translation.x.abs() < 80.0);
         assert!(transform.translation.z.abs() < 80.0);
         assert!((transform.scale.x - state.tile_world_size_for(19)).abs() < 0.01);
+    }
+
+    #[test]
+    fn tile_pixels_match_geo_world_positions_at_every_zoom() {
+        let mut state = MapCameraState::new(GeoPoint::new(115.225, -8.648));
+        let point = GeoPoint::new(115.2265, -8.6495);
+        for zoom in [19.0, 17.0, 15.0, 13.0] {
+            state.set_zoom(zoom);
+            let (world_x, world_z) = state.geo_to_world(point).unwrap();
+            let tile_zoom = state.tile_zoom_for(19);
+            let tile = point.tile(tile_zoom).unwrap();
+            let transform = tile_transform(&state, tile, 19);
+            let size = state.tile_world_size_for(19);
+            let (fraction_x, fraction_y) = point.tile_fraction(tile_zoom).unwrap();
+            let pixel_x = transform.translation.x - size * 0.5
+                + (fraction_x - f64::from(tile.x)) as f32 * size;
+            let pixel_z = transform.translation.z - size * 0.5
+                + (fraction_y - f64::from(tile.y)) as f32 * size;
+            assert!(
+                (world_x - pixel_x).abs() < 0.1,
+                "zoom {zoom}: geo x {world_x} vs tile x {pixel_x}"
+            );
+            assert!(
+                (world_z - pixel_z).abs() < 0.1,
+                "zoom {zoom}: geo z {world_z} vs tile z {pixel_z}"
+            );
+        }
     }
 }
