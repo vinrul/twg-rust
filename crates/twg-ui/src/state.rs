@@ -1782,9 +1782,27 @@ impl ClientUi {
         }
         self.asset_replace = Some(AssetReplaceTarget { asset_id, slot });
         self.toast(
-            format!("Tarik file {slot} baru ke jendela aplikasi."),
+            format!("Tarik file {slot} baru ke jendela aplikasi atau klik Pilih file."),
             ToastKind::Info,
         );
+    }
+
+    /// Replaces a source slot with a file chosen from the native picker.
+    pub fn begin_asset_replace_pick(
+        &mut self,
+        asset_id: Uuid,
+        slot: AssetSourceSlot,
+        path: PathBuf,
+    ) {
+        if self.role() != Role::Admin {
+            self.toast(
+                "Hanya admin yang bisa mengganti file aset.",
+                ToastKind::Error,
+            );
+            return;
+        }
+        self.asset_replace = Some(AssetReplaceTarget { asset_id, slot });
+        self.begin_asset_replace_file(path);
     }
 
     pub fn cancel_asset_replace(&mut self) {

@@ -306,7 +306,13 @@ fn draw_rename(ui: &mut egui::Ui, client: &mut ClientUi, asset: &Asset) {
     });
 }
 
-fn draw_replace_hint(ui: &mut egui::Ui, client: &mut ClientUi, slot: AssetSourceSlot) {
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+fn draw_replace_hint(
+    ui: &mut egui::Ui,
+    client: &mut ClientUi,
+    asset: &Asset,
+    slot: AssetSourceSlot,
+) {
     ui.add_space(SPACE_2);
     egui::Frame::new()
         .fill(color_alpha(DARK.warning, 18))
@@ -316,9 +322,15 @@ fn draw_replace_hint(ui: &mut egui::Ui, client: &mut ClientUi, slot: AssetSource
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::muted(&format!(
-                    "Siap mengganti file {}. Tarik file baru ke jendela aplikasi.",
-                    slot_label(slot)
+                    "Siap mengganti file {}. Tarik file baru ke jendela aplikasi atau pilih file.",
+                    slot_label(slot),
                 )));
+                #[cfg(not(target_arch = "wasm32"))]
+                if widgets::secondary_button(ui, "Pilih file...").clicked()
+                    && let Some(path) = crate::file_picker::pick_asset_file(asset.category)
+                {
+                    client.begin_asset_replace_pick(asset.id, slot, path);
+                }
                 if widgets::ghost_button(ui, "Batal").clicked() {
                     client.cancel_asset_replace();
                 }
@@ -456,7 +468,7 @@ fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
     if let Some(target) = client.asset_replace.clone()
         && target.asset_id == asset.id
     {
-        draw_replace_hint(ui, client, target.slot);
+        draw_replace_hint(ui, client, &asset, target.slot);
     }
     ui.add_space(SPACE_3);
 
@@ -465,6 +477,7 @@ fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
 
     let mut pending_convert: Option<(AssetSourceSlot, ConvertTarget, Option<u32>)> = None;
     let mut pending_replace = None;
+    let mut pending_replace_file = None;
     let mut pending_delete = false;
     let mut pending_release = false;
     for source in &asset.sources {
@@ -475,11 +488,15 @@ fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
             can_admin,
             &mut pending_convert,
             &mut pending_replace,
+            &mut pending_replace_file,
         );
         ui.add_space(SPACE_2);
     }
     if let Some(slot) = pending_replace {
         client.begin_asset_replace(asset.id, slot);
+    }
+    if let Some((slot, path)) = pending_replace_file {
+        client.begin_asset_replace_pick(asset.id, slot, path);
     }
 
     ui.add_space(SPACE_2);
@@ -652,6 +669,7 @@ fn draw_preview_panel(
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 fn draw_source(
     ui: &mut egui::Ui,
     source: &AssetSource,
@@ -659,6 +677,7 @@ fn draw_source(
     can_admin: bool,
     pending_convert: &mut Option<(AssetSourceSlot, ConvertTarget, Option<u32>)>,
     pending_replace: &mut Option<AssetSourceSlot>,
+    pending_replace_file: &mut Option<(AssetSourceSlot, std::path::PathBuf)>,
 ) {
     widgets::card(ui, |ui| {
         ui.set_min_width(ui.available_width().min(460.0));
@@ -743,6 +762,12 @@ fn draw_source(
             ui.separator();
             if widgets::secondary_button(ui, "Ganti file").clicked() {
                 *pending_replace = Some(source.slot);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if widgets::secondary_button(ui, "Pilih file...").clicked()
+                && let Some(path) = crate::file_picker::pick_asset_file(asset.category)
+            {
+                *pending_replace_file = Some((source.slot, path));
             }
         });
     });
