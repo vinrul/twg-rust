@@ -1,8 +1,10 @@
 use bevy_egui::egui;
 use twg_client::design::{DARK, FONT_SM, FONT_XS};
+use twg_client::session::Screen;
 use twg_contracts::assets::{AssetCategory, AssetModelKind, AssetMoveMode, AssetSourceSlot};
 use twg_map::{BaseLayer, GeoPoint};
 use twg_render::{EditorModelShading, EditorShapeKind, SkyMode};
+use uuid::Uuid;
 
 use crate::state::ClientUi;
 use crate::theme;
@@ -21,6 +23,8 @@ enum EditorAction {
     Save,
     SaveAndClose,
     Close,
+    /// Leaves the play-only screen and returns to the Simulasi list.
+    ClosePlay,
     Reload,
     SaveAndReload,
     Geocode,
@@ -35,13 +39,46 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
     let import_rows = client.editor_import_rows();
     let texture_rows = client.editor_texture_rows();
     let can_admin = client.role().is_admin_like();
+    let play_only = client.state.screen == Screen::Preview;
+    // Sibling scenarios of the loaded operation, shown on the Skenario tab of
+    // the play-only screen.
+    let mut play_scenarios = Vec::new();
+    if play_only {
+        let operation_id = client.editor.operation_id;
+        if let Some(operation) = client
+            .data
+            .home
+            .iter()
+            .find(|operation| Some(operation.operation_id) == operation_id)
+        {
+            play_scenarios = operation
+                .skenario
+                .iter()
+                .map(|scenario| (scenario.scenario_id, scenario.name.clone()))
+                .collect();
+        }
+        if play_scenarios.is_empty() {
+            play_scenarios = client
+                .data
+                .scenarios
+                .iter()
+                .filter(|scenario| Some(scenario.operasi.id) == operation_id)
+                .map(|scenario| (scenario.id, scenario.name.clone()))
+                .collect();
+        }
+    }
     let mut action = EditorAction::None;
+    let mut requested_play = None;
     {
         let editor = &mut client.editor;
         root_ui(context, |ui| {
+            // The play-only screen always renders the play layout.
+            if play_only {
+                editor.preview = true;
+            }
             if editor.preview {
-                draw_preview_bar(ui, editor, can_admin, &mut action);
-                draw_animation_play_panel(ui, editor);
+                draw_preview_bar(ui, editor, can_admin, play_only, &mut action);
+                requested_play = draw_animation_play_panel(ui, editor, play_only, &play_scenarios);
             } else {
                 draw_menu(ui, editor, &mut action);
                 draw_toolbar(ui, editor, &mut action);
@@ -95,6 +132,9 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         client.editor.requested_import_refresh = false;
         client.refresh_imports();
     }
+    if let Some(scenario_id) = requested_play {
+        client.switch_play_scenario(scenario_id);
+    }
 
     match action {
         EditorAction::Save => client.editor_save(),
@@ -103,6 +143,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
             client.close_editor();
         }
         EditorAction::Close => client.close_editor(),
+        EditorAction::ClosePlay => client.close_play(),
         EditorAction::Reload => client.reload_editor(),
         EditorAction::SaveAndReload => {
             client.editor_save();
@@ -129,6 +170,7 @@ fn draw_preview_bar(
     ui: &mut egui::Ui,
     editor: &mut EditorState,
     can_admin: bool,
+    play_only: bool,
     action: &mut EditorAction,
 ) {
     egui::Panel::top("editor_preview_bar")
@@ -155,7 +197,11 @@ fn draw_preview_bar(
                     "Klik/Shift pilih · seret kotak · klik kanan gerak",
                 ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("■ Stop").clicked() {
+                    if play_only {
+                        if ui.button("Tutup simulasi").clicked() {
+                            *action = EditorAction::ClosePlay;
+                        }
+                    } else if ui.button("■ Stop").clicked() {
                         editor.preview = false;
                         editor.touch();
                     }
@@ -185,7 +231,13 @@ enum RouteCommand {
     Stop,
 }
 
-fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
+fn draw_animation_play_panel(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    play_only: bool,
+    scenarios: &[(Uuid, String)],
+) -> Option<Uuid> {
+    let mut requested_scenario = None;
     egui::Panel::left("editor_animation_play")
         .resizable(true)
         .default_size(230.0)
@@ -198,9 +250,22 @@ fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
                 .inner_margin(egui::Margin::same(10)),
         )
         .show(ui, |ui| {
-            ui.label(theme::title("Animasi"));
-            ui.label(theme::muted("Kontrol rute selama Play."));
-            ui.separator();
+            if play_only {
+                draw_subtab_strip(
+                    ui,
+                    "editor-play-tab",
+                    &["Animasi", "Skenario"],
+                    &mut editor.play_panel_tab,
+                );
+            } else {
+                ui.label(theme::title("Animasi"));
+                ui.label(theme::muted("Kontrol rute selama Play."));
+                ui.separator();
+            }
+            if play_only && editor.play_panel_tab == 1 {
+                draw_play_scenario_list(ui, editor, scenarios, &mut requested_scenario);
+                return;
+            }
             egui::ScrollArea::vertical()
                 .id_salt("editor_play_animations")
                 .auto_shrink([false, false])
@@ -256,6 +321,41 @@ fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
                         }
                     }
                 });
+        });
+    requested_scenario
+}
+
+/// Scenario list on the Skenario tab of the play-only screen. Clicking a row
+/// loads and plays that scenario in place.
+fn draw_play_scenario_list(
+    ui: &mut egui::Ui,
+    editor: &EditorState,
+    scenarios: &[(Uuid, String)],
+    requested: &mut Option<Uuid>,
+) {
+    ui.label(theme::muted(
+        "Skenario lain di operasi ini. Klik untuk memuat dan memutarnya.",
+    ));
+    ui.add_space(4.0);
+    egui::ScrollArea::vertical()
+        .id_salt("editor_play_scenarios")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if scenarios.is_empty() {
+                ui.label(theme::muted("Belum ada skenario di operasi ini."));
+                return;
+            }
+            for (id, name) in scenarios {
+                let current = editor.scenario_id == Some(*id);
+                if ui
+                    .selectable_label(current, egui::RichText::new(name).size(FONT_SM))
+                    .on_hover_text("Putar skenario ini")
+                    .clicked()
+                    && !current
+                {
+                    *requested = Some(*id);
+                }
+            }
         });
 }
 

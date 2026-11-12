@@ -1251,6 +1251,8 @@ pub struct EditorState {
     pub scene_tab: usize,
     /// Right panel tab: 0 = Inspector, 1 = Urutan Anim.
     pub inspector_tab: usize,
+    /// Left Play panel tab in the play-only screen: 0 = Animasi, 1 = Skenario.
+    pub play_panel_tab: usize,
     /// Viewport shading for imported models (Texture/Solid/Wireframe).
     pub model_shading: EditorModelShading,
     pub confirm_close: bool,
@@ -1400,6 +1402,7 @@ impl EditorState {
             left_tab: 0,
             scene_tab: 0,
             inspector_tab: 0,
+            play_panel_tab: 0,
             model_shading: EditorModelShading::Textured,
             confirm_close: false,
             confirm_reload: false,

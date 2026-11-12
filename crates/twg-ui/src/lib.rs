@@ -163,7 +163,10 @@ fn track_ui_pointer(
     // area hit test does not see. Anything outside the map viewport counts as
     // UI so wheel/drag input does not leak through to the map.
     if let Some(client) = client
-        && client.state.screen == twg_client::session::Screen::MapEditor
+        && matches!(
+            client.state.screen,
+            twg_client::session::Screen::MapEditor | twg_client::session::Screen::Preview
+        )
         && let Some(position) = context.input(|input| input.pointer.latest_pos())
         && !client.editor.viewport_rect.contains(position)
     {

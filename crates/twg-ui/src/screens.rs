@@ -336,7 +336,7 @@ fn screen_dashboard(ui: &mut egui::Ui, client: &mut ClientUi) {
         if widgets::secondary_button(ui, "Skenario").clicked() {
             client.go(NavItem::Scenarios);
         }
-        if widgets::secondary_button(ui, "Latihan").clicked() {
+        if widgets::secondary_button(ui, "Simulasi").clicked() {
             client.go(NavItem::Games);
         }
         if widgets::secondary_button(ui, "Buka peta").clicked() {
@@ -556,19 +556,18 @@ fn screen_scenarios(ui: &mut egui::Ui, client: &mut ClientUi) {
 fn screen_games(ui: &mut egui::Ui, client: &mut ClientUi) {
     widgets::section(
         ui,
-        "Latihan",
+        "Simulasi",
         Some("Operasi dan skenario yang siap dijalankan."),
     );
     if client.data.is_loading("home") {
-        widgets::loading(ui, "Memuat latihan...");
+        widgets::loading(ui, "Memuat simulasi...");
     }
     if client.data.home.is_empty() {
         widgets::empty(ui, "Belum ada operasi dengan skenario.");
         return;
     }
     let home = client.data.home.clone();
-    let mut preview = None;
-    let mut open_operation = None;
+    let mut play = None;
     for operation in home {
         widgets::card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -586,26 +585,17 @@ fn screen_games(ui: &mut egui::Ui, client: &mut ClientUi) {
                             .corner_radius(egui::CornerRadius::same(8)),
                     );
                     if response.clicked() {
-                        preview = Some(scenario.scenario_id);
+                        play = Some(scenario.scenario_id);
                     }
-                }
-            });
-            ui.add_space(SPACE_2);
-            ui.horizontal(|ui| {
-                if widgets::ghost_button(ui, "Kelola skenario").clicked() {
-                    open_operation = Some(operation.operation_id);
                 }
             });
         });
         ui.add_space(SPACE_3);
     }
-    if let Some(operation_id) = open_operation {
-        client.scenario_operation = operation_id.to_string();
-        client.go(NavItem::Scenarios);
-    }
-    if let Some(scenario_id) = preview {
+    if let Some(scenario_id) = play {
         client.selected_scenario = Some(scenario_id);
         client.ws.scenario = Some(scenario_id);
+        client.pending_play = true;
         client.go(NavItem::Preview);
     }
 }

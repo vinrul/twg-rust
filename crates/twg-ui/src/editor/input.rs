@@ -29,7 +29,10 @@ pub fn sync_editor_mode(
     mut mode: ResMut<EditorMode>,
     mut sky: ResMut<SkyMode>,
 ) {
-    let active = client.state.screen == twg_client::session::Screen::MapEditor;
+    let active = matches!(
+        client.state.screen,
+        twg_client::session::Screen::MapEditor | twg_client::session::Screen::Preview
+    );
     mode.active = active;
     mode.preview = active && client.editor.preview;
     mode.particles_animate = client.editor.particle_preview;
@@ -57,7 +60,10 @@ pub fn editor_input(
     diagnostics: Res<DiagnosticsStore>,
     mut play_frame: ResMut<EditorPlayFrame>,
 ) {
-    let in_editor = client.state.screen == twg_client::session::Screen::MapEditor;
+    let in_editor = matches!(
+        client.state.screen,
+        twg_client::session::Screen::MapEditor | twg_client::session::Screen::Preview
+    );
     if !in_editor {
         if mode.active {
             mode.active = false;

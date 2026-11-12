@@ -380,6 +380,9 @@ pub struct ClientUi {
     pub scenario_operation: String,
     pub scenario_search: String,
     pub selected_scenario: Option<Uuid>,
+    /// The next Preview navigation opens the play-only screen instead of the
+    /// scenario editor (set from the Simulasi screen).
+    pub pending_play: bool,
     pub snapshot_date: Option<NaiveDate>,
     pub profile_name: String,
     pub profile_img: String,
@@ -481,6 +484,7 @@ impl ClientUi {
             scenario_operation: String::new(),
             scenario_search: String::new(),
             selected_scenario: None,
+            pending_play: false,
             snapshot_date: None,
             profile_name: String::new(),
             profile_img: String::new(),
@@ -1460,7 +1464,11 @@ impl ClientUi {
     fn enter_nav(&mut self, item: NavItem) {
         self.state.navigate(item);
         if item == NavItem::Preview {
-            self.open_editor(self.selected_scenario);
+            if std::mem::take(&mut self.pending_play) {
+                self.open_play(self.selected_scenario);
+            } else {
+                self.open_editor(self.selected_scenario);
+            }
         }
         if item == NavItem::Assets {
             self.refresh_assets();

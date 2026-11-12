@@ -128,6 +128,38 @@ impl ClientUi {
         }
     }
 
+    /// Opens a scenario directly in the play-only screen (no editor panels).
+    pub fn open_play(&mut self, scenario_id: Option<Uuid>) {
+        self.start_play_screen(scenario_id, false);
+    }
+
+    /// Switches the play-only screen to another scenario of the same operation,
+    /// keeping the Skenario tab selected.
+    pub fn switch_play_scenario(&mut self, scenario_id: Uuid) {
+        self.start_play_screen(Some(scenario_id), true);
+    }
+
+    fn start_play_screen(&mut self, scenario_id: Option<Uuid>, keep_tab: bool) {
+        let tab = self.editor.play_panel_tab;
+        self.open_editor(scenario_id);
+        self.state.screen = Screen::Preview;
+        // Keep the sidebar on Simulasi: this screen is launched from there.
+        self.state.nav = NavItem::Games;
+        self.editor.preview = true;
+        self.editor.play_panel_tab = if keep_tab { tab } else { 0 };
+        self.editor.touch();
+        self.refresh_home();
+    }
+
+    /// Leaves the play-only screen and returns to the Simulasi list.
+    pub fn close_play(&mut self) {
+        self.state.screen = Screen::Workspace;
+        self.state.nav = NavItem::Games;
+        self.editor.preview = false;
+        self.editor.stop_play();
+        self.editor.touch();
+    }
+
     /// Reloads the import assets of the operation shown in the editor.
     pub fn refresh_imports(&mut self) {
         let Some(operation_id) = self.editor.operation_id else {
