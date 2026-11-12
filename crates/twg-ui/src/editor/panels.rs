@@ -1628,27 +1628,54 @@ fn draw_scene_panel(
 /// Secondary tab strip inside Scene. "Layers" is the existing scene tree;
 /// "Animasi" lists the route animations authored for this scenario.
 fn draw_scene_subtabs(ui: &mut egui::Ui, editor: &mut EditorState) {
-    ui.horizontal(|ui| {
-        let width = ((ui.available_width() - 6.0) / 2.0).max(60.0);
-        if ui
-            .add_sized(
-                [width, 24.0],
-                egui::Button::new("Layers").selected(editor.scene_tab == 0),
-            )
-            .clicked()
-        {
-            editor.scene_tab = 0;
+    const HEIGHT: f32 = 24.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), HEIGHT),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 5.0, theme::color(DARK.secondary));
+    let width = rect.width() / 2.0;
+    for (index, label) in ["Layers", "Animasi"].into_iter().enumerate() {
+        let tab = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + width * index as f32, rect.top()),
+            egui::vec2(width, rect.height()),
+        );
+        let response = ui.interact(
+            tab,
+            ui.id().with(("editor-scene-tab", index)),
+            egui::Sense::click(),
+        );
+        let selected = editor.scene_tab == index;
+        if selected {
+            painter.rect_filled(tab.shrink(2.0), 4.0, theme::color(DARK.input));
+            painter.hline(
+                (tab.left() + 4.0)..=(tab.right() - 4.0),
+                tab.bottom() - 2.0,
+                egui::Stroke::new(2.0, theme::color(DARK.primary)),
+            );
+        } else if response.hovered() {
+            painter.rect_filled(tab.shrink(2.0), 4.0, theme::color(DARK.border));
         }
-        if ui
-            .add_sized(
-                [width, 24.0],
-                egui::Button::new("Layers Animasi").selected(editor.scene_tab == 1),
-            )
-            .clicked()
-        {
-            editor.scene_tab = 1;
+        painter.text(
+            tab.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(FONT_XS),
+            theme::color(if selected {
+                DARK.foreground
+            } else {
+                DARK.muted_foreground
+            }),
+        );
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-    });
+        if response.clicked() {
+            editor.scene_tab = index;
+        }
+    }
+    ui.add_space(6.0);
     ui.separator();
 }
 
