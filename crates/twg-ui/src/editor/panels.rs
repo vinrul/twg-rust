@@ -222,7 +222,9 @@ fn draw_animation_play_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
                         };
                         ui.label(theme::muted(status));
                         if animation.marker_key.is_none() {
-                            ui.label(theme::danger("Marker rute tidak ditemukan."));
+                            ui.label(theme::danger(
+                                "Marker rute tidak ditemukan atau tidak bisa bergerak.",
+                            ));
                             ui.separator();
                             continue;
                         }
@@ -2213,34 +2215,95 @@ fn draw_object_inspector(
                     changed = true;
                 }
                 ui.label("Marker yang bergerak");
+                ui.horizontal(|ui| {
+                    ui.label(theme::muted("Cari"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut editor.route_marker_search)
+                            .hint_text("Nama marker...")
+                            .desired_width(150.0),
+                    );
+                });
                 let options = editor.animation_marker_options(key);
+                let option_count = options.len();
                 let mut marker = animation.marker_id;
-                if widgets::combo(
+                widgets::combo(
                     ui,
                     egui::Id::new(("route_marker", key)),
                     &mut marker,
                     &options,
-                )
-                .changed()
-                {
+                );
+                if animation.marker_id != marker {
                     animation.marker_id = marker;
                     changed = true;
                 }
+                if option_count <= 1 {
+                    if editor.route_marker_search.trim().is_empty() {
+                        ui.label(theme::muted(
+                            "Belum ada marker tersimpan. Simpan skenario (Ctrl+S) setelah membuat marker.",
+                        ));
+                    } else {
+                        ui.label(theme::muted(
+                            "Tidak ada marker yang cocok dengan pencarian.",
+                        ));
+                    }
+                }
+                let picking = editor.pick_route_marker == Some(key);
+                if ui
+                    .button(if picking {
+                        "Klik marker di peta... (Batal)"
+                    } else {
+                        "Pilih marker di peta"
+                    })
+                    .clicked()
+                {
+                    if picking {
+                        editor.pick_route_marker = None;
+                    } else {
+                        editor.end_point_edit();
+                        editor.pick_route_marker = Some(key);
+                        editor.log("Klik marker di peta untuk dijadikan target rute. Esc batal.");
+                    }
+                }
                 match animation.marker_id {
                     Some(id) => {
-                        let exists = editor.objects.iter().any(|object| {
+                        let marker_object = editor.objects.iter().find(|object| {
                             object.server_id == Some(id)
-                                && matches!(object.kind, EditorKind::Marker(_))
+                                && matches!(&object.kind, EditorKind::Marker(_))
                         });
-                        if !exists {
-                            ui.label(theme::danger(
-                                "Marker rute tidak ditemukan. Pilih marker lain lalu simpan.",
-                            ));
+                        match marker_object {
+                            Some(object) => {
+                                let animatable = match &object.kind {
+                                    EditorKind::Marker(marker) => {
+                                        editor.marker_is_animatable(marker)
+                                    }
+                                    _ => false,
+                                };
+                                if !animatable {
+                                    ui.label(theme::danger(
+                                        "Marker ini tidak bisa bergerak. Ubah mode pindah asetnya \
+                                         menjadi Free/Limited atau pakai model animasi.",
+                                    ));
+                                }
+                            }
+                            None => {
+                                ui.label(theme::danger(
+                                    "Marker rute tidak ditemukan. Pilih marker lain lalu simpan.",
+                                ));
+                            }
+                        }
+                        let used_elsewhere = editor.objects.iter().any(|other| {
+                            other.key != key
+                                && matches!(&other.kind, EditorKind::Line(line) if
+                                    line.animation.as_ref().and_then(|route| route.marker_id)
+                                        == Some(id))
+                        });
+                        if used_elsewhere {
+                            ui.label(theme::danger("Marker ini sudah dipakai rute lain."));
                         }
                     }
                     None => {
                         ui.label(theme::muted(
-                            "Hanya marker yang sudah tersimpan dan bisa bergerak yang muncul di sini.",
+                            "Pilih dari daftar (bisa dicari) atau klik marker langsung di peta.",
                         ));
                     }
                 }
@@ -2907,6 +2970,19 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
             draw_compass(&painter, rect, editor);
             draw_scale_bar(&painter, rect, editor);
             draw_crosshair(&painter, rect);
+            if editor.pick_route_marker.is_some() {
+                let text = "Klik marker di peta untuk target rute · Esc batal";
+                let galley = painter.layout_no_wrap(
+                    text.to_owned(),
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::WHITE,
+                );
+                let center = egui::pos2(rect.center().x, rect.top() + 20.0);
+                let chip =
+                    egui::Rect::from_center_size(center, galley.size() + egui::vec2(16.0, 8.0));
+                painter.rect_filled(chip, 5.0, egui::Color32::from_black_alpha(190));
+                painter.galley(center - galley.size() * 0.5, galley, egui::Color32::WHITE);
+            }
             painter.text(
                 rect.right_bottom() + egui::vec2(-10.0, -8.0),
                 egui::Align2::RIGHT_BOTTOM,

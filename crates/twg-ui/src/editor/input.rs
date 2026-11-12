@@ -960,7 +960,9 @@ fn keyboard_shortcuts(
             finish_draft(editor);
         }
         if keys.just_pressed(KeyCode::Escape) {
-            if editor.context_menu.is_some() {
+            if editor.pick_route_marker.is_some() {
+                editor.pick_route_marker = None;
+            } else if editor.context_menu.is_some() {
                 editor.context_menu = None;
             } else if editor.point_edit.is_some() {
                 editor.end_point_edit();
@@ -1002,6 +1004,44 @@ fn mouse_input(
             .map_state
             .world_to_geo(world.x, world.z)
             .map(|point| editor.snap_point(point));
+
+        // Picking a route marker from the map takes precedence over every
+        // other click action while the Inspector asks for it.
+        if let Some(route_key) = editor.pick_route_marker {
+            if let Some(key) = pick_object(editor, pointer) {
+                let marker_id = editor.object(key).and_then(|object| {
+                    matches!(&object.kind, EditorKind::Marker(_))
+                        .then_some(object.server_id)
+                        .flatten()
+                });
+                match marker_id {
+                    Some(marker_id) => {
+                        let animatable = editor
+                            .object(key)
+                            .and_then(|object| match &object.kind {
+                                EditorKind::Marker(marker) => {
+                                    Some(editor.marker_is_animatable(marker))
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(false);
+                        editor.assign_route_marker(route_key, marker_id);
+                        if !animatable {
+                            editor.log(
+                                "Peringatan: marker ini belum bisa bergerak. Atur mode pindah \
+                                 asetnya menjadi Free/Limited atau pakai model animasi.",
+                            );
+                        }
+                    }
+                    None => editor.log(
+                        "Itu bukan marker, atau marker baru belum tersimpan. Simpan dulu (Ctrl+S).",
+                    ),
+                }
+            } else {
+                editor.log("Klik tepat pada marker di peta.");
+            }
+            return;
+        }
 
         if let Some(axis) = gizmo_axis_at(editor, camera, transform, pointer) {
             let center = gizmo_center_screen(editor, camera, transform);

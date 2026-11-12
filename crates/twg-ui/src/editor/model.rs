@@ -1308,6 +1308,10 @@ pub struct EditorState {
     pub base_layer: BaseLayer,
     /// Background style shared by the editor viewport and Play mode.
     pub sky: SkyMode,
+    /// Marker search text for the route inspector.
+    pub route_marker_search: String,
+    /// Route waiting for a marker picked directly on the map.
+    pub pick_route_marker: Option<ObjectKey>,
     /// RTS play mode state, rebuilt every time Play starts.
     pub play: PlayState,
     /// Screen-space ground rings for the RTS selection overlay, rebuilt every
@@ -1422,6 +1426,8 @@ impl EditorState {
             requested_geocode: false,
             base_layer: BaseLayer::OpenStreetMap,
             sky: SkyMode::Black,
+            route_marker_search: String::new(),
+            pick_route_marker: None,
             play: PlayState::default(),
             play_rings: Vec::new(),
             save_pending: 0,
@@ -1464,6 +1470,7 @@ impl EditorState {
     }
 
     pub fn set_tool(&mut self, tool: EditorTool) {
+        self.pick_route_marker = None;
         if self.tool == tool {
             return;
         }
@@ -1529,6 +1536,10 @@ impl EditorState {
     }
 
     pub fn select_only(&mut self, key: ObjectKey) {
+        if !self.selected.contains(&key) {
+            self.pick_route_marker = None;
+            self.route_marker_search.clear();
+        }
         if self.point_edit.is_some_and(|edit| edit.key != key) {
             self.point_edit = None;
         }
@@ -1604,6 +1615,7 @@ impl EditorState {
     /// - `None` assets are non-pickable obstacles;
     /// - 3D shapes (except the flat ground plate) block movement as well.
     pub fn start_play(&mut self) {
+        self.pick_route_marker = None;
         self.play = PlayState {
             active: true,
             ..PlayState::default()
@@ -2251,24 +2263,20 @@ impl EditorState {
             })
     }
 
-    /// Saved markers that can be assigned to `route_key`, excluding markers
-    /// already used by another route.
+    /// Markers shown in the route inspector. All saved markers are listed so a
+    /// marker can still be picked even when its model metadata is incomplete;
+    /// the label explains why a marker is not usable yet.
     pub fn animation_marker_options(&self, route_key: ObjectKey) -> Vec<(Option<Uuid>, String)> {
+        let needle = self.route_marker_search.trim().to_lowercase();
         let mut used = BTreeSet::new();
-        let mut current = None;
         for object in &self.objects {
+            if object.key == route_key {
+                continue;
+            }
             let EditorKind::Line(line) = &object.kind else {
                 continue;
             };
-            let Some(animation) = &line.animation else {
-                continue;
-            };
-            let Some(marker_id) = animation.marker_id else {
-                continue;
-            };
-            if object.key == route_key {
-                current = Some(marker_id);
-            } else {
+            if let Some(marker_id) = line.animation.as_ref().and_then(|route| route.marker_id) {
                 used.insert(marker_id);
             }
         }
@@ -2280,19 +2288,47 @@ impl EditorState {
                     return None;
                 };
                 let id = object.server_id?;
+                if !needle.is_empty() && !object.name.to_lowercase().contains(&needle) {
+                    return None;
+                }
+                let mut label = object.name.clone();
                 if !self.marker_is_animatable(marker) {
-                    return None;
+                    label.push_str(" · tidak bisa bergerak");
                 }
-                if used.contains(&id) && Some(id) != current {
-                    return None;
+                if used.contains(&id) {
+                    label.push_str(" · dipakai rute lain");
                 }
-                Some((Some(id), object.name.clone()))
+                Some((Some(id), label))
             })
             .collect::<Vec<_>>();
         options.sort_by_key(|left| left.1.to_lowercase());
         let mut result = vec![(None, "— Pilih marker —".to_owned())];
         result.extend(options);
         result
+    }
+
+    /// Assigns the marker picked on the map to a route and marks the line dirty.
+    pub fn assign_route_marker(&mut self, route_key: ObjectKey, marker_id: Uuid) {
+        let mut assigned = false;
+        for object in &mut self.objects {
+            if object.key != route_key {
+                continue;
+            }
+            if let EditorKind::Line(line) = &mut object.kind
+                && let Some(animation) = &mut line.animation
+            {
+                animation.marker_id = Some(marker_id);
+                object.dirty = true;
+                assigned = true;
+            }
+            break;
+        }
+        if assigned {
+            self.pick_route_marker = None;
+            self.dirty = true;
+            self.touch();
+            self.log("Marker rute dipilih dari peta.");
+        }
     }
 
     pub fn add_polygon(&mut self, points: Vec<GeoPoint>) {
@@ -3675,6 +3711,39 @@ mod tests {
         let unit = editor.play.units.get(&marker_key).expect("animated unit");
         let offset = unit.position.local_offset(base).expect("offset");
         assert!(offset.east_meters.abs() < 0.1);
+    }
+
+    #[test]
+    fn route_marker_can_be_assigned_from_the_map() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.225, -8.648);
+        let marker_key = add_static_marker(
+            &mut editor,
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            point,
+            AssetMoveMode::Free,
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        let end = GeoPoint::from_local_offset(point, 10.0, 0.0).expect("east");
+        editor.add_route(vec![point, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+
+        let options = editor.animation_marker_options(route_key);
+        assert!(options.iter().any(|(id, _)| *id == Some(marker_id)));
+
+        editor.pick_route_marker = Some(route_key);
+        editor.assign_route_marker(route_key, marker_id);
+        assert!(editor.pick_route_marker.is_none());
+        let object = editor.object(route_key).expect("route");
+        let EditorKind::Line(line) = &object.kind else {
+            panic!("route should be a line");
+        };
+        assert_eq!(
+            line.animation.as_ref().and_then(|route| route.marker_id),
+            Some(marker_id)
+        );
+        assert!(object.dirty);
     }
 
     #[test]
