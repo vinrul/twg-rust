@@ -3257,16 +3257,14 @@ impl EditorState {
                     } else {
                         None
                     };
-                    let play_idle = animated_model.map(|model| EditorPlayModel {
-                        // The animated scene is also used at rest so equipment
-                        // that only exists in that file (shield, baton) does not
-                        // pop in when the unit starts moving.
-                        model: model
-                            .animation_path
-                            .clone()
-                            .unwrap_or_else(|| model.path.clone()),
-                        draco: model.animation_draco,
-                    });
+                    let play_idle = if animated_model.is_some() {
+                        asset_model.map(|model| EditorPlayModel {
+                            model: model.path.clone(),
+                            draco: model.draco,
+                        })
+                    } else {
+                        None
+                    };
                     let model = animated_model
                         .and_then(|model| model.animation_path.clone())
                         .or_else(|| asset_model.map(|model| model.path.clone()))
@@ -4869,7 +4867,7 @@ mod tests {
     }
 
     #[test]
-    fn play_mode_uses_the_animated_scene_for_idle_and_moving() {
+    fn play_mode_shows_the_animated_scene_and_returns_to_idle() {
         let mut editor = editor();
         let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         add_animated_marker(&mut editor, id, GeoPoint::new(115.225, -8.648));
@@ -4883,13 +4881,10 @@ mod tests {
                 scene_asset,
                 ..
             } => {
-                let animated = format!("twg-cache://{id}/animated/original.glb");
-                assert_eq!(model, &animated);
+                assert_eq!(model, &format!("twg-cache://{id}/animated/original.glb"));
                 assert!(*scene_asset);
-                let idle = play_idle.as_ref().expect("play scene available");
-                // The animated file is also the rest pose so its equipment does
-                // not pop in when the unit starts moving.
-                assert_eq!(idle.model, animated);
+                let idle = play_idle.as_ref().expect("idle scene available");
+                assert_eq!(idle.model, format!("twg-cache://{id}/idle/original.glb"));
             }
             _ => panic!("expected marker scene"),
         }

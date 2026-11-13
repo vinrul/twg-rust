@@ -239,10 +239,9 @@ pub enum EditorSceneKind {
         /// instead of the first primitive with a tint colour. Used by models
         /// coming from the asset library.
         scene_asset: bool,
-        /// Play only: the unit has a walk clip. `model` is the animated file;
-        /// this entry is present for every animated asset and points at the
-        /// same scene, which is shown both while moving and at rest (paused on
-        /// the clip's first frame).
+        /// Play only: the model holds an animation clip. `model` is the
+        /// animated file used while the unit moves; this is the idle file that
+        /// is shown again once the unit stops.
         play_idle: Option<EditorPlayModel>,
         rotation_deg: [f32; 3],
         scale: [f32; 3],
@@ -477,7 +476,6 @@ pub fn sync_editor_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
     asset_server: Res<AssetServer>,
     camera: Res<MapCameraResource>,
 ) {
@@ -538,7 +536,6 @@ pub fn sync_editor_scene(
             &mut meshes,
             &mut materials,
             &mut images,
-            &mut graphs,
             &asset_server,
             &mut cache,
             object,
@@ -662,8 +659,8 @@ fn load_marker_animation(
 }
 
 /// Loads (or reuses) a Play-mode scene handle. Keeping the handle alive means
-/// the scene stays warm while Play is active, so re-entering Play does not
-/// trigger a cold asset load.
+/// both the idle and animated files stay warm while Play is active, so swapping
+/// a unit between them does not trigger a cold asset load.
 fn play_scene_handle(
     asset_server: &AssetServer,
     cache: &mut EditorRenderCache,
@@ -677,31 +674,10 @@ fn play_scene_handle(
         .clone()
 }
 
-/// Loads (or reuses) the walk clip graph for one model path.
-fn play_animation(
-    cache: &mut EditorRenderCache,
-    graphs: &mut Assets<AnimationGraph>,
-    asset_server: &AssetServer,
-    model: &str,
-    draco: bool,
-) -> (Handle<AnimationGraph>, AnimationNodeIndex) {
-    cache
-        .marker_animations
-        .entry(model.to_owned())
-        .or_insert_with(|| {
-            let clip = load_marker_animation(asset_server, model, draco);
-            let (graph, index) = AnimationGraph::from_clip(clip);
-            (graphs.add(graph), index)
-        })
-        .clone()
-}
-
-/// Swaps units whose idle and walk poses come from different files when the
-/// moving state changes. Current assets use the animated scene for both states
-/// (see `spawn_object`), so those units skip this system. For the remaining
-/// two-file case, only one scene instance is active per unit; the previous root
-/// is kept in a bounded pool and reused instead of being respawned, which avoids
-/// instantiation hitches for repeated moves.
+/// Swaps each animated unit between its idle and animated glTF scene when the
+/// moving state changes. Only one scene instance is active per unit; the
+/// previous root is kept in a bounded pool and reused instead of being
+/// respawned, which avoids instantiation hitches for repeated moves.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_editor_play_scenes(
     mut commands: Commands,
@@ -738,11 +714,6 @@ pub(crate) fn sync_editor_play_scenes(
         let Some(unit) = units.get(&object.key) else {
             continue;
         };
-        // Units whose idle and walk files are the same animated scene keep one
-        // root for both states; `sync_editor_play_animations` pauses the clip.
-        if idle.model == *model {
-            continue;
-        }
         let Some(&(entity, animated)) = cache.play_roots.get(&object.key) else {
             continue;
         };
@@ -817,13 +788,17 @@ pub(crate) fn sync_editor_play_scenes(
         }
 
         let animation = if unit.moving {
-            Some(play_animation(
-                &mut cache,
-                &mut graphs,
-                &asset_server,
-                model,
-                *draco,
-            ))
+            Some(
+                cache
+                    .marker_animations
+                    .entry(model.clone())
+                    .or_insert_with(|| {
+                        let clip = load_marker_animation(&asset_server, model, *draco);
+                        let (graph, index) = AnimationGraph::from_clip(clip);
+                        (graphs.add(graph), index)
+                    })
+                    .clone(),
+            )
         } else {
             None
         };
@@ -980,24 +955,16 @@ pub(crate) fn apply_editor_play_frame(
 /// Ensures every animated play root has a live `AnimationPlayer` running its
 /// clip. The player belongs to the glTF scene instance and appears
 /// asynchronously (and can be replaced when a scene is re-instanced), so this
-/// runs every frame and re-discovers/restarts as needed. Units at rest keep
-/// their walk pose (paused on the first frame) so the animated file's equipment
-/// stays visible instead of popping in only while the unit moves.
+/// runs every frame and re-discovers/restarts as needed. Idle units have no
+/// animated scene at all, so no hidden animation keeps running.
 pub(crate) fn sync_editor_play_animations(
     mut commands: Commands,
-    frame: Res<EditorPlayFrame>,
-    mut roots: Query<(Entity, &EditorPlayKey, &mut EditorPlayAnimation)>,
+    mut roots: Query<(Entity, &mut EditorPlayAnimation)>,
     children: Query<&Children>,
     mut players: Query<&mut AnimationPlayer>,
     handles: Query<&AnimationGraphHandle>,
 ) {
-    let moving = frame
-        .units
-        .iter()
-        .filter(|unit| unit.moving)
-        .map(|unit| unit.key)
-        .collect::<std::collections::HashSet<_>>();
-    for (root, key, mut animation) in &mut roots {
+    for (root, mut animation) in &mut roots {
         // The scene instance may replace the player entity (asset reload), so
         // do not trust a cached entity that is no longer valid.
         if animation
@@ -1026,15 +993,6 @@ pub(crate) fn sync_editor_play_animations(
                 .entity(player_entity)
                 .insert(AnimationGraphHandle(animation.graph.clone()));
             player.play(animation.index).repeat();
-            if !moving.contains(&key.0) {
-                // Show the first frame of the walk clip at rest.
-                player.pause_all();
-            }
-        }
-        if moving.contains(&key.0) {
-            player.resume_all();
-        } else {
-            player.pause_all();
         }
     }
 }
@@ -1112,7 +1070,6 @@ fn spawn_object(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
-    graphs: &mut Assets<AnimationGraph>,
     asset_server: &AssetServer,
     cache: &mut EditorRenderCache,
     object: &EditorSceneObject,
@@ -1149,14 +1106,12 @@ fn spawn_object(
                 let transform = Transform::from_xyz(0.0, *altitude, 0.0)
                     .with_rotation(rotation)
                     .with_scale(scale);
-                if let Some(_idle) = play_idle {
-                    // Animated Play units use one scene for both idle and moving.
-                    // The animated file can carry equipment the static idle file
-                    // does not (a shield or baton, for example), so swapping
-                    // files would pop that geometry in when the unit starts.
-                    // The clip is paused on its first frame while the unit rests.
-                    let handle = play_scene_handle(asset_server, cache, model, *draco);
-                    let (graph, index) = play_animation(cache, graphs, asset_server, model, *draco);
+                if let Some(idle) = play_idle {
+                    // Play starts with the idle scene only. The animated scene is
+                    // spawned on demand while the unit moves, and the idle scene
+                    // is restored when it stops (one instance per unit).
+                    let _ = play_scene_handle(asset_server, cache, model, *draco);
+                    let handle = play_scene_handle(asset_server, cache, &idle.model, idle.draco);
                     let entity = commands
                         .spawn((
                             WorldAssetRoot(handle),
@@ -1166,14 +1121,9 @@ fn spawn_object(
                             EditorPlayKey(object.key),
                             Visibility::Visible,
                             MarkerShading(shading),
-                            EditorPlayAnimation {
-                                graph,
-                                index,
-                                player: None,
-                            },
                         ))
                         .id();
-                    cache.play_roots.insert(object.key, (entity, true));
+                    cache.play_roots.insert(object.key, (entity, false));
                     cache.entities.push(entity);
                     return;
                 }
@@ -1978,7 +1928,6 @@ mod render_cache_tests {
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()
             .init_asset::<Image>()
-            .init_asset::<AnimationGraph>()
             .init_resource::<EditorRenderCache>()
             .init_resource::<MapCameraResource>()
             .insert_resource(EditorMode {
@@ -2051,7 +2000,6 @@ mod particle_system_tests {
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()
             .init_asset::<Image>()
-            .init_asset::<AnimationGraph>()
             .init_resource::<EditorRenderCache>()
             .insert_resource(MapCameraResource(twg_map::MapCameraState::default()))
             .insert_resource(EditorMode {

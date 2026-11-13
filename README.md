@@ -564,12 +564,13 @@ viewport editor:
   Rute yang di-pause, stop, atau selesai melepaskan marker; **Resume**
   mengembalikan marker ke jalur rute sesuai progress terakhir.
 - Unit memutar arah mengikuti gerakan dan memutar klip animasi (file
-  `animated`) hanya selagi bergerak. Saat berhenti atau sampai tujuan, klip
-  di-pause pada frame pertama, bukan diganti ke file **idle**. Model tetap
-  memakai file animasi beserta kelengkapannya (misalnya tameng dan tongkat pada
-  model Brimob), sehingga tidak ada geometri yang tiba-tiba muncul saat unit
-  mulai bergerak. Satu scene animasi di-instansiasi per unit dan tidak ada
-  pergantian file saat Play berjalan.
+  `animated`) hanya selagi bergerak. Saat berhenti atau sampai tujuan, model
+  kembali ke tampilan **idle** (file `idle`), bukan animasi yang di-pause.
+  Hanya satu scene yang di-instansiasi per unit: scene idle diganti scene
+  animasi saat mulai bergerak, lalu diganti balik saat berhenti. Scene lama
+  masuk ke pool terbatas untuk dipakai ulang, dan pembuatan scene baru dibatasi
+  per frame agar perubahan status banyak unit sekaligus tidak menyebabkan
+  hitch.
 - Unit yang akan melewati marker statis berbelok menghindar, lalu kembali
   menuju titik tujuan setelah penghalang terlewati.
 - Posisi selama Play tidak mengubah posisi marker di skenario. **Stop**
