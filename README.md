@@ -528,7 +528,9 @@ untuk selesai), lalu Inspector mengatur kecepatan, urutan tampil di tab
 - **Multiple marker rute** menggerakkan beberapa marker sekaligus dalam satu
   formasi. Marker ditambahkan berurutan (tombol **Tambah marker dari peta**
   tetap aktif sampai ditekan **Selesai pilih marker di peta**), bisa dihapus
-  satu per satu, dan urutannya menentukan slot formasi.
+  satu per satu, dan urutannya menentukan slot formasi. Marker baru yang belum
+  tersimpan otomatis disimpan saat dipilih dari peta, lalu langsung diikat ke
+  rute.
 - Formasi yang tersedia saat ini **Grid** dengan jumlah **Kolom** yang bisa
   diatur (1–64). Baris terakhir boleh lebih pendek, misalnya 8 marker dengan 3
   kolom menjadi 3/3/2 dan tetap lurus dengan kolom di atasnya. Formasi berputar

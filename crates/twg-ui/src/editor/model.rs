@@ -1452,6 +1452,12 @@ pub struct EditorState {
     pub route_marker_search: String,
     /// Route waiting for a marker picked directly on the map.
     pub pick_route_marker: Option<ObjectKey>,
+    /// Marker picks that wait for the save which gives those markers a server
+    /// id. New markers cannot join a route until the server assigns them a
+    /// UUID, so a map pick saves first and binds afterwards.
+    pub pending_route_picks: Vec<(ObjectKey, ObjectKey)>,
+    /// Asks the shell to run the editor save before the next frame.
+    pub requested_save: bool,
     /// Animation type created when the current route draft is finished.
     pub pending_route_kind: RouteAnimationKind,
     /// Daftar Anim filter: list only route animations hidden from the map.
@@ -1584,6 +1590,8 @@ impl EditorState {
             sky: SkyMode::Black,
             route_marker_search: String::new(),
             pick_route_marker: None,
+            pending_route_picks: Vec::new(),
+            requested_save: false,
             pending_route_kind: RouteAnimationKind::Single,
             anim_filter_hidden: false,
             anim_filter_locked: false,
@@ -2644,6 +2652,34 @@ impl EditorState {
                 "Marker rute dipilih dari peta."
             });
         }
+    }
+
+    /// Binds marker picks that were waiting for the save which assigns server
+    /// ids. Returns true when at least one route gained a marker, so the shell
+    /// can save the updated route metadata immediately. Picks whose marker was
+    /// created after the save requests were built stay queued for the next
+    /// save.
+    pub fn apply_pending_route_picks(&mut self) -> bool {
+        let picks = std::mem::take(&mut self.pending_route_picks);
+        let mut bound = false;
+        for (route_key, marker_key) in picks {
+            let route_ready = self.object(route_key).is_some_and(
+                |object| matches!(&object.kind, EditorKind::Line(line) if line.animation.is_some()),
+            );
+            // `Some(None)` means the marker exists but still needs a save.
+            let marker_state = self.object(marker_key).and_then(|object| {
+                matches!(&object.kind, EditorKind::Marker(_)).then_some(object.server_id)
+            });
+            match marker_state {
+                Some(Some(marker_id)) if route_ready => {
+                    self.assign_route_marker(route_key, marker_id);
+                    bound = true;
+                }
+                Some(None) => self.pending_route_picks.push((route_key, marker_key)),
+                _ => {}
+            }
+        }
+        bound
     }
 
     /// Route keys ordered by the persisted Play order. Ties keep creation
@@ -4426,6 +4462,41 @@ mod tests {
         assert_eq!(animation.marker_ids, ids);
         // Multiple picking keeps the picker armed for the next marker.
         assert_eq!(editor.pick_route_marker, Some(route_key));
+    }
+
+    #[test]
+    fn map_picks_of_new_markers_bind_after_they_are_saved() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("east");
+        let marker_key = add_animated_marker(&mut editor, &Uuid::new_v4().to_string(), base);
+        assert!(
+            editor
+                .object(marker_key)
+                .expect("marker")
+                .server_id
+                .is_none()
+        );
+        editor.add_route_kind(vec![base, end], RouteAnimationKind::Multiple);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        editor.pending_route_picks.push((route_key, marker_key));
+
+        // The marker has no server id yet, so the pick stays queued.
+        assert!(!editor.apply_pending_route_picks());
+        assert_eq!(editor.pending_route_picks, vec![(route_key, marker_key)]);
+
+        let id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(id);
+        assert!(editor.apply_pending_route_picks());
+        assert!(editor.pending_route_picks.is_empty());
+        let EditorKind::Line(line) = &editor.object(route_key).expect("route").kind else {
+            panic!("expected line");
+        };
+        assert_eq!(
+            line.animation.as_ref().expect("animation").marker_ids,
+            vec![id]
+        );
+        assert!(editor.object(route_key).expect("route").dirty);
     }
 
     #[test]

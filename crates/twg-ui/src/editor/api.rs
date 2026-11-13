@@ -955,6 +955,11 @@ impl ClientUi {
         let result = self.editor.save_error.take();
         match result {
             Some(error) => {
+                if !self.editor.pending_route_picks.is_empty() {
+                    self.editor.pending_route_picks.clear();
+                    self.editor
+                        .log("Tautan marker rute dibatalkan karena simpan gagal.");
+                }
                 self.toast(format!("Simpan gagal: {error}"), ToastKind::Error);
             }
             None => {
@@ -967,6 +972,14 @@ impl ClientUi {
                 self.editor.log("Semua perubahan tersimpan.");
                 self.toast("Skenario tersimpan.", ToastKind::Success);
                 self.editor.touch();
+                // Map picks of new markers waited for the ids assigned above;
+                // bind them now and persist the updated route metadata. Picks
+                // whose marker was created after the save requests were built
+                // stay queued, so save again to assign their ids too.
+                let bound = self.editor.apply_pending_route_picks();
+                if bound || !self.editor.pending_route_picks.is_empty() {
+                    self.editor_save();
+                }
             }
         }
     }

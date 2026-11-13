@@ -92,6 +92,16 @@ pub fn editor_input(
     if !focus.keyboard && !client.editor.big_screen && control && keys.just_pressed(KeyCode::KeyS) {
         client.editor_save();
     }
+    // A map pick of a brand-new marker saves first so the server assigns the
+    // UUID the route metadata needs. When a save is already in flight the
+    // queued pick is bound by that save's completion instead; starting another
+    // save now would duplicate the create requests.
+    if client.editor.requested_save {
+        client.editor.requested_save = false;
+        if client.editor.save_pending == 0 {
+            client.editor_save();
+        }
+    }
 
     let (camera, camera_transform) = *camera_query;
     let base_url = client.base_url.clone();
@@ -640,6 +650,26 @@ fn pick_object_ignoring_lock(editor: &EditorState, pointer: egui::Pos2) -> Optio
     pick_object_inner(editor, pointer, true)
 }
 
+/// Nearest visible marker for route binding. The click target is wider than the
+/// normal selection radius because markers are projected at their ground point
+/// while users click the body of the 3D model.
+fn pick_route_marker_object(editor: &EditorState, pointer: egui::Pos2) -> Option<ObjectKey> {
+    let mut best: Option<(f32, ObjectKey)> = None;
+    for (key, kind, points, _) in &editor.projected {
+        if *kind != ObjectType::Marker || editor.is_locked(*key) {
+            continue;
+        }
+        let Some(point) = points.first() else {
+            continue;
+        };
+        let distance = distance(point, pointer);
+        if distance <= 28.0 && best.is_none_or(|(nearest, _)| distance < nearest) {
+            best = Some((distance, *key));
+        }
+    }
+    best.map(|(_, key)| key)
+}
+
 fn pick_object_inner(
     editor: &EditorState,
     pointer: egui::Pos2,
@@ -1042,37 +1072,48 @@ fn mouse_input(
         // Picking a route marker from the map takes precedence over every
         // other click action while the Inspector asks for it.
         if let Some(route_key) = editor.pick_route_marker {
-            if let Some(key) = pick_object(editor, pointer) {
-                let marker_id = editor.object(key).and_then(|object| {
-                    matches!(&object.kind, EditorKind::Marker(_))
-                        .then_some(object.server_id)
-                        .flatten()
-                });
-                match marker_id {
-                    Some(marker_id) => {
-                        let animatable = editor
-                            .object(key)
-                            .and_then(|object| match &object.kind {
-                                EditorKind::Marker(marker) => {
-                                    Some(editor.marker_is_animatable(marker))
-                                }
-                                _ => None,
-                            })
-                            .unwrap_or(false);
-                        editor.assign_route_marker(route_key, marker_id);
-                        if !animatable {
+            // Markers are projected at their ground point, but users click the
+            // body of the 3D model. Use a wider radius here than normal
+            // selection so a route marker is easy to hit.
+            match pick_route_marker_object(editor, pointer) {
+                Some(key) => {
+                    let marker_id = editor.object(key).and_then(|object| object.server_id);
+                    match marker_id {
+                        Some(marker_id) => {
+                            let animatable = editor
+                                .object(key)
+                                .and_then(|object| match &object.kind {
+                                    EditorKind::Marker(marker) => {
+                                        Some(editor.marker_is_animatable(marker))
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or(false);
+                            editor.assign_route_marker(route_key, marker_id);
+                            if !animatable {
+                                editor.log(
+                                    "Peringatan: marker ini belum bisa bergerak. Atur mode pindah \
+                                     asetnya menjadi Free/Limited atau pakai model animasi.",
+                                );
+                            }
+                        }
+                        // Markers created in this session get their server UUID
+                        // from the first save. Queue the pick and save now
+                        // instead of rejecting the click, then bind after the
+                        // ids arrive.
+                        None => {
+                            editor.pending_route_picks.push((route_key, key));
+                            editor.requested_save = true;
                             editor.log(
-                                "Peringatan: marker ini belum bisa bergerak. Atur mode pindah \
-                                 asetnya menjadi Free/Limited atau pakai model animasi.",
+                                "Menyimpan skenario dulu agar marker baru bisa dipakai rute...",
                             );
                         }
                     }
-                    None => editor.log(
-                        "Itu bukan marker, atau marker baru belum tersimpan. Simpan dulu (Ctrl+S).",
-                    ),
                 }
-            } else {
-                editor.log("Klik tepat pada marker di peta.");
+                None if pick_object(editor, pointer).is_some() => {
+                    editor.log("Itu bukan marker. Klik tepat pada marker di peta.");
+                }
+                None => editor.log("Klik tepat pada marker di peta."),
             }
             return;
         }
@@ -1781,6 +1822,39 @@ mod tests {
         assert_eq!(pick_object(&editor, pointer), None);
         // The context menu still finds the locked route so it can be unlocked.
         assert_eq!(pick_object_ignoring_lock(&editor, pointer), Some(key));
+    }
+
+    #[test]
+    fn route_marker_picking_accepts_clicks_on_the_model_body() {
+        let mut editor = EditorState::new();
+        editor.loaded = true;
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("east");
+        editor.add_route(vec![base, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        editor.add_marker(base, 0);
+        let marker_key = *editor.selected.iter().next().expect("marker selected");
+        editor.projected.push((
+            route_key,
+            ObjectType::Line,
+            vec![egui::pos2(100.0, 100.0), egui::pos2(200.0, 100.0)],
+            false,
+        ));
+        editor.projected.push((
+            marker_key,
+            ObjectType::Marker,
+            vec![egui::pos2(150.0, 100.0)],
+            false,
+        ));
+
+        // Clicks on the upper body of a model sit outside normal selection but
+        // still count while the Inspector is picking a route marker.
+        let pointer = egui::pos2(150.0, 76.0);
+        assert_eq!(pick_object(&editor, pointer), None);
+        assert_eq!(pick_route_marker_object(&editor, pointer), Some(marker_key));
+
+        editor.locked.insert(marker_key);
+        assert_eq!(pick_route_marker_object(&editor, pointer), None);
     }
 
     #[test]

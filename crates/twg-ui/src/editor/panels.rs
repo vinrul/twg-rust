@@ -3221,17 +3221,21 @@ fn draw_route_marker_selector(
     }
 
     if option_count <= 1 {
-        if editor.route_marker_search.trim().is_empty() {
-            ui.label(theme::muted(if multiple {
-                "Tidak ada marker lain yang bisa ditambahkan."
-            } else {
-                "Belum ada marker tersimpan. Simpan skenario (Ctrl+S) setelah membuat marker."
-            }));
+        let searching = !editor.route_marker_search.trim().is_empty();
+        let unsaved = editor.objects.iter().any(|object| {
+            object.server_id.is_none() && matches!(&object.kind, EditorKind::Marker(_))
+        });
+        let hint = if searching {
+            "Tidak ada marker yang cocok dengan pencarian."
+        } else if unsaved {
+            "Marker di peta belum tersimpan. Klik \"Tambah marker dari peta\" — skenario \
+             disimpan otomatis saat marker dipilih."
+        } else if multiple {
+            "Semua marker tersimpan sudah ada di rute ini."
         } else {
-            ui.label(theme::muted(
-                "Tidak ada marker yang cocok dengan pencarian.",
-            ));
-        }
+            "Belum ada marker tersimpan. Simpan skenario (Ctrl+S) setelah membuat marker."
+        };
+        ui.label(theme::muted(hint));
     }
 
     let picking = editor.pick_route_marker == Some(key);
@@ -3502,8 +3506,18 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                 draw_scale_bar(&painter, rect, editor);
                 draw_crosshair(&painter, rect);
             }
-            if editor.pick_route_marker.is_some() {
-                let text = "Klik marker di peta untuk target rute · Esc batal";
+            if let Some(route_key) = editor.pick_route_marker {
+                let multiple = editor.object(route_key).is_some_and(|object| {
+                    matches!(&object.kind, EditorKind::Line(line) if line
+                        .animation
+                        .as_ref()
+                        .is_some_and(|animation| animation.kind == RouteAnimationKind::Multiple))
+                });
+                let text = if multiple {
+                    "Klik marker untuk menambah ke rute · Esc selesai"
+                } else {
+                    "Klik marker di peta untuk target rute · Esc batal"
+                };
                 let galley = painter.layout_no_wrap(
                     text.to_owned(),
                     egui::FontId::proportional(12.0),
