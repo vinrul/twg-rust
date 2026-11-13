@@ -3414,6 +3414,7 @@ impl EditorState {
 
         EditorScene {
             revision: self.render_revision,
+            scenario_id: self.scenario_id,
             indoor: self.indoor || !self.visible.raster,
             objects,
             grid,

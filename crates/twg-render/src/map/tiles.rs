@@ -8,7 +8,7 @@ use bevy::window::PrimaryWindow;
 use twg_map::{BaseLayer, MapCameraState, TileId, TileSource, XyzTileSource, cover_tiles};
 
 use super::tile_cache::LruCache;
-use super::{BaseLayerResource, MapCameraResource, TileProxyConfig};
+use super::{BaseLayerResource, CameraFlightState, MapCameraResource, TileProxyConfig};
 use crate::RenderLoadStatus;
 
 const MATERIAL_CACHE_LIMIT: usize = 512;
@@ -83,7 +83,9 @@ pub fn spawn_tile_assets(
         TextureDimension::D2,
         data,
         TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
+        // Tile pixels are only needed by the GPU; dropping the CPU copy keeps
+        // a high-zoom tile cache from using twice the memory.
+        RenderAssetUsages::RENDER_WORLD,
     );
     let image = images.add(image);
     world.placeholder = materials.add(StandardMaterial {
@@ -103,6 +105,7 @@ pub fn sync_tiles(
     state: Res<MapCameraResource>,
     layer: Res<BaseLayerResource>,
     proxy: Res<TileProxyConfig>,
+    flight: Option<Res<CameraFlightState>>,
     editor: Option<Res<crate::editor::EditorScene>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
@@ -122,6 +125,14 @@ pub fn sync_tiles(
         world.layer = layer.0;
         world.proxy = proxy.0.clone();
         world.source = layer.0.tile_source_with_proxy(proxy.0.as_deref());
+    }
+
+    if flight.as_ref().is_some_and(|flight| flight.0.is_some()) {
+        // The camera is flying to a new view. Requesting a cover for every
+        // intermediate zoom level would queue thousands of tile images and
+        // spike memory on the big screen, so keep the current cover until the
+        // flight lands.
+        return;
     }
 
     let state = state.0;
@@ -172,6 +183,8 @@ pub fn sync_tiles(
                     .load_builder()
                     .with_settings(|settings: &mut ImageLoaderSettings| {
                         settings.format = ImageFormatSetting::Guess;
+                        // The tile is uploaded once and never read on the CPU.
+                        settings.asset_usage = RenderAssetUsages::RENDER_WORLD;
                     })
                     .load(source.url(tile));
                 world.images.insert(key, image.clone());

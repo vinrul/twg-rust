@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::world_serialization::{WorldAsset, WorldAssetRoot};
 use twg_map::GeoPoint;
+use uuid::Uuid;
 
 use super::mesh;
 use crate::RenderLoadStatus;
@@ -69,6 +70,10 @@ impl Default for EditorMode {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct EditorScene {
     pub revision: u64,
+    /// Scenario the scene was built from. The renderer drops per-scenario asset
+    /// caches when this changes so a long-running big screen does not keep the
+    /// models and textures of every scenario it has shown.
+    pub scenario_id: Option<Uuid>,
     pub indoor: bool,
     pub objects: Vec<EditorSceneObject>,
     pub grid: Option<EditorGrid>,
@@ -320,6 +325,7 @@ pub struct EditorGizmo {
 #[derive(Resource, Default)]
 pub(crate) struct EditorRenderCache {
     revision: u64,
+    scenario_id: Option<Uuid>,
     entities: Vec<Entity>,
     gizmo: Option<Entity>,
     grid: Option<Entity>,
@@ -477,6 +483,8 @@ pub fn sync_editor_scene(
         return;
     }
     cache.revision = scene.revision;
+    let scenario_changed = cache.scenario_id != scene.scenario_id;
+    cache.scenario_id = scene.scenario_id;
 
     for entity in cache.entities.drain(..) {
         commands.entity(entity).despawn();
@@ -485,6 +493,17 @@ pub fn sync_editor_scene(
     cache.idle_pool.clear();
     cache.animated_pool.clear();
     cache.play_roots.clear();
+    if scenario_changed {
+        // Handles for the previous scenario's models, animation graphs, and
+        // textures are only kept warm for that scenario. Dropping them frees
+        // the glTF scenes instead of accumulating one set per scenario.
+        cache.marker_meshes.clear();
+        cache.marker_materials.clear();
+        cache.marker_animations.clear();
+        cache.building_materials.clear();
+        cache.building_textures.clear();
+        cache.play_scene_assets.clear();
+    }
     if let Some(entity) = cache.gizmo.take() {
         commands.entity(entity).despawn();
     }
@@ -1895,6 +1914,77 @@ fn floor_plan_image() -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     )
+}
+
+#[cfg(test)]
+mod render_cache_tests {
+    use super::*;
+    use bevy::asset::{AssetApp, AssetPlugin};
+
+    fn app(scenario_id: Option<Uuid>) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(AssetPlugin::default())
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<EditorRenderCache>()
+            .init_resource::<MapCameraResource>()
+            .insert_resource(EditorMode {
+                active: true,
+                preview: true,
+                particles_animate: false,
+                camera_input: false,
+            })
+            .insert_resource(EditorScene {
+                revision: 1,
+                scenario_id,
+                ..Default::default()
+            })
+            .add_systems(Update, sync_editor_scene);
+        app.update();
+        app
+    }
+
+    #[test]
+    fn scenario_change_drops_previous_asset_caches() {
+        let first = Uuid::new_v4();
+        let mut app = app(Some(first));
+        {
+            let mut cache = app.world_mut().resource_mut::<EditorRenderCache>();
+            cache
+                .play_scene_assets
+                .insert("model".to_owned(), Handle::default());
+            cache
+                .building_textures
+                .insert("texture".to_owned(), Handle::default());
+            cache
+                .marker_meshes
+                .insert("mesh".to_owned(), Handle::default());
+        }
+
+        // Editing the same scenario keeps warm handles for quick rebuilds.
+        app.world_mut().resource_mut::<EditorScene>().revision = 2;
+        app.update();
+        {
+            let cache = app.world().resource::<EditorRenderCache>();
+            assert!(!cache.play_scene_assets.is_empty());
+            assert!(!cache.building_textures.is_empty());
+            assert!(!cache.marker_meshes.is_empty());
+        }
+
+        // Showing another scenario must not keep the previous one's assets.
+        {
+            let mut scene = app.world_mut().resource_mut::<EditorScene>();
+            scene.scenario_id = Some(Uuid::new_v4());
+            scene.revision = 3;
+        }
+        app.update();
+        let cache = app.world().resource::<EditorRenderCache>();
+        assert!(cache.play_scene_assets.is_empty());
+        assert!(cache.building_textures.is_empty());
+        assert!(cache.marker_meshes.is_empty());
+    }
 }
 
 #[cfg(test)]
