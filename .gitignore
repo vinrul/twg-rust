@@ -15,3 +15,6 @@ coverage/
 /.tile-cache/
 /uploads/
 /asset-store/
+
+# Local screenshots and scratch images at the repo root
+/*.png
