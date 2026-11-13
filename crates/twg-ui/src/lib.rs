@@ -89,10 +89,10 @@ impl Plugin for TacticalUiPlugin {
                 backend.ws_transport.clone(),
                 backend.base_url.clone(),
             ));
+            app.add_systems(Update, editor::input::sync_editor_mode.before(MapUpdateSet));
             app.add_systems(
                 Update,
                 (
-                    editor::input::sync_editor_mode,
                     editor::input::editor_input,
                     sync_tile_proxy,
                     collect_file_drops,
@@ -165,7 +165,9 @@ fn track_ui_pointer(
     if let Some(client) = client
         && matches!(
             client.state.screen,
-            twg_client::session::Screen::MapEditor | twg_client::session::Screen::Preview
+            twg_client::session::Screen::MapEditor
+                | twg_client::session::Screen::Preview
+                | twg_client::session::Screen::BigScreen
         )
         && let Some(position) = context.input(|input| input.pointer.latest_pos())
         && !client.editor.viewport_rect.contains(position)

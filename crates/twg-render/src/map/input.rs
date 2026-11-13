@@ -30,6 +30,13 @@ pub fn map_input(
         mouse_wheel.clear();
         return;
     }
+    // The public big-screen page is a passive display: ignore every camera
+    // gesture so only the driving admin's camera can move it.
+    if editor.as_ref().is_some_and(|editor| !editor.camera_input) {
+        mouse_motion.clear();
+        mouse_wheel.clear();
+        return;
+    }
     let mouse_inside = window.cursor_position().is_some();
     let editor_active = editor.is_some_and(|editor| editor.active);
     let camera = &mut camera.0;

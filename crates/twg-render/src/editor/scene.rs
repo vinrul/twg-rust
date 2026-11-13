@@ -46,6 +46,9 @@ pub struct EditorMode {
     pub preview: bool,
     /// Editor-only particle animation toggle. Play/simulation always animates.
     pub particles_animate: bool,
+    /// False on the public big-screen page, which must not pan, zoom, pitch, or
+    /// rotate the map.
+    pub camera_input: bool,
 }
 
 impl Default for EditorMode {
@@ -54,6 +57,7 @@ impl Default for EditorMode {
             active: false,
             preview: false,
             particles_animate: true,
+            camera_input: true,
         }
     }
 }
@@ -1867,6 +1871,7 @@ mod particle_system_tests {
                 active: true,
                 preview: false,
                 particles_animate: true,
+                camera_input: true,
             })
             .insert_resource(EditorScene {
                 revision: 1,

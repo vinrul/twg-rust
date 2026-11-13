@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 use tokio::sync::mpsc;
-use twg_contracts::realtime::ServerMessage;
+use twg_contracts::realtime::{PublicLiveSession, ServerMessage};
 use twg_domain::SessionSubject;
 use uuid::Uuid;
 
@@ -25,6 +25,10 @@ struct HubState {
     play_state: HashMap<Uuid, String>,
     /// Connections currently playing the scenario from the Simulasi screen.
     play_connections: HashMap<Uuid, HashSet<Uuid>>,
+    /// Public big-screen session driven by an admin/admin_satker client.
+    live: Option<PublicLiveSession>,
+    /// Monotonic counter for [`PublicLiveSession::session_version`].
+    live_sessions: u64,
 }
 
 /// In-memory realtime fan-out.
@@ -139,6 +143,84 @@ impl Hub {
             .expect("hub poisoned")
             .play_state
             .insert(skenario_id, data);
+    }
+
+    /// Starts a fresh public big-screen session for `skenario_id`. Any
+    /// previous session is replaced; the big screen reloads the scenario when
+    /// the returned version changes.
+    pub fn start_live(&self, skenario_id: Uuid) -> PublicLiveSession {
+        let mut state = self.inner.lock().expect("hub poisoned");
+        state.live_sessions = state.live_sessions.saturating_add(1);
+        let live = PublicLiveSession {
+            scenario_id: skenario_id,
+            session_version: state.live_sessions,
+            revision: 0,
+            state: None,
+            state_version: 0,
+            camera: None,
+            camera_version: 0,
+        };
+        state.live = Some(live.clone());
+        live
+    }
+
+    /// Marks the loaded scenario as reloaded. Big screens reload the same
+    /// scenario and wait for the next state snapshot.
+    pub fn reload_live(&self, skenario_id: Uuid) {
+        let mut state = self.inner.lock().expect("hub poisoned");
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        if live.scenario_id != skenario_id {
+            return;
+        }
+        live.revision = live.revision.saturating_add(1);
+        live.state = None;
+        live.state_version = live.state_version.saturating_add(1);
+    }
+
+    /// Stores the latest play snapshot for the public display. Updates from a
+    /// different scenario than the active live session are ignored.
+    pub fn set_live_state(&self, skenario_id: Uuid, data: String) {
+        let mut state = self.inner.lock().expect("hub poisoned");
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        if live.scenario_id != skenario_id {
+            return;
+        }
+        live.state = Some(data);
+        live.state_version = live.state_version.saturating_add(1);
+    }
+
+    /// Stores a camera update published by an admin/admin_satker client.
+    pub fn set_live_camera(&self, skenario_id: Uuid, data: String) {
+        let mut state = self.inner.lock().expect("hub poisoned");
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        if live.scenario_id != skenario_id {
+            return;
+        }
+        live.camera = Some(data);
+        live.camera_version = live.camera_version.saturating_add(1);
+    }
+
+    pub fn live(&self) -> Option<PublicLiveSession> {
+        self.inner.lock().expect("hub poisoned").live.clone()
+    }
+
+    /// Ends the public display session, e.g. when the simulating admin closes
+    /// the play screen. Other scenarios are left untouched.
+    pub fn clear_live(&self, skenario_id: Uuid) {
+        let mut state = self.inner.lock().expect("hub poisoned");
+        if state
+            .live
+            .as_ref()
+            .is_some_and(|live| live.scenario_id == skenario_id)
+        {
+            state.live = None;
+        }
     }
 
     pub fn send(&self, connection_id: Uuid, message: ServerMessage) -> bool {
@@ -567,5 +649,42 @@ mod tests {
 
         hub.unregister(player);
         assert!(hub.play_state(scenario).is_none());
+    }
+
+    #[test]
+    fn live_session_versions_are_monotonic_and_scoped_to_the_scenario() {
+        let hub = Hub::new(16);
+        let scenario = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+
+        let started = hub.start_live(scenario);
+        assert_eq!(started.scenario_id, scenario);
+        assert_eq!(started.session_version, 1);
+        assert_eq!(started.state_version, 0);
+
+        hub.set_live_state(scenario, "{\"units\":[]}".to_owned());
+        assert_eq!(hub.live().unwrap().state_version, 1);
+        hub.set_live_state(other, "ignored".to_owned());
+        assert_eq!(hub.live().unwrap().state.as_deref(), Some("{\"units\":[]}"));
+        assert_eq!(hub.live().unwrap().state_version, 1);
+
+        hub.set_live_camera(scenario, "{\"zoom\":13}".to_owned());
+        assert_eq!(hub.live().unwrap().camera_version, 1);
+        hub.reload_live(scenario);
+        let reloaded = hub.live().unwrap();
+        assert_eq!(reloaded.revision, 1);
+        assert!(reloaded.state.is_none());
+        assert_eq!(reloaded.state_version, 2);
+
+        let restarted = hub.start_live(scenario);
+        assert_eq!(restarted.session_version, 2);
+        assert_eq!(restarted.revision, 0);
+        assert!(restarted.state.is_none());
+        assert!(restarted.camera.is_none());
+
+        hub.clear_live(other);
+        assert!(hub.live().is_some());
+        hub.clear_live(scenario);
+        assert!(hub.live().is_none());
     }
 }

@@ -557,11 +557,37 @@ Selama layar ini terbuka:
 - Gerakan unit, perintah klik kanan, pemindahan aset `Limited` lewat gizmo, dan
   Play/Pause/Stop rute disiarkan ke client lain yang juga membuka skenario itu
   dari menu Simulasi, sehingga semua komputer melihat simulasi yang sama.
+  Selama simulasi bergerak, snapshot juga dikirim berkala agar layar besar dan
+  client yang bergabung terlambat tetap dekat dengan posisi terbaru.
 - Client baru menerima snapshot state terakhir saat bergabung. Server menyimpan
   snapshot selama masih ada participant play dan menghapusnya saat participant
   terakhir keluar, jadi sesi berikutnya mulai lagi dari state awal skenario.
-- Kamera (pan/zoom/bearing/pitch) dan perpindahan skenario tidak disinkronkan.
+- Admin dan `admin_satker` juga menyiarkan kamera (zoom, pan, pitch, bearing)
+  dan dapat memuat ulang skenario. Gunakan tombol **Muat ulang** di layar play
+  Simulasi. Berpindah skenario lewat tab **Skenario** belum disinkronkan; buka
+  skenario dari daftar Simulasi atau tekan **Muat ulang** untuk memulai sesi
+  layar besar baru.
 - Play dari editor **tidak** realtime; hanya play dari menu Simulasi.
+
+**Layar besar (tanpa login)**
+
+Halaman **Layar Besar** dapat dibuka dari sidebar Dashboard, tombol aksi cepat
+Dashboard, atau tautan di halaman login. Halaman ini tidak meminta login dan
+hanya menampilkan peta serta satu panel kecil berisi zoom, bearing/pitch, dan
+FPS — tanpa tombol zoom, tanpa panel editor, dan tanpa input kamera lokal.
+
+- Saat pertama dibuka, layar menampilkan peta Indonesia.
+- Hanya `admin` dan `admin_satker` yang dapat memulai sesi tampilan. Server
+  menolak `started`, `camera`, `reload`, dan `stop` dari role lain.
+- `admin_satker` hanya dapat memulai skenario milik satkernya; aturan satker
+  yang sama dengan WebSocket play tetap berlaku.
+- Semua pemain dapat memengaruhi animasi dan gerakan marker/model. Hanya
+  admin/admin_satker yang dapat memengaruhi kamera dan memuat ulang skenario.
+- Layar besar mengikuti sesi lewat endpoint publik `GET /public/play/live`
+  setiap ±150 ms. Data skenario tetap dimuat dari route `GET /public/...` dan
+  model diambil dari manifest aset publik, jadi tidak perlu tiket WebSocket.
+- Menutup simulasi dari layar admin mengakhiri sesi tampilan; layar besar
+  kembali ke peta Indonesia.
 
 Web:
 

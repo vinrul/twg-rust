@@ -71,6 +71,34 @@ pub enum ClientMessage {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PublicLiveResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<PublicLiveSession>,
+}
+
+/// Read-only snapshot of the simulation currently driving the public
+/// big-screen page. It is served without authentication; the payload only
+/// contains authored scenario state and camera values that are already public
+/// map data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicLiveSession {
+    pub scenario_id: Uuid,
+    /// Increases every time an admin starts (or reloads) the live session.
+    pub session_version: u64,
+    /// Increases when an admin reloads the scenario without starting a new
+    /// session.
+    pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Monotonic version of `state`; clients only apply changed snapshots.
+    pub state_version: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+    /// Monotonic version of `camera`; clients only apply changed cameras.
+    pub camera_version: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
@@ -217,6 +245,32 @@ mod tests {
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value["type"], "play_event");
         assert_eq!(value["action"], "state");
+    }
+
+    #[test]
+    fn public_live_response_round_trips() {
+        let id = Uuid::from_u128(4);
+        let value = serde_json::to_value(super::PublicLiveResponse {
+            session: Some(super::PublicLiveSession {
+                scenario_id: id,
+                session_version: 3,
+                revision: 1,
+                state: Some("{\"units\":[]}".to_owned()),
+                state_version: 7,
+                camera: None,
+                camera_version: 0,
+            }),
+        })
+        .unwrap();
+        assert_eq!(value["session"]["scenario_id"], id.to_string());
+        assert_eq!(value["session"]["state_version"], 7);
+        assert!(value["session"].get("camera").is_none());
+    }
+
+    #[test]
+    fn empty_public_live_response_keeps_the_envelope_small() {
+        let value = serde_json::to_value(super::PublicLiveResponse::default()).unwrap();
+        assert_eq!(value, json!({}));
     }
 
     #[test]

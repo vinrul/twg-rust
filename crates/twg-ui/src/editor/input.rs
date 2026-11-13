@@ -31,11 +31,14 @@ pub fn sync_editor_mode(
 ) {
     let active = matches!(
         client.state.screen,
-        twg_client::session::Screen::MapEditor | twg_client::session::Screen::Preview
+        twg_client::session::Screen::MapEditor
+            | twg_client::session::Screen::Preview
+            | twg_client::session::Screen::BigScreen
     );
     mode.active = active;
     mode.preview = active && client.editor.preview;
     mode.particles_animate = client.editor.particle_preview;
+    mode.camera_input = client.state.screen != twg_client::session::Screen::BigScreen;
     if *sky != client.editor.sky {
         *sky = client.editor.sky;
     }
@@ -62,7 +65,9 @@ pub fn editor_input(
 ) {
     let in_editor = matches!(
         client.state.screen,
-        twg_client::session::Screen::MapEditor | twg_client::session::Screen::Preview
+        twg_client::session::Screen::MapEditor
+            | twg_client::session::Screen::Preview
+            | twg_client::session::Screen::BigScreen
     );
     if !in_editor {
         if mode.active {
@@ -81,9 +86,10 @@ pub fn editor_input(
     mode.active = true;
     mode.preview = client.editor.preview;
     mode.particles_animate = client.editor.particle_preview;
+    mode.camera_input = client.state.screen != twg_client::session::Screen::BigScreen;
 
     let control = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    if !focus.keyboard && control && keys.just_pressed(KeyCode::KeyS) {
+    if !focus.keyboard && !client.editor.big_screen && control && keys.just_pressed(KeyCode::KeyS) {
         client.editor_save();
     }
 
@@ -224,7 +230,7 @@ pub fn editor_input(
     } else {
         editor.context_menu = None;
         editor.asset_drag = None;
-        if editor.preview && editor.loaded {
+        if editor.preview && editor.loaded && !editor.big_screen {
             play_input(
                 editor,
                 &mouse,

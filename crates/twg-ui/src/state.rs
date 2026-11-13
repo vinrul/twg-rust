@@ -21,11 +21,13 @@ use twg_contracts::assets::{
 };
 use twg_contracts::categories::Category;
 use twg_contracts::operations::{HomeOperation, Operation};
+use twg_contracts::realtime::{PublicLiveResponse, PublicLiveSession};
 use twg_contracts::satkers::Satker;
 use twg_contracts::scenarios::Scenario;
 use twg_contracts::snapshots::Snapshot;
 use twg_contracts::users::{OnlineUser, User};
 use twg_domain::Role;
+use twg_map::{GeoPoint, MapCameraState};
 #[cfg(not(target_arch = "wasm32"))]
 use twg_render::{ImagePreviewKey, ModelPreviewKey};
 use twg_render::{PREVIEW_SLOTS, PreviewOrbitInput, PreviewPhase, PreviewSource};
@@ -88,6 +90,7 @@ pub enum JobKind {
     AssetGroups,
     AssetGroupSave,
     AssetGroupDelete,
+    BigScreenLive,
 }
 
 pub struct UiJob {
@@ -365,6 +368,40 @@ pub struct WsUi {
     pub play_joined: bool,
     /// Time of the last published play snapshot (throttles gizmo drags).
     pub play_sync_at: Option<Instant>,
+    /// Camera last published to the big-screen session.
+    pub last_camera: Option<MapCameraState>,
+    /// Time the camera was last published.
+    pub camera_sync_at: Option<Instant>,
+    /// Scenario whose `started` action was sent for this play session.
+    pub started_scenario: Option<Uuid>,
+    /// Whether this Simulasi screen is allowed to announce a scenario to the
+    /// public big screen. Opening from the Simulasi list and reloading enable
+    /// it; switching scenarios in the Skenario tab does not, per the current
+    /// realtime scope.
+    pub announce_live: bool,
+}
+
+/// State of the public big-screen page. It polls a read-only HTTP endpoint so
+/// it works without a login or WebSocket ticket.
+#[derive(Default)]
+pub struct BigScreenUi {
+    pub active: bool,
+    pub return_screen: Screen,
+    pub return_nav: NavItem,
+    pub scenario_id: Option<Uuid>,
+    pub session_version: u64,
+    pub revision: u64,
+    pub state_version: u64,
+    pub applied_state_version: u64,
+    pub camera_version: u64,
+    /// Latest remote state waiting for the local Play state to be ready.
+    pub pending_state: Option<Value>,
+    /// Latest remote camera waiting to be applied after the scenario loads.
+    pub pending_camera: Option<MapCameraState>,
+    pub applied_camera_version: u64,
+    pub last_poll: Option<Instant>,
+    pub poll_pending: bool,
+    pub has_session: bool,
 }
 
 #[derive(Resource)]
@@ -400,6 +437,7 @@ pub struct ClientUi {
     pub confirm_password_visible: bool,
     pub profile_message: Option<(bool, String)>,
     pub ws: WsUi,
+    pub big_screen: BigScreenUi,
     pub layer_order: Vec<&'static str>,
     pub selected_layer: &'static str,
     pub boot_checked: bool,
@@ -502,6 +540,7 @@ impl ClientUi {
             confirm_password_visible: false,
             profile_message: None,
             ws: WsUi::default(),
+            big_screen: BigScreenUi::default(),
             layer_order: vec!["OpenStreetMap", "Satelit"],
             selected_layer: "OpenStreetMap",
             boot_checked: false,
@@ -733,6 +772,7 @@ impl ClientUi {
         self.tick_toasts();
         self.tick_ws();
         self.tick_play_sync();
+        self.tick_big_screen();
         self.tick_asset_sync();
         self.tick_editor_jobs();
         self.poll_pending_preview_uploads();
@@ -1126,6 +1166,10 @@ impl ClientUi {
             JobKind::AssetManifest => {
                 match result.and_then(|response| response.data::<AssetManifest>()) {
                     Ok(manifest) => {
+                        // The big-screen page has no asset list request of its
+                        // own; seed the model resolver from the manifest.
+                        self.assets.clone_from(&manifest.assets);
+                        self.sync_editor_marker_models();
                         #[cfg(not(target_arch = "wasm32"))]
                         {
                             let current = self.asset_cache.as_ref().is_some_and(|cache| {
@@ -1253,6 +1297,14 @@ impl ClientUi {
                 }
                 Err(error) => self.error(&error),
             },
+            JobKind::BigScreenLive => {
+                self.big_screen.poll_pending = false;
+                if let Ok(response) =
+                    result.and_then(|response| response.data::<PublicLiveResponse>())
+                {
+                    self.apply_big_screen_live(response.session);
+                }
+            }
         }
     }
 
@@ -1353,9 +1405,15 @@ impl ClientUi {
             }
             self.pending_asset_nav = nav;
             self.asset_sync.state = AssetSyncState::Checking;
-            let handle = self
-                .api
-                .request(HttpMethod::Get, "/private/assets/manifest", None);
+            let path = if self.state.screen == Screen::BigScreen {
+                // The public display has no login, so it cannot request the
+                // private manifest. Asset files themselves are served from the
+                // public `/assets` static route.
+                "/public/assets/manifest"
+            } else {
+                "/private/assets/manifest"
+            };
+            let handle = self.api.request(HttpMethod::Get, path, None);
             self.track(JobKind::AssetManifest, handle);
         }
     }
@@ -1408,9 +1466,11 @@ impl ClientUi {
                 ToastKind::Info,
             );
         }
-        if !failed && !self.editor.preview {
+        if !failed && (!self.editor.preview || self.state.screen == Screen::BigScreen) {
             // Models that were missing before the sync are now in the cache;
-            // the signature alone cannot notice that, so rebuild once.
+            // the signature alone cannot notice that, so rebuild once. The
+            // public big-screen page must also pick up the files even while it
+            // is already in Play mode.
             self.editor.marker_model_signature.clear();
             self.sync_editor_marker_models();
         }
@@ -2097,6 +2157,9 @@ impl ClientUi {
         self.ws.connection = Some(Arc::new(connection));
         self.ws.ticket_pending = false;
         self.ws.subscribed = false;
+        self.ws.play_joined = false;
+        self.ws.started_scenario = None;
+        self.ws.last_camera = None;
         self.ws.state.status = RealtimeStatus::Connecting;
     }
 
@@ -2173,6 +2236,8 @@ impl ClientUi {
             self.ws.subscribed = false;
             self.ws.connection_id = None;
             self.ws.play_joined = false;
+            self.ws.started_scenario = None;
+            self.ws.last_camera = None;
             self.ws.state.schedule_reconnect();
             self.ws.next_attempt = Some(Instant::now() + self.ws.state.retry_delay());
         }
@@ -2231,6 +2296,10 @@ impl ClientUi {
         }
         self.editor.play_sync_pending = false;
         self.ws.play_sync_at = None;
+        self.ws.last_camera = None;
+        self.ws.camera_sync_at = None;
+        self.ws.started_scenario = None;
+        self.ws.announce_live = false;
     }
 
     /// Joins the scenario's play session on the play-only screen and publishes
@@ -2253,13 +2322,16 @@ impl ClientUi {
             }
             return;
         }
-        if !self.editor.play_sync_pending {
-            return;
-        }
+        self.publish_play_started();
+        self.publish_play_camera();
+        let periodic = self.editor.play.is_moving();
         let due = self
             .ws
             .play_sync_at
-            .is_none_or(|at| at.elapsed() >= Duration::from_millis(150));
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(250));
+        if !self.editor.play_sync_pending && !(periodic && due) {
+            return;
+        }
         if !due {
             return;
         }
@@ -2267,6 +2339,231 @@ impl ClientUi {
         if self.send_play_message("state", snapshot) {
             self.editor.play_sync_pending = false;
             self.ws.play_sync_at = Some(Instant::now());
+        }
+    }
+
+    /// Tells the server which scenario the public big screen should display.
+    /// Only admin and admin_satker may start the display session; the server
+    /// enforces the same rule.
+    fn publish_play_started(&mut self) {
+        if !self.ws.announce_live {
+            return;
+        }
+        if !matches!(self.role(), Role::Admin | Role::AdminSatker) {
+            return;
+        }
+        let Some(scenario) = self.ws.scenario else {
+            return;
+        };
+        if self.ws.started_scenario == Some(scenario) {
+            return;
+        }
+        if self.send_play_message("started", String::new()) {
+            self.ws.started_scenario = Some(scenario);
+            // Seed the big screen immediately; otherwise it would show the
+            // authored start state until the first movement command.
+            let snapshot = self.editor.play_snapshot().to_string();
+            if self.send_play_message("state", snapshot) {
+                self.editor.play_sync_pending = false;
+                self.ws.play_sync_at = Some(Instant::now());
+            }
+        }
+    }
+
+    /// Publishes the local map camera so the big screen follows the admin's
+    /// zoom, pan, pitch, and bearing.
+    fn publish_play_camera(&mut self) {
+        if !self.ws.announce_live || !matches!(self.role(), Role::Admin | Role::AdminSatker) {
+            return;
+        }
+        let camera = self.editor.map_state;
+        if self.ws.last_camera == Some(camera) {
+            return;
+        }
+        if self
+            .ws
+            .camera_sync_at
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(120))
+        {
+            return;
+        }
+        let data = json!({
+            "lat": camera.center.latitude,
+            "lon": camera.center.longitude,
+            "zoom": camera.zoom,
+            "pitch": camera.pitch_degrees,
+            "bearing": camera.bearing_degrees,
+        })
+        .to_string();
+        if self.send_play_message("camera", data) {
+            self.ws.last_camera = Some(camera);
+            self.ws.camera_sync_at = Some(Instant::now());
+        }
+    }
+
+    // ------------------------------------------------------------ big screen
+
+    /// Opens the public big-screen display. It needs no session: scenarios,
+    /// objects, and assets are loaded from public routes, and live updates come
+    /// from the public polling endpoint.
+    pub fn open_big_screen(&mut self) {
+        if self.state.screen == Screen::BigScreen {
+            return;
+        }
+        self.big_screen.return_screen = self.state.screen;
+        self.big_screen.return_nav = self.state.nav;
+        self.big_screen.active = true;
+        self.big_screen.has_session = false;
+        self.big_screen.scenario_id = None;
+        self.big_screen.session_version = 0;
+        self.big_screen.revision = 0;
+        self.big_screen.state_version = 0;
+        self.big_screen.applied_state_version = 0;
+        self.big_screen.camera_version = 0;
+        self.big_screen.applied_camera_version = 0;
+        self.big_screen.pending_camera = None;
+        self.big_screen.pending_state = None;
+        self.big_screen.last_poll = None;
+        self.big_screen.poll_pending = false;
+        self.leave_play_sync();
+        self.reset_big_screen_map();
+        self.state.screen = Screen::BigScreen;
+        self.state.nav = NavItem::BigScreen;
+        self.request_asset_check(None);
+    }
+
+    /// Leaves the big-screen display and returns to the screen that opened it
+    /// (dashboard or login).
+    pub fn close_big_screen(&mut self) {
+        if !self.big_screen.active {
+            return;
+        }
+        let screen = self.big_screen.return_screen;
+        let nav = self.big_screen.return_nav;
+        self.big_screen = BigScreenUi::default();
+        self.editor.big_screen = false;
+        self.editor.preview = false;
+        self.editor.stop_play();
+        self.editor.scenario_id = None;
+        self.editor.touch();
+        self.state.screen = screen;
+        self.state.nav = nav;
+    }
+
+    fn reset_big_screen_map(&mut self) {
+        self.editor.reset();
+        self.editor.scenario_id = None;
+        self.editor.scenario_name.clear();
+        self.editor.big_screen = true;
+        self.editor.preview = true;
+        self.editor.loaded = true;
+        self.editor.requested_layer = Some(twg_map::BaseLayer::OpenStreetMap);
+        self.editor.requested_camera = Some(indonesia_camera());
+        self.editor.touch();
+    }
+
+    fn start_big_screen_scenario(&mut self, scenario_id: Uuid) {
+        self.big_screen.scenario_id = Some(scenario_id);
+        self.load_editor_scenario(Some(scenario_id), false);
+        self.state.screen = Screen::BigScreen;
+        self.state.nav = NavItem::BigScreen;
+        self.editor.preview = true;
+        self.editor.big_screen = true;
+        self.editor.touch();
+    }
+
+    fn clear_big_screen_session(&mut self) {
+        if !self.big_screen.has_session && self.big_screen.scenario_id.is_none() {
+            return;
+        }
+        self.big_screen.has_session = false;
+        self.big_screen.scenario_id = None;
+        self.big_screen.session_version = 0;
+        self.big_screen.revision = 0;
+        self.big_screen.state_version = 0;
+        self.big_screen.applied_state_version = 0;
+        self.big_screen.camera_version = 0;
+        self.big_screen.applied_camera_version = 0;
+        self.big_screen.pending_camera = None;
+        self.big_screen.pending_state = None;
+        self.reset_big_screen_map();
+        self.state.screen = Screen::BigScreen;
+        self.state.nav = NavItem::BigScreen;
+    }
+
+    fn tick_big_screen(&mut self) {
+        if !self.big_screen.active {
+            return;
+        }
+        let due = self
+            .big_screen
+            .last_poll
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(150));
+        if due && !self.big_screen.poll_pending {
+            self.big_screen.poll_pending = true;
+            self.big_screen.last_poll = Some(Instant::now());
+            let handle = self.api.request(HttpMethod::Get, "/public/play/live", None);
+            self.track(JobKind::BigScreenLive, handle);
+        }
+        // The scenario loads asynchronously; keep the latest snapshot until
+        // Play has been built for the newly loaded objects.
+        if self.editor.loaded
+            && self.editor.play.active
+            && self.big_screen.applied_state_version < self.big_screen.state_version
+            && let Some(state) = self.big_screen.pending_state.clone()
+        {
+            self.editor.apply_play_snapshot(&state);
+            self.big_screen.applied_state_version = self.big_screen.state_version;
+            self.big_screen.pending_state = None;
+        }
+        // Apply the camera only after the scenario's own saved view has been
+        // loaded; otherwise a camera event that arrives while the scenario
+        // requests are in flight would be overwritten by the scenario view.
+        if self.editor.loaded
+            && self.big_screen.applied_camera_version < self.big_screen.camera_version
+            && let Some(camera) = self.big_screen.pending_camera
+        {
+            self.editor.requested_camera = Some(camera);
+            self.big_screen.applied_camera_version = self.big_screen.camera_version;
+        }
+    }
+
+    fn apply_big_screen_live(&mut self, session: Option<PublicLiveSession>) {
+        if !self.big_screen.active {
+            return;
+        }
+        let Some(session) = session else {
+            self.clear_big_screen_session();
+            return;
+        };
+        let reload = !self.big_screen.has_session
+            || self.big_screen.scenario_id != Some(session.scenario_id)
+            || self.big_screen.session_version != session.session_version
+            || self.big_screen.revision != session.revision;
+        if reload {
+            self.big_screen.session_version = session.session_version;
+            self.big_screen.revision = session.revision;
+            self.big_screen.state_version = 0;
+            self.big_screen.applied_state_version = 0;
+            self.big_screen.camera_version = 0;
+            self.big_screen.applied_camera_version = 0;
+            self.big_screen.pending_camera = None;
+            self.big_screen.pending_state = None;
+            self.start_big_screen_scenario(session.scenario_id);
+        }
+        self.big_screen.has_session = true;
+        if session.state_version > self.big_screen.state_version {
+            self.big_screen.state_version = session.state_version;
+            self.big_screen.pending_state = session
+                .state
+                .as_deref()
+                .and_then(|data| serde_json::from_str::<Value>(data).ok());
+        }
+        if session.camera_version > self.big_screen.camera_version {
+            self.big_screen.camera_version = session.camera_version;
+            if let Some(camera) = session.camera.as_deref().and_then(play_camera) {
+                self.big_screen.pending_camera = Some(camera);
+            }
         }
     }
 
@@ -2302,6 +2599,10 @@ impl ClientUi {
     }
 
     pub fn go(&mut self, item: NavItem) {
+        if item == NavItem::BigScreen {
+            self.open_big_screen();
+            return;
+        }
         if item == NavItem::Preview {
             if self.has_offline_manifest() {
                 // A consistent cache snapshot already exists: open the map
@@ -2366,6 +2667,7 @@ impl ClientUi {
             }
             NavItem::Profile => self.sync_profile_fields(),
             NavItem::Preview => self.reload_editor(),
+            NavItem::BigScreen => {}
         }
     }
 
@@ -2375,6 +2677,25 @@ impl ClientUi {
         };
         snapshot.updated_at.date() == filter
     }
+}
+
+fn indonesia_camera() -> MapCameraState {
+    MapCameraState {
+        center: GeoPoint::new(118.0, -2.5),
+        zoom: 5.0,
+        pitch_degrees: 0.0,
+        bearing_degrees: 0.0,
+    }
+}
+
+fn play_camera(data: &str) -> Option<MapCameraState> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    Some(MapCameraState {
+        center: GeoPoint::new(value.get("lon")?.as_f64()?, value.get("lat")?.as_f64()?),
+        zoom: value.get("zoom")?.as_f64()? as f32,
+        pitch_degrees: value.get("pitch")?.as_f64()? as f32,
+        bearing_degrees: value.get("bearing")?.as_f64()? as f32,
+    })
 }
 
 fn encode_query(value: &str) -> String {
@@ -2846,6 +3167,38 @@ fn mime_for_path(path: &std::path::Path) -> &'static str {
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod big_screen_tests {
+    use super::{indonesia_camera, play_camera};
+    use twg_map::GeoPoint;
+
+    #[test]
+    fn indonesia_overview_has_no_pitch_or_bearing() {
+        let camera = indonesia_camera();
+        assert!((camera.center.longitude - 118.0).abs() < 1.0e-9);
+        assert!((camera.center.latitude + 2.5).abs() < 1.0e-9);
+        assert_eq!(camera.pitch_degrees, 0.0);
+        assert_eq!(camera.bearing_degrees, 0.0);
+    }
+
+    #[test]
+    fn play_camera_decodes_the_admin_payload() {
+        let camera =
+            play_camera(r#"{"lat":-7.1,"lon":110.2,"zoom":17.5,"pitch":42.0,"bearing":90.0}"#)
+                .expect("valid camera payload");
+        assert_eq!(camera.center, GeoPoint::new(110.2, -7.1));
+        assert!((camera.zoom - 17.5).abs() < 1.0e-6);
+        assert!((camera.pitch_degrees - 42.0).abs() < 1.0e-6);
+        assert!((camera.bearing_degrees - 90.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn play_camera_rejects_incomplete_payloads() {
+        assert!(play_camera(r#"{"lat":-7.1}"#).is_none());
+        assert!(play_camera("not json").is_none());
     }
 }
 

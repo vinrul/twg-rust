@@ -285,6 +285,10 @@ Klien ke server:
 | `leave` | Keluar dari sesi play; participant terakhir yang keluar menghapus snapshot |
 | `state` | Mengirim snapshot state play terbaru (disimpan server dan disiarkan ke participant lain) |
 | `sync` | Meminta snapshot terakhir yang tersimpan |
+| `started` | Memulai sesi tampilan layar besar untuk skenario ini; hanya `admin` dan `admin_satker` |
+| `camera` | Mengirim kamera `{lat,lon,zoom,pitch,bearing}` untuk layar besar; hanya `admin` dan `admin_satker` |
+| `reload` | Menandai skenario layar besar perlu dimuat ulang; hanya `admin` dan `admin_satker` |
+| `stop` | Mengakhiri sesi tampilan layar besar; hanya `admin` dan `admin_satker` |
 
 Server ke klien (`play_event`):
 
@@ -302,11 +306,20 @@ Server ke klien (`play_event`):
 - `actor` adalah `connection_id` pengirim; client mengabaikan event miliknya
   sendiri. `actor` nil berarti snapshot dari server.
 - `action: "sync"` meminta participant play lain mengirim snapshot segar.
+- `started` menyiapkan sesi tampilan publik. Client yang bukan `admin` atau
+  `admin_satker` tidak boleh memuat skenario baru di layar besar, tetapi
+  `state` dari semua participant tetap memengaruhi animasi dan gerakan yang
+  sedang berjalan. Berpindah skenario lewat tab Skenario tidak mengirim
+  `started`; membuka dari daftar Simulasi atau **Muat ulang** yang mengirimnya.
+- `camera` tidak disiarkan sebagai `play_event`; nilainya disimpan pada sesi
+  publik dan dibaca layar besar.
 - Pesan `play_event` hanya dikirim ke koneksi yang sudah `join`, bukan ke semua
   subscriber skenario, sehingga editor tidak menerima noise play.
 - Sequence tidak dipakai untuk history/resume; snapshot terakhir adalah sumber
   sinkronisasi untuk client yang bergabung belakangan.
-- Kamera (pan/zoom/bearing/pitch) dan perpindahan skenario tidak ikut disinkronkan.
+- Snapshot `state` juga dikirim berkala (±250 ms) saat ada unit/rute bergerak,
+  sehingga layar besar yang memantau lewat polling tetap melihat posisi terbaru.
+- Kamera hanya disinkronkan ke layar besar, bukan ke participant play lain.
 
 Payload snapshot (JSON string di field `data`):
 
@@ -333,3 +346,47 @@ Unit dan rute dicocokkan lewat UUID server (`markers.id` dan `plot_lines.id`),
 sehingga client yang sama-sama punya skenario dapat menerapkannya tanpa ID
 lokal. Ukuran frame tetap dibatasi 64 KB; snapshot dengan unit sangat banyak
 harus dipangkas.
+
+## 11. Layar besar publik
+
+Halaman layar besar tidak login dan tidak memakai WebSocket. Server menyediakan
+endpoint read-only:
+
+```http
+GET /public/play/live
+```
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "session": {
+      "scenario_id": "...",
+      "session_version": 3,
+      "revision": 0,
+      "state": "{\"units\":[],\"routes\":[]}",
+      "state_version": 7,
+      "camera": "{\"lat\":-2.5,\"lon\":118.0,\"zoom\":5.0,\"pitch\":0.0,\"bearing\":0.0}",
+      "camera_version": 2
+    }
+  }
+}
+```
+
+- `session` tidak ada (`data` kosong) berarti belum ada admin yang memulai
+  simulasi; layar besar menampilkan peta Indonesia.
+- `session_version` berubah setiap admin memulai ulang sesi; layar besar memuat
+  ulang skenario. `revision` disediakan untuk reload sesi yang sama tanpa
+  memulai sesi baru; tombol **Muat ulang** saat ini memulai sesi baru sehingga
+  `session_version` yang berubah.
+- `state_version` dan `camera_version` naik monoton. Layar besar hanya menerapkan
+  nilai yang versinya berubah, sehingga polling tidak memutar ulang animasi.
+- Endpoint ini tidak memerlukan autentikasi. Isinya hanya state skenario publik
+  dan kamera yang memang ditampilkan di layar besar; endpoint tulis tetap hanya
+  melalui WebSocket terautentikasi.
+- Manifest aset untuk halaman ini tersedia di `GET /public/assets/manifest`;
+  berkas model/gambar sendiri disajikan dari route statis `/assets`.
+- Server hanya menyimpan satu sesi tampilan aktif dalam memori. Memulai sesi baru
+  menggantikan sesi sebelumnya; deployment multi-instance memerlukan store
+  bersama agar semua instance melihat sesi yang sama.

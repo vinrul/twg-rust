@@ -69,6 +69,13 @@ struct EditorRequest {
 
 impl ClientUi {
     pub fn open_editor(&mut self, scenario_id: Option<Uuid>) {
+        self.load_editor_scenario(scenario_id, true);
+    }
+
+    /// Loads a scenario without talking to private endpoints. The big-screen
+    /// page is public, so it must work with only the public scenario and asset
+    /// routes.
+    pub(crate) fn load_editor_scenario(&mut self, scenario_id: Option<Uuid>, load_assets: bool) {
         // Leaving any play-only session before loading another scenario.
         self.leave_play_sync();
         let scenario_id = scenario_id
@@ -79,7 +86,9 @@ impl ClientUi {
         self.imports.clear();
         self.state.nav = NavItem::Preview;
         self.state.screen = Screen::MapEditor;
-        self.refresh_assets();
+        if load_assets {
+            self.refresh_assets();
+        }
         self.sync_editor_marker_models();
 
         let Some(scenario_id) = scenario_id else {
@@ -132,16 +141,18 @@ impl ClientUi {
 
     /// Opens a scenario directly in the play-only screen (no editor panels).
     pub fn open_play(&mut self, scenario_id: Option<Uuid>) {
-        self.start_play_screen(scenario_id, false);
+        self.start_play_screen(scenario_id, false, true);
     }
 
     /// Switches the play-only screen to another scenario of the same operation,
-    /// keeping the Skenario tab selected.
+    /// keeping the Skenario tab selected. Switching does not change the public
+    /// big-screen scenario; only opening from the Simulasi list or reloading
+    /// announces a new live session.
     pub fn switch_play_scenario(&mut self, scenario_id: Uuid) {
-        self.start_play_screen(Some(scenario_id), true);
+        self.start_play_screen(Some(scenario_id), true, false);
     }
 
-    fn start_play_screen(&mut self, scenario_id: Option<Uuid>, keep_tab: bool) {
+    fn start_play_screen(&mut self, scenario_id: Option<Uuid>, keep_tab: bool, announce: bool) {
         let tab = self.editor.play_panel_tab;
         self.open_editor(scenario_id);
         self.state.screen = Screen::Preview;
@@ -149,12 +160,18 @@ impl ClientUi {
         self.state.nav = NavItem::Games;
         self.editor.preview = true;
         self.editor.play_panel_tab = if keep_tab { tab } else { 0 };
+        self.ws.announce_live = announce;
         self.editor.touch();
         self.refresh_home();
     }
 
     /// Leaves the play-only screen and returns to the Simulasi list.
     pub fn close_play(&mut self) {
+        if matches!(self.role(), Role::Admin | Role::AdminSatker) {
+            // Closing the driving screen ends the public display session; the
+            // big screen then returns to the Indonesia overview.
+            self.send_play_message("stop", String::new());
+        }
         self.leave_play_sync();
         self.state.screen = Screen::Workspace;
         self.state.nav = NavItem::Games;
@@ -165,6 +182,13 @@ impl ClientUi {
 
     /// Reloads the import assets of the operation shown in the editor.
     pub fn refresh_imports(&mut self) {
+        if self.state.screen == Screen::BigScreen {
+            // The public display has no session and does not render the import
+            // tab; admin/global models already arrive through the public
+            // manifest.
+            self.imports.clear();
+            return;
+        }
         let Some(operation_id) = self.editor.operation_id else {
             self.imports.clear();
             return;
@@ -495,6 +519,17 @@ impl ClientUi {
     pub fn reload_editor(&mut self) {
         let scenario_id = self.editor.scenario_id;
         self.open_editor(scenario_id);
+    }
+
+    /// Reloads the scenario shown on the play-only screen. This starts a fresh
+    /// live session, so the public big screen reloads the scenario as well.
+    pub fn reload_play(&mut self) {
+        if self.state.screen == Screen::Preview {
+            let scenario_id = self.editor.scenario_id;
+            self.start_play_screen(scenario_id, true, true);
+        } else {
+            self.reload_editor();
+        }
     }
 
     pub fn editor_save(&mut self) {

@@ -144,7 +144,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         }
         EditorAction::Close => client.close_editor(),
         EditorAction::ClosePlay => client.close_play(),
-        EditorAction::Reload => client.reload_editor(),
+        EditorAction::Reload => client.reload_play(),
         EditorAction::SaveAndReload => {
             client.editor_save();
             client.reload_editor();
@@ -152,6 +152,20 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         EditorAction::Geocode => client.editor_geocode(),
         EditorAction::SaveView => client.editor_save_view(),
         EditorAction::None => {}
+    }
+}
+
+pub fn draw_big_screen(context: &egui::Context, client: &mut ClientUi) {
+    client.editor.base_url.clone_from(&client.base_url);
+    client.sync_editor_marker_models();
+    {
+        let editor = &mut client.editor;
+        editor.preview = true;
+        editor.big_screen = true;
+        root_ui(context, |ui| draw_viewport(ui, editor));
+    }
+    if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+        client.close_big_screen();
     }
 }
 
@@ -200,6 +214,9 @@ fn draw_preview_bar(
                     if play_only {
                         if ui.button("Tutup simulasi").clicked() {
                             *action = EditorAction::ClosePlay;
+                        }
+                        if can_admin && ui.button("Muat ulang").clicked() {
+                            *action = EditorAction::Reload;
                         }
                     } else if ui.button("■ Stop").clicked() {
                         editor.preview = false;
@@ -3336,6 +3353,7 @@ fn hex_from_rgb(rgb: [u8; 3]) -> String {
 
 fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
     let context = root.ctx().clone();
+    let big_screen = editor.big_screen;
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(root, |ui| {
@@ -3362,13 +3380,15 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                 draw_marquee(&painter, editor);
                 draw_labels(&painter, editor);
                 draw_point_edit_handles(&painter, editor);
-            } else {
+            } else if !big_screen {
                 draw_play_overlay(&painter, editor);
             }
             draw_text_overlays(&painter, editor);
-            draw_compass(&painter, rect, editor);
-            draw_scale_bar(&painter, rect, editor);
-            draw_crosshair(&painter, rect);
+            if !big_screen {
+                draw_compass(&painter, rect, editor);
+                draw_scale_bar(&painter, rect, editor);
+                draw_crosshair(&painter, rect);
+            }
             if editor.pick_route_marker.is_some() {
                 let text = "Klik marker di peta untuk target rute · Esc batal";
                 let galley = painter.layout_no_wrap(
@@ -3402,17 +3422,19 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                         .corner_radius(egui::CornerRadius::same(6))
                         .inner_margin(egui::Margin::same(6))
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if ui.small_button("+").clicked() {
-                                    editor.requested_zoom = Some(0.5);
-                                }
-                                if ui.small_button("−").clicked() {
-                                    editor.requested_zoom = Some(-0.5);
-                                }
-                                if ui.small_button("N").clicked() {
-                                    editor.requested_north = true;
-                                }
-                            });
+                            if !big_screen {
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("+").clicked() {
+                                        editor.requested_zoom = Some(0.5);
+                                    }
+                                    if ui.small_button("−").clicked() {
+                                        editor.requested_zoom = Some(-0.5);
+                                    }
+                                    if ui.small_button("N").clicked() {
+                                        editor.requested_north = true;
+                                    }
+                                });
+                            }
                             ui.monospace(format!("{:.2}", editor.map_state.zoom));
                             ui.monospace(format!(
                                 "{:.1}° / {:.1}°",

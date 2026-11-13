@@ -11,6 +11,9 @@ pub enum Screen {
     Workspace,
     MapEditor,
     Preview,
+    /// Public big-screen display for the Simulasi play session. No login is
+    /// required; the camera and play state follow the active admin session.
+    BigScreen,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,11 +31,12 @@ pub enum NavItem {
     Online,
     Snapshots,
     Preview,
+    BigScreen,
     Profile,
 }
 
 impl NavItem {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Dashboard,
         Self::Operations,
         Self::Scenarios,
@@ -44,6 +48,7 @@ impl NavItem {
         Self::Online,
         Self::Snapshots,
         Self::Preview,
+        Self::BigScreen,
         Self::Profile,
     ];
 
@@ -60,6 +65,7 @@ impl NavItem {
             Self::Online => "Online",
             Self::Snapshots => "Snapshot",
             Self::Preview => "Peta",
+            Self::BigScreen => "Layar Besar",
             Self::Profile => "Profil",
         }
     }
@@ -77,6 +83,7 @@ impl NavItem {
             Self::Online => "@",
             Self::Snapshots => "SN",
             Self::Preview => "MP",
+            Self::BigScreen => "LB",
             Self::Profile => "PR",
         }
     }
@@ -84,6 +91,7 @@ impl NavItem {
     pub const fn screen(self) -> Screen {
         match self {
             Self::Preview => Screen::MapEditor,
+            Self::BigScreen => Screen::BigScreen,
             _ => Screen::Workspace,
         }
     }
@@ -205,6 +213,22 @@ mod tests {
         state.login(session(Role::User));
         state.navigate(NavItem::Preview);
         assert_eq!(state.screen, Screen::MapEditor);
+    }
+
+    #[test]
+    fn every_role_can_open_the_public_big_screen() {
+        for role in [
+            Role::Admin,
+            Role::AdminMonitor,
+            Role::AdminSatker,
+            Role::User,
+        ] {
+            assert!(NavItem::BigScreen.allowed_for(role));
+            let mut state = ClientState::default();
+            state.login(session(role));
+            state.navigate(NavItem::BigScreen);
+            assert_eq!(state.screen, Screen::BigScreen);
+        }
     }
 
     #[test]

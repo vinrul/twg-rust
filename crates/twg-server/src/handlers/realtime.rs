@@ -12,9 +12,9 @@ use tokio::time::{interval, timeout};
 use twg_auth::AuthContext;
 use twg_contracts::SingleResponse;
 use twg_contracts::realtime::{
-    ClientMessage, ServerMessage, WS_PATH, WS_PROTOCOL, WsTicketResponse,
+    ClientMessage, PublicLiveResponse, ServerMessage, WS_PATH, WS_PROTOCOL, WsTicketResponse,
 };
-use twg_domain::SessionSubject;
+use twg_domain::{Role, SessionSubject};
 use uuid::Uuid;
 
 use crate::error::ApiError;
@@ -557,6 +557,7 @@ async fn play(
         return;
     }
     let action = action.trim().to_ascii_lowercase();
+    let can_drive_big_screen = matches!(subject.role, Role::Admin | Role::AdminSatker);
     match action.as_str() {
         "join" => {
             if let Some(data) = state.realtime.hub.join_play(connection_id, skenario_id)
@@ -588,8 +589,79 @@ async fn play(
             );
         }
         "leave" => state.realtime.hub.leave_play(connection_id, skenario_id),
+        "started" => {
+            if !can_drive_big_screen {
+                send_error(
+                    state,
+                    connection_id,
+                    request_id,
+                    "forbidden",
+                    "only admin and admin_satker can start the big-screen session",
+                    false,
+                );
+                return;
+            }
+            state.realtime.hub.start_live(skenario_id);
+            if !data.is_empty() {
+                state.realtime.hub.set_live_camera(skenario_id, data);
+            }
+        }
+        "camera" => {
+            if !can_drive_big_screen {
+                send_error(
+                    state,
+                    connection_id,
+                    request_id,
+                    "forbidden",
+                    "only admin and admin_satker can move the big-screen camera",
+                    false,
+                );
+                return;
+            }
+            if data.is_empty() {
+                send_error(
+                    state,
+                    connection_id,
+                    request_id,
+                    "invalid_payload",
+                    "camera payload is required",
+                    false,
+                );
+                return;
+            }
+            state.realtime.hub.set_live_camera(skenario_id, data);
+        }
+        "reload" => {
+            if !can_drive_big_screen {
+                send_error(
+                    state,
+                    connection_id,
+                    request_id,
+                    "forbidden",
+                    "only admin and admin_satker can reload the big-screen session",
+                    false,
+                );
+                return;
+            }
+            state.realtime.hub.reload_live(skenario_id);
+        }
+        "stop" => {
+            if !can_drive_big_screen {
+                send_error(
+                    state,
+                    connection_id,
+                    request_id,
+                    "forbidden",
+                    "only admin and admin_satker can stop the big-screen session",
+                    false,
+                );
+                return;
+            }
+            state.realtime.hub.clear_live(skenario_id);
+        }
         "state" => {
             state.realtime.hub.set_play_state(skenario_id, data.clone());
+            state.realtime.hub.set_live_state(skenario_id, data.clone());
             state.realtime.hub.broadcast_play(
                 skenario_id,
                 None,
@@ -724,4 +796,15 @@ fn send_error(
             retryable,
         },
     );
+}
+
+/// Public read-only endpoint used by the big-screen page. It deliberately
+/// carries no authentication and only exposes the live session started by an
+/// admin on the authenticated WebSocket.
+pub async fn public_live(
+    State(state): State<AppState>,
+) -> Json<SingleResponse<PublicLiveResponse>> {
+    Json(SingleResponse::success(PublicLiveResponse {
+        session: state.realtime.hub.live(),
+    }))
 }

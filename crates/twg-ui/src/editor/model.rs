@@ -297,6 +297,18 @@ pub struct PlayState {
     pub right_press: Option<egui::Pos2>,
 }
 
+impl PlayState {
+    /// True while any unit is walking or any route is still playing. The
+    /// play-only screen uses this to refresh the public big-screen snapshot
+    /// even when no new command was issued.
+    pub fn is_moving(&self) -> bool {
+        self.units.values().any(|unit| unit.target.is_some())
+            || self.animations.iter().any(|animation| {
+                animation.state == PlaybackState::Playing && !animation.is_finished()
+            })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditorTool {
     Select,
@@ -1262,6 +1274,9 @@ pub struct EditorState {
     pub measure_screen: Vec<egui::Pos2>,
     pub console: Vec<String>,
     pub preview: bool,
+    /// Public big-screen display: map only, no editor or play controls, and no
+    /// local camera input.
+    pub big_screen: bool,
     pub visible: VisibleLayers,
     /// Server asset models resolved from the offline cache, keyed by asset UUID.
     pub marker_models: BTreeMap<String, MarkerAssetModel>,
@@ -1414,7 +1429,8 @@ impl EditorState {
             measure_screen: Vec::new(),
             console: Vec::new(),
             preview: false,
-            visible: VisibleLayers::all(),
+            big_screen: false,
+            visible: VisibleLayers::default(),
             marker_models: BTreeMap::new(),
             texture_paths: BTreeMap::new(),
             texture_files: BTreeMap::new(),
@@ -4280,6 +4296,25 @@ mod tests {
                 assert_ne!(first, second);
             }
         }
+    }
+
+    #[test]
+    fn play_reports_movement_only_while_a_unit_or_route_runs() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        add_animated_marker(&mut editor, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", base);
+        editor.start_play();
+        assert!(!editor.play.is_moving());
+
+        let target = GeoPoint::from_local_offset(base, 4.0, 0.0).unwrap();
+        editor.selected = editor.play.units.keys().copied().collect();
+        editor.play_move_selected(target);
+        assert!(editor.play.is_moving());
+
+        for _ in 0..600 {
+            editor.play_tick(1.0 / 60.0);
+        }
+        assert!(!editor.play.is_moving());
     }
 
     #[test]

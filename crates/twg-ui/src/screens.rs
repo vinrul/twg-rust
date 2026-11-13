@@ -20,11 +20,16 @@ use crate::theme::{self, color, color_alpha};
 use crate::widgets;
 
 pub fn draw(context: &egui::Context, client: &mut ClientUi) {
+    if client.state.screen == Screen::BigScreen {
+        crate::editor::panels::draw_big_screen(context, client);
+        return;
+    }
     match client.state.screen {
         Screen::Boot => draw_boot(context, client),
         Screen::Login => draw_login(context, client),
         Screen::Preview | Screen::MapEditor => crate::editor::panels::draw(context, client),
         Screen::Workspace => draw_shell(context, client),
+        Screen::BigScreen => {}
     }
     crate::assets_screen::draw_sync_overlay(context, client);
     draw_modal(context, client);
@@ -102,6 +107,10 @@ fn draw_login(context: &egui::Context, client: &mut ClientUi) {
                     });
                     ui.add_space(SPACE_2);
                     widgets::key_hint(ui, "Enter", "Masuk");
+                    ui.add_space(SPACE_2);
+                    if widgets::ghost_button(ui, "Buka layar besar (tanpa login)").clicked() {
+                        client.open_big_screen();
+                    }
                 });
             });
         });
@@ -278,6 +287,7 @@ fn draw_screen(ui: &mut egui::Ui, client: &mut ClientUi) {
         NavItem::Snapshots => screen_snapshots(ui, client),
         NavItem::Profile => screen_profile(ui, client),
         NavItem::Preview => {}
+        NavItem::BigScreen => {}
     }
 }
 
@@ -345,6 +355,9 @@ fn screen_dashboard(ui: &mut egui::Ui, client: &mut ClientUi) {
                 client.ws.scenario = Some(scenario.id);
             }
             client.go(NavItem::Preview);
+        }
+        if widgets::secondary_button(ui, "Layar besar").clicked() {
+            client.open_big_screen();
         }
     });
     ui.add_space(SPACE_6);
