@@ -199,7 +199,11 @@ pub const MIN_MARKER_SCALE: f64 = 0.001;
 
 /// RTS play mode tuning.
 const PLAY_ARRIVE_METERS: f64 = 0.6;
-const PLAY_FORMATION_SPACING: f64 = 2.6;
+/// Default distance between formation slots of a multiple-marker route.
+pub(crate) const PLAY_FORMATION_SPACING: f64 = 2.6;
+/// Bounds for the authored formation spacing, in metres.
+pub(crate) const MIN_ROUTE_SPACING: f64 = 0.5;
+pub(crate) const MAX_ROUTE_SPACING: f64 = 50.0;
 const PLAY_LOOKAHEAD_METERS: f64 = 6.0;
 
 /// Runtime state of one movable unit in Play mode. Positions live here (not in
@@ -254,6 +258,8 @@ pub struct PlayRouteAnimation {
     pub formation: RouteFormation,
     /// Number of formation columns for grid layouts.
     pub columns: usize,
+    /// Distance in metres between formation slots.
+    pub spacing: f64,
     pub points: Vec<GeoPoint>,
     pub altitudes: Vec<f64>,
     /// Metres per second along the polyline.
@@ -554,6 +560,8 @@ pub struct RouteAnimation {
     pub formation: RouteFormation,
     /// Number of columns in a grid formation.
     pub columns: usize,
+    /// Distance in metres between formation slots while the route runs.
+    pub spacing: f64,
     /// Restart from the first point after reaching the end.
     pub repeat: bool,
     /// Position in the Play animation order, persisted in the route metadata.
@@ -586,6 +594,7 @@ impl Default for RouteAnimation {
             marker_ids: Vec::new(),
             formation: RouteFormation::Grid,
             columns: 4,
+            spacing: PLAY_FORMATION_SPACING,
             repeat: false,
             order: 0,
         }
@@ -1962,6 +1971,7 @@ impl EditorState {
                 marker_keys,
                 formation: route.formation,
                 columns: route.columns.max(1),
+                spacing: route.spacing.clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
                 points: points.clone(),
                 altitudes: line.altitudes.clone(),
                 speed: route.speed.clamp(0.1, 100.0),
@@ -2155,7 +2165,7 @@ impl EditorState {
             animation.marker_keys.len(),
             animation.formation,
             animation.columns,
-            PLAY_FORMATION_SPACING,
+            animation.spacing,
         );
         // Grid slots are relative to the direction of travel: the first row is
         // in front, columns stay perpendicular to the route, and the formation
@@ -4401,6 +4411,41 @@ mod tests {
         assert!((offsets[2].north_meters - 3.7).abs() < 0.25);
         let column_gap = offsets[1].east_meters - offsets[0].east_meters;
         assert!((column_gap - 2.6).abs() < 1.0e-6, "gap {column_gap}");
+    }
+
+    #[test]
+    fn multiple_route_spacing_controls_formation_gaps() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 100.0, 0.0).expect("east");
+        let keys = add_multiple_route(&mut editor, 4, 2, base, end);
+        if let Some(object) = editor.objects.iter_mut().find(
+            |object| matches!(&object.kind, EditorKind::Line(line) if line.animation.is_some()),
+        ) && let EditorKind::Line(line) = &mut object.kind
+            && let Some(animation) = &mut line.animation
+        {
+            animation.spacing = 4.0;
+        }
+
+        editor.start_play();
+        assert!((editor.play.animations[0].spacing - 4.0).abs() < 1.0e-9);
+        editor.play_route_animation(0);
+        editor.play_tick(0.1);
+
+        let offsets = keys
+            .iter()
+            .map(|key| {
+                editor.play.units[key]
+                    .position
+                    .local_offset(base)
+                    .expect("offset")
+            })
+            .collect::<Vec<_>>();
+        // Heading east: columns sit 4 m apart north and rows 4 m apart east.
+        assert!((offsets[0].north_meters - 2.0).abs() < 0.25);
+        assert!((offsets[1].north_meters + 2.0).abs() < 0.25);
+        assert!((offsets[0].east_meters - 7.0).abs() < 0.25);
+        assert!((offsets[2].east_meters - 3.0).abs() < 0.25);
     }
 
     #[test]

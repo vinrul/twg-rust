@@ -30,8 +30,9 @@ use crate::state::{ClientUi, JobKind, ToastKind};
 use super::model::MarkerAssetModel;
 use super::model::{
     BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, LineObject,
-    MarkerObject, ObjectKey, ObjectType, ParticleObject, ParticleSettings, RouteAnimation,
-    RouteAnimationKind, RouteFormation, TextObject, unit_for_uuid,
+    MAX_ROUTE_SPACING, MIN_ROUTE_SPACING, MarkerObject, ObjectKey, ObjectType,
+    PLAY_FORMATION_SPACING, ParticleObject, ParticleSettings, RouteAnimation, RouteAnimationKind,
+    RouteFormation, TextObject, unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1558,6 +1559,9 @@ fn line_keterangan(line: &LineObject) -> String {
                 .collect::<Vec<_>>(),
             "formation": animation.formation.key(),
             "columns": animation.columns.max(1),
+            "spacing": animation
+                .spacing
+                .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
             "repeat": animation.repeat,
             "order": animation.order,
         }
@@ -1624,6 +1628,11 @@ fn parse_route_animation(raw: &str) -> Option<RouteAnimation> {
             .and_then(Value::as_u64)
             .unwrap_or(4)
             .clamp(1, 64) as usize,
+        spacing: animation
+            .get("spacing")
+            .and_then(Value::as_f64)
+            .unwrap_or(PLAY_FORMATION_SPACING)
+            .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
         repeat: animation
             .get("repeat")
             .and_then(Value::as_bool)
@@ -2092,6 +2101,7 @@ mod tests {
             marker_ids: ids.to_vec(),
             formation: RouteFormation::Grid,
             columns: 3,
+            spacing: 4.5,
             ..RouteAnimation::default()
         });
 
@@ -2100,11 +2110,13 @@ mod tests {
         assert_eq!(parsed.marker_ids, ids);
         assert_eq!(parsed.formation, RouteFormation::Grid);
         assert_eq!(parsed.columns, 3);
+        assert!((parsed.spacing - 4.5).abs() < 1.0e-9);
 
         let legacy = parse_route_animation(r#"{"animation":{"type":"route","marker_id":null}}"#)
             .expect("legacy route");
         assert_eq!(legacy.kind, RouteAnimationKind::Single);
         assert!(legacy.marker_ids.is_empty());
+        assert!((legacy.spacing - PLAY_FORMATION_SPACING).abs() < 1.0e-9);
     }
 
     #[test]

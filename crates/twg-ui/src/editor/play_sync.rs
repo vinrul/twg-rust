@@ -188,8 +188,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::super::model::{
-        EditorKind, EditorObject, EditorState, LineObject, MarkerObject, PlayRouteAnimation,
-        PlayUnit, PlaybackState,
+        EditorKind, EditorObject, EditorState, LineObject, MarkerObject, PLAY_FORMATION_SPACING,
+        PlayRouteAnimation, PlayUnit, PlaybackState,
     };
 
     fn marker(id: Uuid, point: GeoPoint) -> EditorObject {
@@ -234,6 +234,7 @@ mod tests {
             marker_keys: Vec::new(),
             formation: super::super::model::RouteFormation::Grid,
             columns: 4,
+            spacing: PLAY_FORMATION_SPACING,
             points: vec![
                 GeoPoint::new(115.225, -8.648),
                 GeoPoint::new(115.226, -8.648),

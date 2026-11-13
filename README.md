@@ -533,9 +533,11 @@ untuk selesai), lalu Inspector mengatur kecepatan, urutan tampil di tab
   rute.
 - Formasi yang tersedia saat ini **Grid** dengan jumlah **Kolom** yang bisa
   diatur (1–64). Baris terakhir boleh lebih pendek, misalnya 8 marker dengan 3
-  kolom menjadi 3/3/2 dan tetap lurus dengan kolom di atasnya. Formasi berputar
-  mengikuti arah jalur sehingga bentuknya tidak berubah di tikungan; jenis
-  formasi lain (lingkaran, segitiga) bisa ditambahkan lewat `RouteFormation`.
+  kolom menjadi 3/3/2 dan tetap lurus dengan kolom di atasnya. **Jarak antar
+  marker** (default 2,6 m, rentang 0,5–50 m) mengatur lebar dan panjang formasi
+  saat rute berjalan. Formasi berputar mengikuti arah jalur sehingga bentuknya
+  tidak berubah di tikungan; jenis formasi lain (lingkaran, segitiga) bisa
+  ditambahkan lewat `RouteFormation`.
 - Marker yang sudah terkunci ke rute tidak ikut formasi klik kanan. Memberi
   perintah gerak ke salah satu marker mem-pause seluruh rute multiple, dan
   **Resume** mengembalikan semua marker ke formasinya.

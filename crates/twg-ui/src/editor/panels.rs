@@ -13,8 +13,9 @@ use crate::widgets;
 use super::input::distance_meters;
 use super::model::{
     AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, PlaybackState, RouteAnimation,
-    RouteAnimationKind, RouteFormation, marker_color, parse_hex_color, particle_kind_label,
+    MAX_ROUTE_SPACING, MIN_MARKER_SCALE, MIN_ROUTE_SPACING, ObjectKey, ObjectType,
+    ParticleSettings, PlaybackState, RouteAnimation, RouteAnimationKind, RouteFormation,
+    marker_color, parse_hex_color, particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3143,6 +3144,28 @@ fn draw_route_marker_selector(
                 )));
             });
         }
+        ui.horizontal(|ui| {
+            ui.label("Jarak antar marker");
+            let mut spacing = animation
+                .spacing
+                .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING);
+            if ui
+                .add(
+                    egui::DragValue::new(&mut spacing)
+                        .range(MIN_ROUTE_SPACING..=MAX_ROUTE_SPACING)
+                        .speed(0.1)
+                        .suffix(" m"),
+                )
+                .on_hover_text("Jarak antar slot formasi saat rute berjalan.")
+                .changed()
+            {
+                animation.spacing = spacing;
+                changed = true;
+            }
+        });
+        ui.label(theme::muted(
+            "Jarak antar marker menentukan lebar dan panjang formasi.",
+        ));
         ui.label("Marker yang bergerak");
         if animation.marker_ids.is_empty() {
             ui.label(theme::muted(
