@@ -12,7 +12,7 @@ use tokio::time::{interval, timeout};
 use twg_auth::AuthContext;
 use twg_contracts::SingleResponse;
 use twg_contracts::realtime::{
-    ClientMessage, PublicLiveResponse, ServerMessage, WS_PATH, WS_PROTOCOL, WsTicketResponse,
+    ClientMessage, ServerMessage, WS_PATH, WS_PROTOCOL, WsTicketResponse,
 };
 use twg_domain::{Role, SessionSubject};
 use uuid::Uuid;
@@ -284,6 +284,25 @@ async fn process_message(
                 data,
             )
             .await;
+        }
+        ClientMessage::WatchLive { request_id } => {
+            if !state
+                .realtime
+                .hub
+                .watch_live(connection_id, request_id.clone())
+            {
+                send_error(
+                    state,
+                    connection_id,
+                    request_id,
+                    "not_connected",
+                    "connection is no longer registered",
+                    false,
+                );
+            }
+        }
+        ClientMessage::UnwatchLive { .. } => {
+            state.realtime.hub.unwatch_live(connection_id);
         }
         ClientMessage::Ping { request_id } => {
             let _ = state
@@ -796,15 +815,4 @@ fn send_error(
             retryable,
         },
     );
-}
-
-/// Public read-only endpoint used by the big-screen page. It deliberately
-/// carries no authentication and only exposes the live session started by an
-/// admin on the authenticated WebSocket.
-pub async fn public_live(
-    State(state): State<AppState>,
-) -> Json<SingleResponse<PublicLiveResponse>> {
-    Json(SingleResponse::success(PublicLiveResponse {
-        session: state.realtime.hub.live(),
-    }))
 }

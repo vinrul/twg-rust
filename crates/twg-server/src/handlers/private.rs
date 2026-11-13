@@ -145,7 +145,7 @@ pub async fn categories(
 fn satker_scope(context: &AuthContext) -> SatkerScope {
     match context.subject.role {
         Role::Admin | Role::AdminMonitor => SatkerScope::All,
-        Role::User => SatkerScope::Unscoped,
+        Role::User | Role::BigScreen => SatkerScope::Unscoped,
         Role::AdminSatker | Role::UserSatker => context
             .subject
             .satker_id

@@ -1136,6 +1136,7 @@ fn parse_role(value: Option<&str>) -> Role {
         Some("admin_monitor") => Role::AdminMonitor,
         Some("admin_satker") => Role::AdminSatker,
         Some("user_satker") => Role::UserSatker,
+        Some("big_screen") => Role::BigScreen,
         _ => Role::User,
     }
 }

@@ -660,6 +660,7 @@ fn role_badge(ui: &mut egui::Ui, role: Role) {
         Role::AdminSatker => ("admin_satker", DARK.warning),
         Role::UserSatker => ("user_satker", DARK.muted_foreground),
         Role::User => ("user", DARK.muted_foreground),
+        Role::BigScreen => ("big_screen", DARK.muted_foreground),
     };
     egui::Frame::new()
         .fill(egui::Color32::from_rgba_unmultiplied(

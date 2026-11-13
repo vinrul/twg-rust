@@ -54,6 +54,8 @@ Klien ke server:
 | `publish` | Mengirim command |
 | `resume` | Berlangganan ulang dan meminta event setelah `last_sequence` |
 | `presence` | Meminta jumlah koneksi dan user pada skenario |
+| `watch_live` | Berlangganan sesi layar besar dan menerima snapshot awal |
+| `unwatch_live` | Berhenti menerima sesi layar besar |
 | `ping` | Aplikasi-level ping |
 
 Server ke klien:
@@ -64,6 +66,7 @@ Server ke klien:
 | `ack` | Konfirmasi subscribe/publish, berisi `sequence` |
 | `event` | Command yang diterima semua subscriber skenario |
 | `presence` | Jumlah koneksi dan daftar `user_ids` unik |
+| `live` | Snapshot sesi layar besar; dikirim saat watch dan setiap perubahan |
 | `resync` | Klien harus memuat ulang state dari snapshot |
 | `error` | Kesalahan terstruktur |
 | `pong` | Balasan `ping` |
@@ -318,7 +321,8 @@ Server ke klien (`play_event`):
 - Sequence tidak dipakai untuk history/resume; snapshot terakhir adalah sumber
   sinkronisasi untuk client yang bergabung belakangan.
 - Snapshot `state` juga dikirim berkala (±250 ms) saat ada unit/rute bergerak,
-  sehingga layar besar yang memantau lewat polling tetap melihat posisi terbaru.
+  sehingga layar besar dan client yang bergabung terlambat tetap melihat posisi
+  terbaru.
 - Kamera hanya disinkronkan ke layar besar, bukan ke participant play lain.
 
 Payload snapshot (JSON string di field `data`):
@@ -347,46 +351,49 @@ sehingga client yang sama-sama punya skenario dapat menerapkannya tanpa ID
 lokal. Ukuran frame tetap dibatasi 64 KB; snapshot dengan unit sangat banyak
 harus dipangkas.
 
-## 11. Layar besar publik
+## 11. Layar besar
 
-Halaman layar besar tidak login dan tidak memakai WebSocket. Server menyediakan
-endpoint read-only:
+Halaman layar besar sekarang memerlukan login dan memakai WebSocket yang sama.
+Role khusus `big_screen` hanya dapat membuka halaman ini; role lain juga dapat
+membukanya dari Dashboard. Klien berlangganan sesi tampilan dengan:
 
-```http
-GET /public/play/live
+```json
+{"type":"watch_live","request_id":"ui-live-watch"}
 ```
+
+Server membalas snapshot awal (`session` tidak ada berarti belum ada sesi):
 
 ```json
 {
-  "code": 200,
-  "message": "success",
-  "data": {
-    "session": {
-      "scenario_id": "...",
-      "session_version": 3,
-      "revision": 0,
-      "state": "{\"units\":[],\"routes\":[]}",
-      "state_version": 7,
-      "camera": "{\"lat\":-2.5,\"lon\":118.0,\"zoom\":5.0,\"pitch\":0.0,\"bearing\":0.0}",
-      "camera_version": 2
-    }
+  "type": "live",
+  "session": {
+    "scenario_id": "...",
+    "session_version": 3,
+    "revision": 0,
+    "state": "{\"units\":[],\"routes\":[]}",
+    "state_version": 7,
+    "camera": "{\"lat\":-2.5,\"lon\":118.0,\"zoom\":5.0,\"pitch\":0.0,\"bearing\":0.0}",
+    "camera_version": 2
   }
 }
 ```
 
-- `session` tidak ada (`data` kosong) berarti belum ada admin yang memulai
-  simulasi; layar besar menampilkan peta Indonesia.
+Setelah itu server mendorong pesan `live` baru setiap kali `started`, `state`,
+`camera`, `reload`, atau `stop` mengubah sesi. Klien tidak perlu polling.
+
+- `session` tidak ada berarti belum ada admin yang memulai simulasi; layar besar
+  menampilkan peta Indonesia.
 - `session_version` berubah setiap admin memulai ulang sesi; layar besar memuat
   ulang skenario. `revision` disediakan untuk reload sesi yang sama tanpa
   memulai sesi baru; tombol **Muat ulang** saat ini memulai sesi baru sehingga
   `session_version` yang berubah.
 - `state_version` dan `camera_version` naik monoton. Layar besar hanya menerapkan
-  nilai yang versinya berubah, sehingga polling tidak memutar ulang animasi.
-- Endpoint ini tidak memerlukan autentikasi. Isinya hanya state skenario publik
-  dan kamera yang memang ditampilkan di layar besar; endpoint tulis tetap hanya
-  melalui WebSocket terautentikasi.
-- Manifest aset untuk halaman ini tersedia di `GET /public/assets/manifest`;
-  berkas model/gambar sendiri disajikan dari route statis `/assets`.
+  nilai yang versinya berubah.
+- Hanya koneksi terautentikasi yang dapat mengirim `watch_live`; semua role yang
+  sudah login boleh menonton. Pesan `started`, `camera`, `reload`, dan `stop`
+  tetap hanya diterima dari `admin`/`admin_satker`.
+- Manifest aset tetap memakai `GET /private/assets/manifest` karena halaman
+  sudah login; berkas model/gambar disajikan dari route statis `/assets`.
 - Server hanya menyimpan satu sesi tampilan aktif dalam memori. Memulai sesi baru
   menggantikan sesi sebelumnya; deployment multi-instance memerlukan store
   bersama agar semua instance melihat sesi yang sama.

@@ -107,10 +107,6 @@ fn draw_login(context: &egui::Context, client: &mut ClientUi) {
                     });
                     ui.add_space(SPACE_2);
                     widgets::key_hint(ui, "Enter", "Masuk");
-                    ui.add_space(SPACE_2);
-                    if widgets::ghost_button(ui, "Buka layar besar (tanpa login)").clicked() {
-                        client.open_big_screen();
-                    }
                 });
             });
         });
@@ -1402,6 +1398,7 @@ fn draw_modal(context: &egui::Context, client: &mut ClientUi) {
                         ("admin_satker".to_owned(), "Admin satker".to_owned()),
                         ("user_satker".to_owned(), "User satker".to_owned()),
                         ("user".to_owned(), "User".to_owned()),
+                        ("big_screen".to_owned(), "Layar besar".to_owned()),
                     ],
                 );
                 form.role = role;
@@ -1683,6 +1680,7 @@ fn user_form(user: &User) -> UserForm {
             Role::AdminSatker => "admin_satker",
             Role::UserSatker => "user_satker",
             Role::User => "user",
+            Role::BigScreen => "big_screen",
         }
         .to_owned(),
         satker_id: user.satker_id.map(|id| id.to_string()).unwrap_or_default(),
@@ -1706,6 +1704,7 @@ fn role_label(role: Role) -> String {
         Role::AdminSatker => "admin satker",
         Role::UserSatker => "user satker",
         Role::User => "user",
+        Role::BigScreen => "layar besar",
     }
     .to_owned()
 }

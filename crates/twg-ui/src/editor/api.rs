@@ -98,6 +98,11 @@ impl ClientUi {
             return;
         };
         self.selected_scenario = Some(scenario_id);
+        if self.ws.scenario != Some(scenario_id) {
+            // The WebSocket may still be subscribed to a previous scenario.
+            // `ensure_ws` re-subscribes once connected.
+            self.ws.subscribed = false;
+        }
         self.ws.scenario = Some(scenario_id);
         self.editor.loading = true;
         self.editor.pending = 6;

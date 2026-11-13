@@ -569,12 +569,14 @@ Selama layar ini terbuka:
   layar besar baru.
 - Play dari editor **tidak** realtime; hanya play dari menu Simulasi.
 
-**Layar besar (tanpa login)**
+**Layar besar**
 
-Halaman **Layar Besar** dapat dibuka dari sidebar Dashboard, tombol aksi cepat
-Dashboard, atau tautan di halaman login. Halaman ini tidak meminta login dan
-hanya menampilkan peta serta satu panel kecil berisi zoom, bearing/pitch, dan
-FPS — tanpa tombol zoom, tanpa panel editor, dan tanpa input kamera lokal.
+Halaman **Layar Besar** dapat dibuka dari sidebar Dashboard atau tombol aksi
+cepat Dashboard oleh semua role setelah login. Role khusus **layar besar**
+(`big_screen`) otomatis masuk ke halaman ini dan tidak bisa membuka layar lain.
+Halaman hanya menampilkan peta serta satu panel kecil berisi zoom,
+bearing/pitch, dan FPS — tanpa tombol zoom, tanpa panel editor, dan tanpa input
+kamera lokal.
 
 - Saat pertama dibuka, layar menampilkan peta Indonesia.
 - Hanya `admin` dan `admin_satker` yang dapat memulai sesi tampilan. Server
@@ -583,9 +585,11 @@ FPS — tanpa tombol zoom, tanpa panel editor, dan tanpa input kamera lokal.
   yang sama dengan WebSocket play tetap berlaku.
 - Semua pemain dapat memengaruhi animasi dan gerakan marker/model. Hanya
   admin/admin_satker yang dapat memengaruhi kamera dan memuat ulang skenario.
-- Layar besar mengikuti sesi lewat endpoint publik `GET /public/play/live`
-  setiap ±150 ms. Data skenario tetap dimuat dari route `GET /public/...` dan
-  model diambil dari manifest aset publik, jadi tidak perlu tiket WebSocket.
+- Layar besar menerima sesi lewat pesan WebSocket `watch_live` / `live`, bukan
+  polling. Server menyimpan snapshot terakhir dan langsung mendorong perubahan
+  skenario, state play, kamera, reload, dan stop.
+- Role `big_screen` dibuat oleh admin melalui menu **Pengguna**. Akun ini cukup
+  diberi akses layar besar; tidak perlu satker.
 - Menutup simulasi dari layar admin mengakhiri sesi tampilan; layar besar
   kembali ke peta Indonesia.
 

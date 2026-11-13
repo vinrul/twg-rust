@@ -11,6 +11,9 @@ pub enum Role {
     AdminSatker,
     UserSatker,
     User,
+    /// Dedicated account for a big-screen display. It may only open the
+    /// big-screen page and watch the live simulation.
+    BigScreen,
 }
 
 impl Role {
@@ -39,6 +42,9 @@ impl Role {
         actor_satker_id: Option<Uuid>,
         resource_satker_id: Option<Uuid>,
     ) -> bool {
+        if self == Self::BigScreen {
+            return false;
+        }
         if self.sees_all_satkers() {
             return true;
         }
@@ -145,6 +151,19 @@ mod tests {
             serde_json::from_str::<Role>("\"user_satker\"").unwrap(),
             Role::UserSatker
         );
+        assert_eq!(
+            serde_json::from_str::<Role>("\"big_screen\"").unwrap(),
+            Role::BigScreen
+        );
+        assert_eq!(Role::BigScreen.to_string(), "big_screen");
+    }
+
+    #[test]
+    fn big_screen_role_cannot_access_scenarios() {
+        assert!(!Role::BigScreen.can_access_satker(None, None));
+        assert!(!Role::BigScreen.can_access_satker(Some(id(1)), Some(id(1))));
+        assert!(!Role::BigScreen.is_admin_like());
+        assert!(!Role::BigScreen.is_satker_role());
     }
 
     #[test]

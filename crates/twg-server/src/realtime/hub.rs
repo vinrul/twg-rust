@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 use tokio::sync::mpsc;
-use twg_contracts::realtime::{PublicLiveSession, ServerMessage};
+use twg_contracts::realtime::{LiveSession, ServerMessage};
 use twg_domain::SessionSubject;
 use uuid::Uuid;
 
@@ -26,8 +26,10 @@ struct HubState {
     /// Connections currently playing the scenario from the Simulasi screen.
     play_connections: HashMap<Uuid, HashSet<Uuid>>,
     /// Public big-screen session driven by an admin/admin_satker client.
-    live: Option<PublicLiveSession>,
-    /// Monotonic counter for [`PublicLiveSession::session_version`].
+    live: Option<LiveSession>,
+    /// Connections watching the big-screen session.
+    live_watchers: HashSet<Uuid>,
+    /// Monotonic counter for [`LiveSession::session_version`].
     live_sessions: u64,
 }
 
@@ -148,10 +150,10 @@ impl Hub {
     /// Starts a fresh public big-screen session for `skenario_id`. Any
     /// previous session is replaced; the big screen reloads the scenario when
     /// the returned version changes.
-    pub fn start_live(&self, skenario_id: Uuid) -> PublicLiveSession {
+    pub fn start_live(&self, skenario_id: Uuid) -> LiveSession {
         let mut state = self.inner.lock().expect("hub poisoned");
         state.live_sessions = state.live_sessions.saturating_add(1);
-        let live = PublicLiveSession {
+        let live = LiveSession {
             scenario_id: skenario_id,
             session_version: state.live_sessions,
             revision: 0,
@@ -161,66 +163,132 @@ impl Hub {
             camera_version: 0,
         };
         state.live = Some(live.clone());
+        drop(state);
+        self.broadcast_live();
         live
     }
 
     /// Marks the loaded scenario as reloaded. Big screens reload the same
     /// scenario and wait for the next state snapshot.
     pub fn reload_live(&self, skenario_id: Uuid) {
-        let mut state = self.inner.lock().expect("hub poisoned");
-        let Some(live) = state.live.as_mut() else {
-            return;
-        };
-        if live.scenario_id != skenario_id {
-            return;
+        {
+            let mut state = self.inner.lock().expect("hub poisoned");
+            let Some(live) = state.live.as_mut() else {
+                return;
+            };
+            if live.scenario_id != skenario_id {
+                return;
+            }
+            live.revision = live.revision.saturating_add(1);
+            live.state = None;
+            live.state_version = live.state_version.saturating_add(1);
         }
-        live.revision = live.revision.saturating_add(1);
-        live.state = None;
-        live.state_version = live.state_version.saturating_add(1);
+        self.broadcast_live();
     }
 
-    /// Stores the latest play snapshot for the public display. Updates from a
+    /// Stores the latest play snapshot for the big screen. Updates from a
     /// different scenario than the active live session are ignored.
     pub fn set_live_state(&self, skenario_id: Uuid, data: String) {
-        let mut state = self.inner.lock().expect("hub poisoned");
-        let Some(live) = state.live.as_mut() else {
-            return;
-        };
-        if live.scenario_id != skenario_id {
-            return;
+        {
+            let mut state = self.inner.lock().expect("hub poisoned");
+            let Some(live) = state.live.as_mut() else {
+                return;
+            };
+            if live.scenario_id != skenario_id {
+                return;
+            }
+            live.state = Some(data);
+            live.state_version = live.state_version.saturating_add(1);
         }
-        live.state = Some(data);
-        live.state_version = live.state_version.saturating_add(1);
+        self.broadcast_live();
     }
 
     /// Stores a camera update published by an admin/admin_satker client.
     pub fn set_live_camera(&self, skenario_id: Uuid, data: String) {
-        let mut state = self.inner.lock().expect("hub poisoned");
-        let Some(live) = state.live.as_mut() else {
-            return;
-        };
-        if live.scenario_id != skenario_id {
-            return;
+        {
+            let mut state = self.inner.lock().expect("hub poisoned");
+            let Some(live) = state.live.as_mut() else {
+                return;
+            };
+            if live.scenario_id != skenario_id {
+                return;
+            }
+            live.camera = Some(data);
+            live.camera_version = live.camera_version.saturating_add(1);
         }
-        live.camera = Some(data);
-        live.camera_version = live.camera_version.saturating_add(1);
+        self.broadcast_live();
     }
 
-    pub fn live(&self) -> Option<PublicLiveSession> {
+    pub fn live(&self) -> Option<LiveSession> {
         self.inner.lock().expect("hub poisoned").live.clone()
     }
 
-    /// Ends the public display session, e.g. when the simulating admin closes
-    /// the play screen. Other scenarios are left untouched.
-    pub fn clear_live(&self, skenario_id: Uuid) {
+    /// Registers a connection as a big-screen watcher and sends the current
+    /// snapshot on the same lock, so a concurrent broadcast cannot overtake
+    /// the initial message. Returns false when the connection is gone or its
+    /// outbound queue is full.
+    pub fn watch_live(&self, connection_id: Uuid, request_id: Option<String>) -> bool {
         let mut state = self.inner.lock().expect("hub poisoned");
-        if state
-            .live
-            .as_ref()
-            .is_some_and(|live| live.scenario_id == skenario_id)
+        let Some(connection) = state.connections.get(&connection_id) else {
+            return false;
+        };
+        let sender = connection.sender.clone();
+        if sender
+            .try_send(ServerMessage::Live {
+                request_id,
+                session: state.live.clone(),
+            })
+            .is_err()
         {
+            return false;
+        }
+        state.live_watchers.insert(connection_id);
+        true
+    }
+
+    pub fn unwatch_live(&self, connection_id: Uuid) {
+        self.inner
+            .lock()
+            .expect("hub poisoned")
+            .live_watchers
+            .remove(&connection_id);
+    }
+
+    /// Ends the big-screen session, e.g. when the simulating admin closes the
+    /// play screen. Other scenarios are left untouched.
+    pub fn clear_live(&self, skenario_id: Uuid) {
+        {
+            let mut state = self.inner.lock().expect("hub poisoned");
+            if !state
+                .live
+                .as_ref()
+                .is_some_and(|live| live.scenario_id == skenario_id)
+            {
+                return;
+            }
             state.live = None;
         }
+        self.broadcast_live();
+    }
+
+    fn broadcast_live(&self) {
+        let (watchers, session) = {
+            let state = self.inner.lock().expect("hub poisoned");
+            if state.live_watchers.is_empty() {
+                return;
+            }
+            (
+                state.live_watchers.iter().copied().collect::<Vec<_>>(),
+                state.live.clone(),
+            )
+        };
+        self.send_to(
+            watchers,
+            ServerMessage::Live {
+                request_id: None,
+                session,
+            },
+        );
     }
 
     pub fn send(&self, connection_id: Uuid, message: ServerMessage) -> bool {
@@ -452,6 +520,7 @@ impl Hub {
 
 fn remove_connection(state: &mut HubState, connection_id: Uuid) -> Vec<Uuid> {
     state.connections.remove(&connection_id);
+    state.live_watchers.remove(&connection_id);
     let mut affected = Vec::new();
     state.subscriptions.retain(|skenario_id, subscribers| {
         if subscribers.remove(&connection_id) {
@@ -686,5 +755,58 @@ mod tests {
         assert!(hub.live().is_some());
         hub.clear_live(scenario);
         assert!(hub.live().is_none());
+    }
+
+    #[test]
+    fn live_updates_are_pushed_to_watchers() {
+        let hub = Hub::new(16);
+        let scenario = Uuid::from_u128(1);
+        let watcher = Uuid::from_u128(2);
+        let (sender, mut receiver) = mpsc::channel(8);
+        hub.register(watcher, sender, subject(3));
+        assert!(hub.watch_live(watcher, None));
+        assert!(matches!(
+            receiver.try_recv().expect("initial live message"),
+            ServerMessage::Live { session: None, .. }
+        ));
+
+        hub.start_live(scenario);
+        assert!(matches!(
+            receiver.try_recv().expect("started live message"),
+            ServerMessage::Live {
+                session: Some(_),
+                ..
+            }
+        ));
+
+        hub.set_live_state(scenario, "{}".to_owned());
+        let message = receiver.try_recv().expect("state live message");
+        assert!(matches!(
+            message,
+            ServerMessage::Live {
+                session: Some(session),
+                ..
+            } if session.state.as_deref() == Some("{}")
+        ));
+
+        hub.set_live_camera(scenario, "{\"zoom\":13}".to_owned());
+        let message = receiver.try_recv().expect("camera live message");
+        assert!(matches!(
+            message,
+            ServerMessage::Live {
+                session: Some(session),
+                ..
+            } if session.camera_version == 1
+        ));
+
+        hub.clear_live(scenario);
+        assert!(matches!(
+            receiver.try_recv().expect("stopped live message"),
+            ServerMessage::Live { session: None, .. }
+        ));
+
+        hub.unwatch_live(watcher);
+        hub.start_live(scenario);
+        assert!(receiver.try_recv().is_err());
     }
 }

@@ -482,6 +482,7 @@ mod tests {
                 Some(Uuid::from_u128(11)),
             ),
             (5, "baselineuser", Role::User, None),
+            (6, "baselinelayer", Role::BigScreen, None),
         ];
         for (id, username, role, satker_id) in roles {
             store.insert_user(AuthUser {
@@ -514,6 +515,7 @@ mod tests {
             "baselineadminsatker",
             "baselineusersatker",
             "baselineuser",
+            "baselinelayer",
         ] {
             let result = service
                 .login(username, "Baseline#2026", "device-1")

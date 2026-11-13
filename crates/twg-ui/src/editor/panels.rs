@@ -156,6 +156,7 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
 }
 
 pub fn draw_big_screen(context: &egui::Context, client: &mut ClientUi) {
+    client.ensure_ws();
     client.editor.base_url.clone_from(&client.base_url);
     client.sync_editor_marker_models();
     {

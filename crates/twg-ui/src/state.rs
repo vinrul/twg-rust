@@ -21,7 +21,7 @@ use twg_contracts::assets::{
 };
 use twg_contracts::categories::Category;
 use twg_contracts::operations::{HomeOperation, Operation};
-use twg_contracts::realtime::{PublicLiveResponse, PublicLiveSession};
+use twg_contracts::realtime::LiveSession;
 use twg_contracts::satkers::Satker;
 use twg_contracts::scenarios::Scenario;
 use twg_contracts::snapshots::Snapshot;
@@ -90,7 +90,6 @@ pub enum JobKind {
     AssetGroups,
     AssetGroupSave,
     AssetGroupDelete,
-    BigScreenLive,
 }
 
 pub struct UiJob {
@@ -379,6 +378,8 @@ pub struct WsUi {
     /// it; switching scenarios in the Skenario tab does not, per the current
     /// realtime scope.
     pub announce_live: bool,
+    /// This connection is registered as a big-screen watcher.
+    pub live_watched: bool,
 }
 
 /// State of the public big-screen page. It polls a read-only HTTP endpoint so
@@ -399,8 +400,6 @@ pub struct BigScreenUi {
     /// Latest remote camera waiting to be applied after the scenario loads.
     pub pending_camera: Option<MapCameraState>,
     pub applied_camera_version: u64,
-    pub last_poll: Option<Instant>,
-    pub poll_pending: bool,
     pub has_session: bool,
 }
 
@@ -810,8 +809,15 @@ impl ClientUi {
     }
 
     fn enter_session(&mut self, session: ClientSession) {
+        let big_screen = session.role == Role::BigScreen;
         self.state.login(session);
         self.sync_profile_fields();
+        if big_screen {
+            // Display accounts land directly on the map-only page and never
+            // call the workspace endpoints.
+            self.open_big_screen();
+            return;
+        }
         self.refresh_all();
         self.refresh_assets();
         // Runs on startup (restored session) and after login: mirror any new or
@@ -1297,14 +1303,6 @@ impl ClientUi {
                 }
                 Err(error) => self.error(&error),
             },
-            JobKind::BigScreenLive => {
-                self.big_screen.poll_pending = false;
-                if let Ok(response) =
-                    result.and_then(|response| response.data::<PublicLiveResponse>())
-                {
-                    self.apply_big_screen_live(response.session);
-                }
-            }
         }
     }
 
@@ -1405,15 +1403,9 @@ impl ClientUi {
             }
             self.pending_asset_nav = nav;
             self.asset_sync.state = AssetSyncState::Checking;
-            let path = if self.state.screen == Screen::BigScreen {
-                // The public display has no login, so it cannot request the
-                // private manifest. Asset files themselves are served from the
-                // public `/assets` static route.
-                "/public/assets/manifest"
-            } else {
-                "/private/assets/manifest"
-            };
-            let handle = self.api.request(HttpMethod::Get, path, None);
+            let handle = self
+                .api
+                .request(HttpMethod::Get, "/private/assets/manifest", None);
             self.track(JobKind::AssetManifest, handle);
         }
     }
@@ -2129,7 +2121,20 @@ impl ClientUi {
         if self.state.session.is_none() {
             return;
         }
-        if self.ws.connection.is_some() || self.ws.ticket_pending {
+        if self.ws.connection.is_some() {
+            // A connection reused after the big-screen page may not have a
+            // scenario subscription yet. Re-subscribe once the editor screen
+            // selects a scenario.
+            if self.state.screen != Screen::BigScreen
+                && self.ws.scenario.is_some()
+                && !self.ws.subscribed
+                && self.ws.state.status.is_connected()
+            {
+                self.subscribe_ws();
+            }
+            return;
+        }
+        if self.ws.ticket_pending {
             return;
         }
         if let Some(next) = self.ws.next_attempt
@@ -2160,6 +2165,7 @@ impl ClientUi {
         self.ws.play_joined = false;
         self.ws.started_scenario = None;
         self.ws.last_camera = None;
+        self.ws.live_watched = false;
         self.ws.state.status = RealtimeStatus::Connecting;
     }
 
@@ -2170,6 +2176,7 @@ impl ClientUi {
         self.ws.state.status = RealtimeStatus::Disabled;
         self.ws.subscribed = false;
         self.ws.ticket_pending = false;
+        self.ws.live_watched = false;
     }
 
     pub fn tick_ws(&mut self) {
@@ -2207,6 +2214,7 @@ impl ClientUi {
                         }
                     }
                     Some("play_event") => self.handle_play_event(&value),
+                    Some("live") => self.handle_live_event(&value),
                     Some("resync") => resync = true,
                     Some("error") => {
                         error_message = Some(
@@ -2238,6 +2246,21 @@ impl ClientUi {
             self.ws.play_joined = false;
             self.ws.started_scenario = None;
             self.ws.last_camera = None;
+            self.ws.live_watched = false;
+            if self.big_screen.active {
+                // A reconnect may land on a restarted server whose versions
+                // start again at 1. Keep the last frame on screen but force the
+                // next pushed snapshot to reload the scenario.
+                self.big_screen.has_session = false;
+                self.big_screen.session_version = 0;
+                self.big_screen.revision = 0;
+                self.big_screen.state_version = 0;
+                self.big_screen.applied_state_version = 0;
+                self.big_screen.camera_version = 0;
+                self.big_screen.applied_camera_version = 0;
+                self.big_screen.pending_state = None;
+                self.big_screen.pending_camera = None;
+            }
             self.ws.state.schedule_reconnect();
             self.ws.next_attempt = Some(Instant::now() + self.ws.state.retry_delay());
         }
@@ -2403,11 +2426,11 @@ impl ClientUi {
 
     // ------------------------------------------------------------ big screen
 
-    /// Opens the public big-screen display. It needs no session: scenarios,
-    /// objects, and assets are loaded from public routes, and live updates come
-    /// from the public polling endpoint.
+    /// Opens the big-screen display. It loads scenarios, objects, and assets
+    /// with the normal authenticated endpoints, and receives live updates over
+    /// the existing WebSocket watch channel.
     pub fn open_big_screen(&mut self) {
-        if self.state.screen == Screen::BigScreen {
+        if self.big_screen.active {
             return;
         }
         self.big_screen.return_screen = self.state.screen;
@@ -2423,8 +2446,6 @@ impl ClientUi {
         self.big_screen.applied_camera_version = 0;
         self.big_screen.pending_camera = None;
         self.big_screen.pending_state = None;
-        self.big_screen.last_poll = None;
-        self.big_screen.poll_pending = false;
         self.leave_play_sync();
         self.reset_big_screen_map();
         self.state.screen = Screen::BigScreen;
@@ -2432,12 +2453,22 @@ impl ClientUi {
         self.request_asset_check(None);
     }
 
-    /// Leaves the big-screen display and returns to the screen that opened it
-    /// (dashboard or login).
+    /// Leaves the big-screen display. The dedicated big-screen role is logged
+    /// out because it may not open any other screen; other roles return to the
+    /// screen that opened the display.
     pub fn close_big_screen(&mut self) {
         if !self.big_screen.active {
             return;
         }
+        if self.role() == Role::BigScreen {
+            self.big_screen = BigScreenUi::default();
+            self.editor.big_screen = false;
+            self.editor.preview = false;
+            self.editor.stop_play();
+            self.logout();
+            return;
+        }
+        self.send_unwatch_live();
         let screen = self.big_screen.return_screen;
         let nav = self.big_screen.return_nav;
         self.big_screen = BigScreenUi::default();
@@ -2491,19 +2522,60 @@ impl ClientUi {
         self.state.nav = NavItem::BigScreen;
     }
 
+    /// Applies a big-screen snapshot pushed by the server. The big screen no
+    /// longer polls; it receives this message after `watch_live` and on every
+    /// play/camera change.
+    fn handle_live_event(&mut self, value: &Value) {
+        if self.state.screen != Screen::BigScreen || !self.big_screen.active {
+            return;
+        }
+        let session = match value.get("session") {
+            None | Some(Value::Null) => None,
+            Some(session) => match serde_json::from_value::<LiveSession>(session.clone()) {
+                Ok(session) => Some(session),
+                Err(_) => return,
+            },
+        };
+        self.apply_big_screen_live(session);
+    }
+
+    fn send_watch_live(&mut self) -> bool {
+        let Some(connection) = &self.ws.connection else {
+            return false;
+        };
+        connection.send_text(
+            json!({
+                "type": "watch_live",
+                "request_id": "ui-live-watch",
+            })
+            .to_string(),
+        )
+    }
+
+    fn send_unwatch_live(&mut self) {
+        if !self.ws.live_watched {
+            return;
+        }
+        if let Some(connection) = &self.ws.connection {
+            let _ = connection.send_text(
+                json!({
+                    "type": "unwatch_live",
+                    "request_id": "ui-live-unwatch",
+                })
+                .to_string(),
+            );
+        }
+        self.ws.live_watched = false;
+    }
+
+    /// Sends `watch_live` once per WebSocket connection, then keeps applying
+    /// the latest pushed snapshot while the page is open.
     fn tick_big_screen(&mut self) {
         if !self.big_screen.active {
             return;
         }
-        let due = self
-            .big_screen
-            .last_poll
-            .is_none_or(|at| at.elapsed() >= Duration::from_millis(150));
-        if due && !self.big_screen.poll_pending {
-            self.big_screen.poll_pending = true;
-            self.big_screen.last_poll = Some(Instant::now());
-            let handle = self.api.request(HttpMethod::Get, "/public/play/live", None);
-            self.track(JobKind::BigScreenLive, handle);
+        if !self.ws.live_watched && self.ws.state.status.is_connected() && self.send_watch_live() {
+            self.ws.live_watched = true;
         }
         // The scenario loads asynchronously; keep the latest snapshot until
         // Play has been built for the newly loaded objects.
@@ -2528,7 +2600,7 @@ impl ClientUi {
         }
     }
 
-    fn apply_big_screen_live(&mut self, session: Option<PublicLiveSession>) {
+    fn apply_big_screen_live(&mut self, session: Option<LiveSession>) {
         if !self.big_screen.active {
             return;
         }
@@ -2536,6 +2608,10 @@ impl ClientUi {
             self.clear_big_screen_session();
             return;
         };
+        if session.session_version < self.big_screen.session_version {
+            // Out-of-order update after the WebSocket reconnect/reset.
+            return;
+        }
         let reload = !self.big_screen.has_session
             || self.big_screen.scenario_id != Some(session.scenario_id)
             || self.big_screen.session_version != session.session_version
@@ -2568,6 +2644,11 @@ impl ClientUi {
     }
 
     pub fn subscribe_ws(&mut self) {
+        if self.state.screen == Screen::BigScreen {
+            // The display only watches the live channel; it does not need the
+            // scenario event subscription.
+            return;
+        }
         let Some(scenario) = self.ws.scenario else {
             return;
         };

@@ -65,24 +65,26 @@ pub enum ClientMessage {
         #[serde(default)]
         data: String,
     },
+    /// Starts receiving the public big-screen session. Any authenticated role
+    /// may watch; only admin/admin_satker may publish its scenario or camera.
+    WatchLive {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+    UnwatchLive {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
     Ping {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct PublicLiveResponse {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<PublicLiveSession>,
-}
-
-/// Read-only snapshot of the simulation currently driving the public
-/// big-screen page. It is served without authentication; the payload only
-/// contains authored scenario state and camera values that are already public
-/// map data.
+/// Read-only snapshot of the simulation currently driving the big-screen page.
+/// It is only sent over an authenticated WebSocket connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicLiveSession {
+pub struct LiveSession {
     pub scenario_id: Uuid,
     /// Increases every time an admin starts (or reloads) the live session.
     pub session_version: u64,
@@ -143,6 +145,14 @@ pub enum ServerMessage {
         action: String,
         #[serde(default)]
         data: String,
+    },
+    /// Big-screen session snapshot. Sent once on `watch_live`, then pushed on
+    /// every scenario, state, camera, reload, or stop change.
+    Live {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<LiveSession>,
     },
     Resync {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -248,10 +258,14 @@ mod tests {
     }
 
     #[test]
-    fn public_live_response_round_trips() {
+    fn live_watch_messages_round_trip() {
         let id = Uuid::from_u128(4);
-        let value = serde_json::to_value(super::PublicLiveResponse {
-            session: Some(super::PublicLiveSession {
+        let value = serde_json::to_value(ClientMessage::WatchLive { request_id: None }).unwrap();
+        assert_eq!(value, json!({ "type": "watch_live" }));
+
+        let value = serde_json::to_value(ServerMessage::Live {
+            request_id: None,
+            session: Some(super::LiveSession {
                 scenario_id: id,
                 session_version: 3,
                 revision: 1,
@@ -262,15 +276,17 @@ mod tests {
             }),
         })
         .unwrap();
+        assert_eq!(value["type"], "live");
         assert_eq!(value["session"]["scenario_id"], id.to_string());
         assert_eq!(value["session"]["state_version"], 7);
         assert!(value["session"].get("camera").is_none());
-    }
 
-    #[test]
-    fn empty_public_live_response_keeps_the_envelope_small() {
-        let value = serde_json::to_value(super::PublicLiveResponse::default()).unwrap();
-        assert_eq!(value, json!({}));
+        let stopped = serde_json::to_value(ServerMessage::Live {
+            request_id: None,
+            session: None,
+        })
+        .unwrap();
+        assert_eq!(stopped, json!({ "type": "live" }));
     }
 
     #[test]

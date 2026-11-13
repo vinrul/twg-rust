@@ -97,6 +97,9 @@ impl NavItem {
     }
 
     pub fn allowed_for(self, role: Role) -> bool {
+        if role == Role::BigScreen {
+            return self == Self::BigScreen;
+        }
         match self {
             Self::Users => role.is_admin_like(),
             Self::Satkers => true,
@@ -222,6 +225,7 @@ mod tests {
             Role::AdminMonitor,
             Role::AdminSatker,
             Role::User,
+            Role::BigScreen,
         ] {
             assert!(NavItem::BigScreen.allowed_for(role));
             let mut state = ClientState::default();
@@ -229,6 +233,12 @@ mod tests {
             state.navigate(NavItem::BigScreen);
             assert_eq!(state.screen, Screen::BigScreen);
         }
+    }
+
+    #[test]
+    fn big_screen_role_only_sees_the_big_screen_nav() {
+        let items = NavItem::visible_items(Role::BigScreen).collect::<Vec<_>>();
+        assert_eq!(items, vec![NavItem::BigScreen]);
     }
 
     #[test]

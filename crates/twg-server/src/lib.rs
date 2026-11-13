@@ -85,8 +85,6 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/public/users/online", get(handlers::public::online_users))
         .route("/public/geocode", get(handlers::public::geocode))
-        .route("/public/play/live", get(handlers::realtime::public_live))
-        .route("/public/assets/manifest", get(handlers::assets::manifest))
         .route(
             "/public/game-sessions/snapshot/{skenario_id}",
             get(handlers::public::snapshot),
@@ -615,6 +613,7 @@ mod tests {
                 Some(Uuid::from_u128(11)),
             ),
             (5, "baselineuser", Role::User, None),
+            (6, "baselinelayer", Role::BigScreen, None),
         ];
         for (id, username, role, satker_id) in roles {
             store.insert_user(AuthUser {
@@ -730,6 +729,7 @@ mod tests {
             "baselineadminsatker",
             "baselineusersatker",
             "baselineuser",
+            "baselinelayer",
         ] {
             let body = login(app.clone(), username, "device-1").await;
             assert_eq!(body["code"], 200);
@@ -1290,17 +1290,6 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body["message"], "database is not available");
-    }
-
-    #[tokio::test]
-    async fn public_live_is_available_without_a_session() {
-        let state = test_state(100);
-        let scenario = Uuid::new_v4();
-        state.realtime.hub.start_live(scenario);
-        let (status, _, body) =
-            send(router(state), Method::GET, "/public/play/live", None, &[]).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["data"]["session"]["scenario_id"], scenario.to_string());
     }
 
     #[tokio::test]
