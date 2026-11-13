@@ -1345,6 +1345,9 @@ pub struct EditorState {
     pub anim_filter_locked: bool,
     /// Routes locked from map picking (editor session only).
     pub locked: BTreeSet<ObjectKey>,
+    /// Set when local Play state changed; the play-only screen sends a
+    /// realtime snapshot to other clients when this is true.
+    pub play_sync_pending: bool,
     /// RTS play mode state, rebuilt every time Play starts.
     pub play: PlayState,
     /// Screen-space ground rings for the RTS selection overlay, rebuilt every
@@ -1467,6 +1470,7 @@ impl EditorState {
             anim_filter_hidden: false,
             anim_filter_locked: false,
             locked: BTreeSet::new(),
+            play_sync_pending: false,
             play: PlayState::default(),
             play_rings: Vec::new(),
             save_pending: 0,
@@ -1784,6 +1788,7 @@ impl EditorState {
             }
         }
         self.init_play_animations();
+        self.play_sync_pending = true;
     }
 
     /// Resolves authored routes into Play state and records which markers they
@@ -1957,6 +1962,7 @@ impl EditorState {
         }
         animation.state = PlaybackState::Playing;
         self.apply_route_animation(index);
+        self.play_sync_pending = true;
     }
 
     pub fn pause_route_animation(&mut self, index: usize) {
@@ -1964,6 +1970,7 @@ impl EditorState {
             && animation.state == PlaybackState::Playing
         {
             animation.state = PlaybackState::Paused;
+            self.play_sync_pending = true;
         }
     }
 
@@ -1974,9 +1981,10 @@ impl EditorState {
             animation.state = PlaybackState::Stopped;
         }
         self.apply_route_animation(index);
+        self.play_sync_pending = true;
     }
 
-    fn apply_route_animation(&mut self, index: usize) {
+    pub(super) fn apply_route_animation(&mut self, index: usize) {
         let Some(animation) = self.play.animations.get(index) else {
             return;
         };
@@ -2037,6 +2045,7 @@ impl EditorState {
                 unit.target = Some(slot);
             }
         }
+        self.play_sync_pending = true;
     }
 
     /// Returns the pickable unit under a screen point, if any. Limited static

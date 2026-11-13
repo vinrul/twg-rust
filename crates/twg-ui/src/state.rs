@@ -359,6 +359,12 @@ pub struct WsUi {
     pub next_attempt: Option<Instant>,
     pub subscribed: bool,
     pub ticket_pending: bool,
+    /// Connection id from the server `hello`, used to ignore our own play events.
+    pub connection_id: Option<Uuid>,
+    /// The play-only screen has joined the scenario's play session.
+    pub play_joined: bool,
+    /// Time of the last published play snapshot (throttles gizmo drags).
+    pub play_sync_at: Option<Instant>,
 }
 
 #[derive(Resource)]
@@ -726,6 +732,7 @@ impl ClientUi {
         }
         self.tick_toasts();
         self.tick_ws();
+        self.tick_play_sync();
         self.tick_asset_sync();
         self.tick_editor_jobs();
         self.poll_pending_preview_uploads();
@@ -2117,7 +2124,13 @@ impl ClientUi {
         while let Some(payload) = connection.poll_inbound() {
             if let Ok(value) = serde_json::from_str::<Value>(&payload) {
                 match value.get("type").and_then(Value::as_str) {
-                    Some("hello") => hello = true,
+                    Some("hello") => {
+                        hello = true;
+                        self.ws.connection_id = value
+                            .get("connection_id")
+                            .and_then(Value::as_str)
+                            .and_then(|value| Uuid::parse_str(value).ok());
+                    }
                     Some("event") => {
                         self.ws.state.note_event();
                         if let (Some(skenario), Some(sequence)) = (
@@ -2130,6 +2143,7 @@ impl ClientUi {
                             self.ws.state.note_sequence(skenario, sequence);
                         }
                     }
+                    Some("play_event") => self.handle_play_event(&value),
                     Some("resync") => resync = true,
                     Some("error") => {
                         error_message = Some(
@@ -2157,8 +2171,102 @@ impl ClientUi {
         if connection.is_closed() {
             self.ws.connection = None;
             self.ws.subscribed = false;
+            self.ws.connection_id = None;
+            self.ws.play_joined = false;
             self.ws.state.schedule_reconnect();
             self.ws.next_attempt = Some(Instant::now() + self.ws.state.retry_delay());
+        }
+    }
+
+    /// Applies play messages from other clients. Only the play-only screen
+    /// (Simulasi → play) participates; editor Play sessions ignore them.
+    fn handle_play_event(&mut self, value: &Value) {
+        if self.state.screen != Screen::Preview {
+            return;
+        }
+        let actor = value
+            .get("actor")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok());
+        if actor.is_some() && actor == self.ws.connection_id {
+            return;
+        }
+        match value.get("action").and_then(Value::as_str) {
+            Some("state") => {
+                let Some(data) = value.get("data").and_then(Value::as_str) else {
+                    return;
+                };
+                if let Ok(snapshot) = serde_json::from_str::<Value>(data) {
+                    self.editor.apply_play_snapshot(&snapshot);
+                }
+            }
+            Some("sync") if self.ws.play_joined && self.editor.play.active => {
+                let snapshot = self.editor.play_snapshot().to_string();
+                self.send_play_message("state", snapshot);
+            }
+            _ => {}
+        }
+    }
+
+    /// Sends a `play` message over the realtime connection.
+    pub fn send_play_message(&mut self, action: &str, data: String) -> bool {
+        let (Some(scenario), Some(connection)) = (self.ws.scenario, &self.ws.connection) else {
+            return false;
+        };
+        let message = json!({
+            "type": "play",
+            "request_id": "ui-play",
+            "skenario_id": scenario,
+            "action": action,
+            "data": data,
+        });
+        connection.send_text(message.to_string())
+    }
+
+    /// Leaves the realtime play session, if joined.
+    pub fn leave_play_sync(&mut self) {
+        if self.ws.play_joined {
+            self.send_play_message("leave", String::new());
+            self.ws.play_joined = false;
+        }
+        self.editor.play_sync_pending = false;
+        self.ws.play_sync_at = None;
+    }
+
+    /// Joins the scenario's play session on the play-only screen and publishes
+    /// a throttled snapshot whenever local play state changes.
+    fn tick_play_sync(&mut self) {
+        if self.state.screen != Screen::Preview {
+            self.leave_play_sync();
+            return;
+        }
+        if !self.editor.loaded || !self.editor.play.active || !self.ws.subscribed {
+            return;
+        }
+        if !self.ws.play_joined {
+            if self.send_play_message("join", String::new()) {
+                self.ws.play_joined = true;
+                self.ws.play_sync_at = None;
+                // A joiner must not publish its authored starting state over
+                // the state of an ongoing session; wait for the sync reply.
+                self.editor.play_sync_pending = false;
+            }
+            return;
+        }
+        if !self.editor.play_sync_pending {
+            return;
+        }
+        let due = self
+            .ws
+            .play_sync_at
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(150));
+        if !due {
+            return;
+        }
+        let snapshot = self.editor.play_snapshot().to_string();
+        if self.send_play_message("state", snapshot) {
+            self.editor.play_sync_pending = false;
+            self.ws.play_sync_at = Some(Instant::now());
         }
     }
 

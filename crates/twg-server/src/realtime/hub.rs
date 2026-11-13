@@ -21,6 +21,10 @@ struct HubState {
     history: HashMap<Uuid, VecDeque<ServerMessage>>,
     idempotency: HashMap<(Uuid, String), u64>,
     idempotency_order: HashMap<Uuid, VecDeque<String>>,
+    /// Latest play snapshot per scenario, published by a play-only client.
+    play_state: HashMap<Uuid, String>,
+    /// Connections currently playing the scenario from the Simulasi screen.
+    play_connections: HashMap<Uuid, HashSet<Uuid>>,
 }
 
 /// In-memory realtime fan-out.
@@ -91,6 +95,52 @@ impl Hub {
             .is_some_and(|subscribers| subscribers.contains(&connection_id))
     }
 
+    /// Registers a play-only connection and returns the latest snapshot, if
+    /// any client has published one for the current session.
+    pub fn join_play(&self, connection_id: Uuid, skenario_id: Uuid) -> Option<String> {
+        let mut state = self.inner.lock().expect("hub poisoned");
+        if !state.connections.contains_key(&connection_id) {
+            return None;
+        }
+        state
+            .play_connections
+            .entry(skenario_id)
+            .or_default()
+            .insert(connection_id);
+        state.play_state.get(&skenario_id).cloned()
+    }
+
+    /// Removes a play-only connection. The last participant leaving ends the
+    /// session, so the next one starts again from the authored state.
+    pub fn leave_play(&self, connection_id: Uuid, skenario_id: Uuid) {
+        let mut state = self.inner.lock().expect("hub poisoned");
+        let Some(participants) = state.play_connections.get_mut(&skenario_id) else {
+            return;
+        };
+        participants.remove(&connection_id);
+        if participants.is_empty() {
+            state.play_connections.remove(&skenario_id);
+            state.play_state.remove(&skenario_id);
+        }
+    }
+
+    pub fn play_state(&self, skenario_id: Uuid) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("hub poisoned")
+            .play_state
+            .get(&skenario_id)
+            .cloned()
+    }
+
+    pub fn set_play_state(&self, skenario_id: Uuid, data: String) {
+        self.inner
+            .lock()
+            .expect("hub poisoned")
+            .play_state
+            .insert(skenario_id, data);
+    }
+
     pub fn send(&self, connection_id: Uuid, message: ServerMessage) -> bool {
         let sender = {
             let state = self.inner.lock().expect("hub poisoned");
@@ -103,13 +153,45 @@ impl Hub {
     }
 
     pub fn broadcast(&self, skenario_id: Uuid, message: ServerMessage) -> usize {
+        let recipients = {
+            let state = self.inner.lock().expect("hub poisoned");
+            state
+                .subscriptions
+                .get(&skenario_id)
+                .map(|subscribers| subscribers.iter().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        self.send_to(recipients, message)
+    }
+
+    /// Sends a play event only to the scenario's play-only connections.
+    pub fn broadcast_play(
+        &self,
+        skenario_id: Uuid,
+        except: Option<Uuid>,
+        message: ServerMessage,
+    ) -> usize {
+        let recipients = {
+            let state = self.inner.lock().expect("hub poisoned");
+            state
+                .play_connections
+                .get(&skenario_id)
+                .map(|connections| {
+                    connections
+                        .iter()
+                        .copied()
+                        .filter(|connection| Some(*connection) != except)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        self.send_to(recipients, message)
+    }
+
+    fn send_to(&self, recipients: Vec<Uuid>, message: ServerMessage) -> usize {
         let mut affected = Vec::new();
         let delivered = {
             let mut state = self.inner.lock().expect("hub poisoned");
-            let Some(subscribers) = state.subscriptions.get(&skenario_id) else {
-                return 0;
-            };
-            let recipients = subscribers.iter().copied().collect::<Vec<_>>();
             let mut slow = Vec::new();
             let mut delivered = 0;
             for connection_id in &recipients {
@@ -295,6 +377,16 @@ fn remove_connection(state: &mut HubState, connection_id: Uuid) -> Vec<Uuid> {
         }
         !subscribers.is_empty()
     });
+    let mut ended = Vec::new();
+    state.play_connections.retain(|skenario_id, participants| {
+        if participants.remove(&connection_id) && participants.is_empty() {
+            ended.push(*skenario_id);
+        }
+        !participants.is_empty()
+    });
+    for skenario_id in ended {
+        state.play_state.remove(&skenario_id);
+    }
     affected
 }
 
@@ -424,5 +516,56 @@ mod tests {
         hub.subscribe(connection, scenario);
         assert_eq!(hub.unregister(connection), vec![scenario]);
         assert_eq!(hub.subscriber_count(scenario), 0);
+    }
+
+    fn play_event(scenario: Uuid, action: &str) -> ServerMessage {
+        ServerMessage::PlayEvent {
+            sequence: 0,
+            skenario_id: scenario,
+            actor: Uuid::from_u128(9),
+            action: action.to_owned(),
+            data: "{}".to_owned(),
+        }
+    }
+
+    #[test]
+    fn play_state_is_shared_only_with_play_connections() {
+        let hub = Hub::new(16);
+        let scenario = Uuid::from_u128(1);
+        let player = Uuid::from_u128(2);
+        let editor = Uuid::from_u128(3);
+        let (player_sender, mut player_receiver) = mpsc::channel(4);
+        hub.register(player, player_sender, subject(4));
+        let (editor_sender, mut editor_receiver) = mpsc::channel(4);
+        hub.register(editor, editor_sender, subject(5));
+        hub.subscribe(editor, scenario);
+        hub.subscribe(player, scenario);
+
+        assert_eq!(hub.join_play(player, scenario), None);
+        hub.set_play_state(scenario, "{\"units\":[]}".to_owned());
+        assert_eq!(hub.play_state(scenario).as_deref(), Some("{\"units\":[]}"));
+        assert_eq!(
+            hub.broadcast_play(scenario, None, play_event(scenario, "state")),
+            1
+        );
+        assert!(player_receiver.try_recv().is_ok());
+        assert!(editor_receiver.try_recv().is_err());
+
+        hub.leave_play(player, scenario);
+        assert!(hub.play_state(scenario).is_none());
+    }
+
+    #[test]
+    fn disconnecting_the_last_player_clears_the_play_state() {
+        let hub = Hub::new(16);
+        let scenario = Uuid::from_u128(1);
+        let player = Uuid::from_u128(2);
+        let (sender, _receiver) = mpsc::channel(4);
+        hub.register(player, sender, subject(3));
+        hub.join_play(player, scenario);
+        hub.set_play_state(scenario, "{}".to_owned());
+
+        hub.unregister(player);
+        assert!(hub.play_state(scenario).is_none());
     }
 }

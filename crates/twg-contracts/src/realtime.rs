@@ -55,6 +55,16 @@ pub enum ClientMessage {
         request_id: Option<String>,
         skenario_id: Uuid,
     },
+    /// Play-session message for the play-only screen. `action` is `join`,
+    /// `leave`, `state`, or `sync`; `data` carries an opaque JSON snapshot.
+    Play {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        skenario_id: Uuid,
+        action: String,
+        #[serde(default)]
+        data: String,
+    },
     Ping {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
@@ -94,6 +104,17 @@ pub enum ServerMessage {
         skenario_id: Uuid,
         count: usize,
         user_ids: Vec<Uuid>,
+    },
+    /// Play state broadcast between clients in the play-only screen. Editor
+    /// play sessions neither send nor apply these messages.
+    PlayEvent {
+        sequence: u64,
+        skenario_id: Uuid,
+        /// Connection that produced the event; receivers ignore their own.
+        actor: Uuid,
+        action: String,
+        #[serde(default)]
+        data: String,
     },
     Resync {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,6 +191,32 @@ mod tests {
         assert_eq!(value["command"], "MOVE");
         assert_eq!(value["sequence"], 3);
         assert!(value.get("satker_id").is_none());
+    }
+
+    #[test]
+    fn play_messages_round_trip() {
+        let id = Uuid::from_u128(3);
+        let value = serde_json::to_value(ClientMessage::Play {
+            request_id: None,
+            skenario_id: id,
+            action: "join".to_owned(),
+            data: String::new(),
+        })
+        .unwrap();
+        assert_eq!(value["type"], "play");
+        assert_eq!(value["action"], "join");
+        assert!(value.get("request_id").is_none());
+
+        let event = ServerMessage::PlayEvent {
+            sequence: 0,
+            skenario_id: id,
+            actor: id,
+            action: "state".to_owned(),
+            data: "{}".to_owned(),
+        };
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["type"], "play_event");
+        assert_eq!(value["action"], "state");
     }
 
     #[test]

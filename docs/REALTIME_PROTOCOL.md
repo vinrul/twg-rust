@@ -261,3 +261,75 @@ Seluruh client memakai `twg.ws.v1` langsung ke server Rust (`GET /ws`). Jembatan
 dual-publish Centrifugo sudah dihapus, channel global lama `twg-jagradewata`
 tidak lagi dipakai, dan filter `satker_id` di klien digantikan otorisasi satker
 di server saat subscribe/publish.
+
+## 10. Sinkronisasi play dari menu Simulasi
+
+Layar play yang dibuka dari menu Simulasi memakai pesan `play` di koneksi WebSocket
+yang sama. Editor Play **tidak** memakai pesan ini.
+
+Klien ke server:
+
+```json
+{
+  "type": "play",
+  "request_id": "ui-play",
+  "skenario_id": "...",
+  "action": "join",
+  "data": ""
+}
+```
+
+| `action` | Fungsi |
+|---|---|
+| `join` | Bergabung ke sesi play skenario; server mengirim snapshot terakhir ke pengaju dan meminta snapshot segar dari participant lain |
+| `leave` | Keluar dari sesi play; participant terakhir yang keluar menghapus snapshot |
+| `state` | Mengirim snapshot state play terbaru (disimpan server dan disiarkan ke participant lain) |
+| `sync` | Meminta snapshot terakhir yang tersimpan |
+
+Server ke klien (`play_event`):
+
+```json
+{
+  "type": "play_event",
+  "sequence": 0,
+  "skenario_id": "...",
+  "actor": "...",
+  "action": "state",
+  "data": "{\"units\":[...],\"routes\":[...]}"
+}
+```
+
+- `actor` adalah `connection_id` pengirim; client mengabaikan event miliknya
+  sendiri. `actor` nil berarti snapshot dari server.
+- `action: "sync"` meminta participant play lain mengirim snapshot segar.
+- Pesan `play_event` hanya dikirim ke koneksi yang sudah `join`, bukan ke semua
+  subscriber skenario, sehingga editor tidak menerima noise play.
+- Sequence tidak dipakai untuk history/resume; snapshot terakhir adalah sumber
+  sinkronisasi untuk client yang bergabung belakangan.
+- Kamera (pan/zoom/bearing/pitch) dan perpindahan skenario tidak ikut disinkronkan.
+
+Payload snapshot (JSON string di field `data`):
+
+```json
+{
+  "units": [
+    {
+      "marker_id": "...",
+      "lon": 115.225,
+      "lat": -8.648,
+      "heading": 90.0,
+      "altitude": 0.0,
+      "target": [115.226, -8.649],
+      "limited": false
+    }
+  ],
+  "routes": [
+    { "line_id": "...", "state": "playing", "progress_m": 12.5 }
+  ]
+}
+```
+
+Unit dan rute dicocokkan lewat UUID server (`markers.id` dan `plot_lines.id`),
+sehingga client yang sama-sama punya skenario dapat menerapkannya tanpa ID
+lokal. Ukuran frame tetap dibatasi 64 KB; snapshot dengan unit sangat banyak
+harus dipangkas.

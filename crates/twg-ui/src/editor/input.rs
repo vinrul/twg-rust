@@ -1472,6 +1472,7 @@ fn update_drag(
                 if let Some(unit) = editor.play.limited.get_mut(&key) {
                     unit.altitude = (original_altitude + delta).max(0.0);
                 }
+                editor.play_sync_pending = true;
                 // No `touch()`: the marker root and the gizmo both follow the
                 // runtime altitude through `EditorPlayFrame`.
                 return;
@@ -1505,6 +1506,7 @@ fn update_drag(
             {
                 obstacle.center = target;
             }
+            editor.play_sync_pending = true;
             // No `touch()`: the marker root and the gizmo both follow the
             // runtime position through `EditorPlayFrame`.
         }

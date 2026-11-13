@@ -69,6 +69,8 @@ struct EditorRequest {
 
 impl ClientUi {
     pub fn open_editor(&mut self, scenario_id: Option<Uuid>) {
+        // Leaving any play-only session before loading another scenario.
+        self.leave_play_sync();
         let scenario_id = scenario_id
             .or(self.selected_scenario)
             .or_else(|| self.data.scenarios.first().map(|scenario| scenario.id));
@@ -153,6 +155,7 @@ impl ClientUi {
 
     /// Leaves the play-only screen and returns to the Simulasi list.
     pub fn close_play(&mut self) {
+        self.leave_play_sync();
         self.state.screen = Screen::Workspace;
         self.state.nav = NavItem::Games;
         self.editor.preview = false;

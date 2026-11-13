@@ -268,6 +268,23 @@ async fn process_message(
                 );
             }
         }
+        ClientMessage::Play {
+            request_id,
+            skenario_id,
+            action,
+            data,
+        } => {
+            play(
+                state,
+                subject,
+                connection_id,
+                request_id,
+                skenario_id,
+                action,
+                data,
+            )
+            .await;
+        }
         ClientMessage::Ping { request_id } => {
             let _ = state
                 .realtime
@@ -515,6 +532,99 @@ async fn publish(
         sequence,
         false,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn play(
+    state: &AppState,
+    subject: SessionSubject,
+    connection_id: Uuid,
+    request_id: Option<String>,
+    skenario_id: Uuid,
+    action: String,
+    data: String,
+) {
+    if authorize_scenario(
+        state,
+        subject,
+        connection_id,
+        request_id.clone(),
+        skenario_id,
+    )
+    .await
+    .is_none()
+    {
+        return;
+    }
+    let action = action.trim().to_ascii_lowercase();
+    match action.as_str() {
+        "join" => {
+            if let Some(data) = state.realtime.hub.join_play(connection_id, skenario_id)
+                && !data.is_empty()
+            {
+                let _ = state.realtime.hub.send(
+                    connection_id,
+                    ServerMessage::PlayEvent {
+                        sequence: state.realtime.hub.current_sequence(skenario_id),
+                        skenario_id,
+                        actor: Uuid::nil(),
+                        action: "state".to_owned(),
+                        data,
+                    },
+                );
+            }
+            // Ask the clients already playing for a fresh snapshot. The new
+            // joiner receives it through the normal state broadcast.
+            let _ = state.realtime.hub.broadcast_play(
+                skenario_id,
+                Some(connection_id),
+                ServerMessage::PlayEvent {
+                    sequence: state.realtime.hub.current_sequence(skenario_id),
+                    skenario_id,
+                    actor: connection_id,
+                    action: "sync".to_owned(),
+                    data: String::new(),
+                },
+            );
+        }
+        "leave" => state.realtime.hub.leave_play(connection_id, skenario_id),
+        "state" => {
+            state.realtime.hub.set_play_state(skenario_id, data.clone());
+            state.realtime.hub.broadcast_play(
+                skenario_id,
+                None,
+                ServerMessage::PlayEvent {
+                    sequence: state.realtime.hub.current_sequence(skenario_id),
+                    skenario_id,
+                    actor: connection_id,
+                    action: "state".to_owned(),
+                    data,
+                },
+            );
+        }
+        "sync" => {
+            if let Some(data) = state.realtime.hub.play_state(skenario_id) {
+                let _ = state.realtime.hub.send(
+                    connection_id,
+                    ServerMessage::PlayEvent {
+                        sequence: state.realtime.hub.current_sequence(skenario_id),
+                        skenario_id,
+                        actor: Uuid::nil(),
+                        action: "state".to_owned(),
+                        data,
+                    },
+                );
+            }
+        }
+        _ => send_error(
+            state,
+            connection_id,
+            request_id,
+            "invalid_action",
+            "unknown play action",
+            false,
+        ),
+    }
 }
 
 async fn authorize_scenario(

@@ -544,6 +544,21 @@ viewport editor:
 - Posisi selama Play tidak mengubah posisi marker di skenario. **Stop**
   mengembalikan editor ke tampilan authoring semula.
 
+**Simulasi dari menu Simulasi (realtime)**
+
+Menu **Simulasi** membuka skenario langsung dalam layar play tanpa dock editor.
+Panel kiri punya tab **Animasi** dan **Skenario** (daftar skenario satu operasi).
+Selama layar ini terbuka:
+
+- Gerakan unit, perintah klik kanan, pemindahan aset `Limited` lewat gizmo, dan
+  Play/Pause/Stop rute disiarkan ke client lain yang juga membuka skenario itu
+  dari menu Simulasi, sehingga semua komputer melihat simulasi yang sama.
+- Client baru menerima snapshot state terakhir saat bergabung. Server menyimpan
+  snapshot selama masih ada participant play dan menghapusnya saat participant
+  terakhir keluar, jadi sesi berikutnya mulai lagi dari state awal skenario.
+- Kamera (pan/zoom/bearing/pitch) dan perpindahan skenario tidak disinkronkan.
+- Play dari editor **tidak** realtime; hanya play dari menu Simulasi.
+
 Web:
 
 ```bash
