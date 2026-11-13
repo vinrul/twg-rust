@@ -531,6 +531,10 @@ viewport editor:
   seperti game RTS.
 - **Klik kanan** di tanah memerintahkan unit bergerak. Bila beberapa unit
   dipilih, mereka otomatis membentuk formasi grid di sekitar titik tujuan.
+- Marker yang sedang digerakkan animasi rute otomatis di-pause rutenya ketika
+  kamu memberi perintah gerak, lalu marker bergerak bebas. Rute yang di-pause,
+  stop, atau selesai melepaskan marker; **Resume** mengembalikan marker ke jalur
+  rute sesuai progress terakhir.
 - Unit memutar arah mengikuti gerakan dan memutar klip animasi (file
   `animated`) hanya selagi bergerak. Saat berhenti atau sampai tujuan, model
   kembali ke tampilan **idle** (file `idle`), bukan animasi yang di-pause.

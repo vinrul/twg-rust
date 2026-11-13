@@ -288,7 +288,8 @@ pub struct PlayState {
     pub obstacles: Vec<PlayObstacle>,
     /// Authored route animations available in the Play panel.
     pub animations: Vec<PlayRouteAnimation>,
-    /// Markers controlled by a route animation; manual orders are ignored.
+    /// Markers currently driven by a playing route. Manual orders pause that
+    /// route so the marker can be moved again.
     pub controlled: BTreeSet<ObjectKey>,
     /// Screen-space marquee while dragging on empty ground.
     pub marquee: Option<(egui::Pos2, egui::Pos2)>,
@@ -1795,7 +1796,6 @@ impl EditorState {
     /// control, so the normal RTS order logic leaves those markers alone.
     fn init_play_animations(&mut self) {
         let mut animations = Vec::new();
-        let mut controlled = BTreeSet::new();
         for object in &self.objects {
             // Hiding a route only declutters the editor map; the animation still
             // runs in Play, where route lines are never drawn.
@@ -1825,9 +1825,6 @@ impl EditorState {
                         .then_some(candidate.key)
                 })
             });
-            if let Some(key) = marker_key {
-                controlled.insert(key);
-            }
             animations.push(PlayRouteAnimation {
                 route_key: object.key,
                 name: object.name.clone(),
@@ -1845,6 +1842,22 @@ impl EditorState {
         // Play follows the order authored in the editor's Urutan tab.
         animations.sort_by_key(|animation| animation.order);
         self.play.animations = animations;
+        self.sync_play_controlled();
+    }
+
+    /// Recomputes which markers are currently driven by a playing route.
+    /// Paused, stopped, and finished routes release their marker so it can be
+    /// ordered manually.
+    pub(super) fn sync_play_controlled(&mut self) {
+        let mut controlled = BTreeSet::new();
+        for animation in &self.play.animations {
+            if animation.state == PlaybackState::Playing
+                && !animation.is_finished()
+                && let Some(key) = animation.marker_key
+            {
+                controlled.insert(key);
+            }
+        }
         self.play.controlled = controlled;
     }
 
@@ -1929,6 +1942,7 @@ impl EditorState {
         }
 
         let mut updated = Vec::new();
+        let mut released = false;
         for (index, animation) in self.play.animations.iter_mut().enumerate() {
             if animation.state != PlaybackState::Playing || animation.length_m <= 0.0 {
                 continue;
@@ -1941,11 +1955,17 @@ impl EditorState {
                 animation.progress_m %= animation.length_m;
             } else {
                 animation.progress_m = animation.progress_m.min(animation.length_m);
+                released |= animation.is_finished();
             }
             updated.push(index);
         }
         for index in updated {
             self.apply_route_animation(index);
+        }
+        // A route that reached its end releases its marker so it can be
+        // ordered manually again.
+        if released {
+            self.sync_play_controlled();
         }
     }
 
@@ -1962,6 +1982,7 @@ impl EditorState {
         }
         animation.state = PlaybackState::Playing;
         self.apply_route_animation(index);
+        self.sync_play_controlled();
         self.play_sync_pending = true;
     }
 
@@ -1972,6 +1993,7 @@ impl EditorState {
             animation.state = PlaybackState::Paused;
             self.play_sync_pending = true;
         }
+        self.sync_play_controlled();
     }
 
     /// Stops a route and puts its marker back at the first point.
@@ -1981,6 +2003,7 @@ impl EditorState {
             animation.state = PlaybackState::Stopped;
         }
         self.apply_route_animation(index);
+        self.sync_play_controlled();
         self.play_sync_pending = true;
     }
 
@@ -2021,6 +2044,22 @@ impl EditorState {
     pub fn play_move_selected(&mut self, target: GeoPoint) {
         if !self.play.active {
             return;
+        }
+        // A manual order on a marker driven by a playing route pauses that
+        // route; the command then moves the marker normally. Resuming the
+        // route later snaps the marker back to the route.
+        let selected = self.selected.iter().copied().collect::<Vec<_>>();
+        for key in &selected {
+            if !self.play.controlled.contains(key) {
+                continue;
+            }
+            if let Some(index) = self.play.animations.iter().position(|animation| {
+                animation.marker_key == Some(*key)
+                    && animation.state == PlaybackState::Playing
+                    && !animation.is_finished()
+            }) {
+                self.pause_route_animation(index);
+            }
         }
         let keys = self
             .selected
@@ -3881,9 +3920,10 @@ mod tests {
 
         editor.start_play();
         assert_eq!(editor.play.animations.len(), 1);
-        assert!(editor.play.controlled.contains(&marker_key));
+        assert!(!editor.play.controlled.contains(&marker_key));
 
         editor.play_route_animation(0);
+        assert!(editor.play.controlled.contains(&marker_key));
         editor.play_tick(0.1);
         let unit = editor.play.units.get(&marker_key).expect("animated unit");
         let offset = unit.position.local_offset(base).expect("offset");
@@ -3891,9 +3931,47 @@ mod tests {
         assert!(unit.target.is_none());
 
         editor.stop_route_animation(0);
+        assert!(!editor.play.controlled.contains(&marker_key));
         let unit = editor.play.units.get(&marker_key).expect("animated unit");
         let offset = unit.position.local_offset(base).expect("offset");
         assert!(offset.east_meters.abs() < 0.1);
+    }
+
+    #[test]
+    fn manual_order_pauses_a_route_controlled_marker() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "ffffffff-ffff-4fff-8fff-ffffffffffff", base);
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        let end = GeoPoint::from_local_offset(base, 40.0, 0.0).expect("east");
+        editor.add_route(vec![base, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        if let Some(object) = editor.object_mut(route_key)
+            && let EditorKind::Line(line) = &mut object.kind
+        {
+            line.animation = Some(RouteAnimation {
+                speed: 5.0,
+                marker_id: Some(marker_id),
+                repeat: false,
+                order: 0,
+            });
+        }
+
+        editor.start_play();
+        editor.play_route_animation(0);
+        editor.play_tick(0.1);
+        assert!(editor.play.controlled.contains(&marker_key));
+
+        editor.selected.clear();
+        editor.selected.insert(marker_key);
+        let target = GeoPoint::from_local_offset(base, 40.0, 30.0).expect("north east");
+        editor.play_move_selected(target);
+
+        assert!(!editor.play.controlled.contains(&marker_key));
+        assert_eq!(editor.play.animations[0].state, PlaybackState::Paused);
+        assert_eq!(editor.play.units[&marker_key].target, Some(target));
     }
 
     #[test]

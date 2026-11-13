@@ -100,6 +100,7 @@ impl EditorState {
                 }
                 self.apply_route_animation(index);
             }
+            self.sync_play_controlled();
         }
         let Some(units) = snapshot.get("units").and_then(Value::as_array) else {
             return;
