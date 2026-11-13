@@ -150,11 +150,12 @@ impl ClientUi {
     }
 
     /// Switches the play-only screen to another scenario of the same operation,
-    /// keeping the Skenario tab selected. Switching does not change the public
-    /// big-screen scenario; only opening from the Simulasi list or reloading
-    /// announces a new live session.
+    /// keeping the Skenario tab selected. Admin and admin_satker also start a
+    /// fresh big-screen session so the display loads the selected scenario;
+    /// other roles only change their own screen.
     pub fn switch_play_scenario(&mut self, scenario_id: Uuid) {
-        self.start_play_screen(Some(scenario_id), true, false);
+        let announce = matches!(self.role(), Role::Admin | Role::AdminSatker);
+        self.start_play_screen(Some(scenario_id), true, announce);
     }
 
     fn start_play_screen(&mut self, scenario_id: Option<Uuid>, keep_tab: bool, announce: bool) {

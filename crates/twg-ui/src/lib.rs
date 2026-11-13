@@ -13,8 +13,8 @@ use twg_contracts::assets::{AssetSourceSlot, AssetVariantKind};
 use twg_render::PreviewPhase;
 use twg_render::{
     AssetPreview, AssetPreviewRequest, MapUpdateSet, MarkerModelOverride, MarkerModelPath,
-    MarkerModelReload, PREVIEW_SLOTS, PreviewOrbitInput, PreviewOrbitInputs, TileProxyConfig,
-    UiPointerState, cache_asset_path,
+    MarkerModelReload, PREVIEW_SLOTS, PreviewOrbitInput, PreviewOrbitInputs, RenderLoadStatus,
+    TileProxyConfig, UiPointerState, cache_asset_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
@@ -24,6 +24,7 @@ mod assets_screen;
 mod compass_panel;
 pub mod editor;
 mod file_picker;
+mod loading_overlay;
 mod map_panel;
 mod scenario_preview;
 mod screens;
@@ -186,8 +187,10 @@ fn draw_client_shell(
     mut commands: Commands,
     preview: Option<Res<AssetPreview>>,
     orbit: Option<ResMut<PreviewOrbitInputs>>,
+    load_status: Option<Res<RenderLoadStatus>>,
 ) -> Result {
     client.poll();
+    client.load_status = load_status.as_deref().copied().unwrap_or_default();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(asset_id) = client.asset_preview_capture.take() {
         request_asset_preview_capture(&mut commands, &mut client, preview.as_deref(), asset_id);

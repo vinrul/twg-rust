@@ -9,6 +9,7 @@ use twg_map::{BaseLayer, MapCameraState, TileId, TileSource, XyzTileSource, cove
 
 use super::tile_cache::LruCache;
 use super::{BaseLayerResource, MapCameraResource, TileProxyConfig};
+use crate::RenderLoadStatus;
 
 const MATERIAL_CACHE_LIMIT: usize = 512;
 const IMAGE_CACHE_LIMIT: usize = 512;
@@ -239,6 +240,27 @@ pub fn update_tile_transforms(
     for (tile, mut transform) in &mut tiles {
         *transform = tile_transform(&state, tile.0, max_zoom);
     }
+}
+
+pub fn track_tile_loads(
+    asset_server: Res<AssetServer>,
+    tiles: Query<&TileImage>,
+    mut status: ResMut<RenderLoadStatus>,
+) {
+    let mut loaded = 0;
+    let mut total = 0;
+    for tile in &tiles {
+        total += 1;
+        match asset_server.get_load_state(tile.image.id()) {
+            Some(LoadState::Loaded | LoadState::Failed(_)) => loaded += 1,
+            // A default/cached handle with no registered asset is already
+            // usable as the tile material; do not leave the bar stuck on it.
+            None => loaded += 1,
+            Some(LoadState::Loading | LoadState::NotLoaded) => {}
+        }
+    }
+    status.tiles_loaded = loaded;
+    status.tiles_total = total;
 }
 
 fn tile_transform(state: &MapCameraState, tile: TileId, max_zoom: u8) -> Transform {

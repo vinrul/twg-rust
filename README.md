@@ -564,9 +564,9 @@ Selama layar ini terbuka:
   terakhir keluar, jadi sesi berikutnya mulai lagi dari state awal skenario.
 - Admin dan `admin_satker` juga menyiarkan kamera (zoom, pan, pitch, bearing)
   dan dapat memuat ulang skenario. Gunakan tombol **Muat ulang** di layar play
-  Simulasi. Berpindah skenario lewat tab **Skenario** belum disinkronkan; buka
-  skenario dari daftar Simulasi atau tekan **Muat ulang** untuk memulai sesi
-  layar besar baru.
+  Simulasi. Saat admin/admin_satker memilih skenario lain di tab **Skenario**,
+  layar besar ikut memuat skenario tersebut. Role lain yang memilih skenario
+  hanya mengubah layarnya sendiri; layar besar tidak terpengaruh.
 - Play dari editor **tidak** realtime; hanya play dari menu Simulasi.
 
 **Layar besar**
@@ -579,6 +579,11 @@ bearing/pitch, dan FPS — tanpa tombol zoom, tanpa panel editor, dan tanpa inpu
 kamera lokal.
 
 - Saat pertama dibuka, layar menampilkan peta Indonesia.
+- Tombol **Tutup layar** di panel kecil berfungsi sama seperti **Esc**: role biasa
+  kembali ke layar asal, sedangkan role `big_screen` logout.
+- Progress bar non-blocking tampil saat skenario, marker 3D, animasi, atau tile
+  peta masih dimuat. Indikator yang sama juga dipakai di editor skenario,
+  editor Play, dan Simulasi play.
 - Hanya `admin` dan `admin_satker` yang dapat memulai sesi tampilan. Server
   menolak `started`, `camera`, `reload`, dan `stop` dari role lain.
 - `admin_satker` hanya dapat memulai skenario milik satkernya; aturan satker

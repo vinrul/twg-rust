@@ -30,7 +30,7 @@ use twg_domain::Role;
 use twg_map::{GeoPoint, MapCameraState};
 #[cfg(not(target_arch = "wasm32"))]
 use twg_render::{ImagePreviewKey, ModelPreviewKey};
-use twg_render::{PREVIEW_SLOTS, PreviewOrbitInput, PreviewPhase, PreviewSource};
+use twg_render::{PREVIEW_SLOTS, PreviewOrbitInput, PreviewPhase, PreviewSource, RenderLoadStatus};
 use uuid::Uuid;
 
 use crate::editor::model::EditorState;
@@ -374,9 +374,8 @@ pub struct WsUi {
     /// Scenario whose `started` action was sent for this play session.
     pub started_scenario: Option<Uuid>,
     /// Whether this Simulasi screen is allowed to announce a scenario to the
-    /// public big screen. Opening from the Simulasi list and reloading enable
-    /// it; switching scenarios in the Skenario tab does not, per the current
-    /// realtime scope.
+    /// big screen. Opening from the Simulasi list, switching the Skenario tab
+    /// as admin/admin_satker, and reloading enable it; other roles never do.
     pub announce_live: bool,
     /// This connection is registered as a big-screen watcher.
     pub live_watched: bool,
@@ -437,6 +436,8 @@ pub struct ClientUi {
     pub profile_message: Option<(bool, String)>,
     pub ws: WsUi,
     pub big_screen: BigScreenUi,
+    /// Latest render-asset loading progress, mirrored for the egui overlay.
+    pub load_status: RenderLoadStatus,
     pub layer_order: Vec<&'static str>,
     pub selected_layer: &'static str,
     pub boot_checked: bool,
@@ -540,6 +541,7 @@ impl ClientUi {
             profile_message: None,
             ws: WsUi::default(),
             big_screen: BigScreenUi::default(),
+            load_status: RenderLoadStatus::default(),
             layer_order: vec!["OpenStreetMap", "Satelit"],
             selected_layer: "OpenStreetMap",
             boot_checked: false,
@@ -2460,6 +2462,7 @@ impl ClientUi {
         if !self.big_screen.active {
             return;
         }
+        self.editor.close_big_screen_requested = false;
         if self.role() == Role::BigScreen {
             self.big_screen = BigScreenUi::default();
             self.editor.big_screen = false;

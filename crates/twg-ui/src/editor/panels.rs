@@ -98,23 +98,6 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
             editor.requested_geocode = false;
             action = EditorAction::Geocode;
         }
-        if editor.loading {
-            egui::Area::new(egui::Id::new("editor_loading"))
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(context, |ui| {
-                    egui::Frame::new()
-                        .fill(theme::color(DARK.card))
-                        .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .inner_margin(egui::Margin::same(18))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(theme::title("Memuat skenario..."));
-                            });
-                        });
-                });
-        }
     }
 
     if client.editor.requested_asset_sync {
@@ -165,7 +148,10 @@ pub fn draw_big_screen(context: &egui::Context, client: &mut ClientUi) {
         editor.big_screen = true;
         root_ui(context, |ui| draw_viewport(ui, editor));
     }
-    if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+    if client.editor.close_big_screen_requested {
+        client.editor.close_big_screen_requested = false;
+        client.close_big_screen();
+    } else if context.input(|input| input.key_pressed(egui::Key::Escape)) {
         client.close_big_screen();
     }
 }
@@ -3363,13 +3349,6 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
             let painter = ui.painter().clone();
 
             if editor.loading {
-                painter.text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "Memuat skenario...",
-                    egui::FontId::proportional(16.0),
-                    theme::color(DARK.foreground),
-                );
                 return;
             }
 
@@ -3463,6 +3442,12 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                                 )
                                 .selectable(false),
                             );
+                            if big_screen {
+                                ui.separator();
+                                if ui.button("Tutup layar").clicked() {
+                                    editor.close_big_screen_requested = true;
+                                }
+                            }
                         });
                 });
         });

@@ -57,6 +57,7 @@ impl Plugin for MapRenderPlugin {
             .insert_resource(BaseLayerResource::default())
             .init_resource::<UiPointerState>()
             .init_resource::<TileProxyConfig>()
+            .init_resource::<crate::RenderLoadStatus>()
             .init_resource::<TileWorld>()
             .init_resource::<SkyMode>()
             .add_systems(
@@ -81,6 +82,7 @@ impl Plugin for MapRenderPlugin {
                     cursor::update_cursor,
                     tiles::sync_tiles,
                     tiles::update_error_tiles,
+                    tiles::track_tile_loads,
                     tiles::update_tile_transforms,
                     environment::update_ground,
                     sky::apply_sky_mode,

@@ -21,6 +21,7 @@ impl Plugin for EditorRenderPlugin {
             .init_resource::<EditorMode>()
             .init_resource::<scene::EditorPlayFrame>()
             .init_resource::<scene::EditorRenderCache>()
+            .init_resource::<crate::RenderLoadStatus>()
             .add_systems(
                 Update,
                 (
@@ -33,6 +34,7 @@ impl Plugin for EditorRenderPlugin {
                     scene::update_gizmo_scale,
                     scene::normalize_marker_meshes,
                     scene::apply_marker_shading,
+                    scene::track_marker_loads,
                 )
                     .chain()
                     .before(crate::map::MapUpdateSet),

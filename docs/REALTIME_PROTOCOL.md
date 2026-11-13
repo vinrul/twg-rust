@@ -309,11 +309,12 @@ Server ke klien (`play_event`):
 - `actor` adalah `connection_id` pengirim; client mengabaikan event miliknya
   sendiri. `actor` nil berarti snapshot dari server.
 - `action: "sync"` meminta participant play lain mengirim snapshot segar.
-- `started` menyiapkan sesi tampilan publik. Client yang bukan `admin` atau
+- `started` menyiapkan sesi tampilan. Client yang bukan `admin` atau
   `admin_satker` tidak boleh memuat skenario baru di layar besar, tetapi
   `state` dari semua participant tetap memengaruhi animasi dan gerakan yang
-  sedang berjalan. Berpindah skenario lewat tab Skenario tidak mengirim
-  `started`; membuka dari daftar Simulasi atau **Muat ulang** yang mengirimnya.
+  sedang berjalan. Admin/admin_satker mengirim `started` saat membuka skenario
+  dari daftar Simulasi, memilih skenario di tab Skenario, atau menekan **Muat
+  ulang**; role lain tidak mengirim `started`.
 - `camera` tidak disiarkan sebagai `play_event`; nilainya disimpan pada sesi
   publik dan dibaca layar besar.
 - Pesan `play_event` hanya dikirim ke koneksi yang sudah `join`, bukan ke semua

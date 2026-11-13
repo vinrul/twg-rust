@@ -1277,6 +1277,8 @@ pub struct EditorState {
     /// Public big-screen display: map only, no editor or play controls, and no
     /// local camera input.
     pub big_screen: bool,
+    /// Set by the big-screen close button; the shell handles leaving the page.
+    pub close_big_screen_requested: bool,
     pub visible: VisibleLayers,
     /// Server asset models resolved from the offline cache, keyed by asset UUID.
     pub marker_models: BTreeMap<String, MarkerAssetModel>,
@@ -1430,6 +1432,7 @@ impl EditorState {
             console: Vec::new(),
             preview: false,
             big_screen: false,
+            close_big_screen_requested: false,
             visible: VisibleLayers::default(),
             marker_models: BTreeMap::new(),
             texture_paths: BTreeMap::new(),

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use bevy::asset::RenderAssetUsages;
+use bevy::asset::{LoadState, RenderAssetUsages};
 use bevy::camera::visibility::RenderLayers;
 use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
 use bevy::image::Image;
@@ -12,6 +12,7 @@ use bevy::world_serialization::{WorldAsset, WorldAssetRoot};
 use twg_map::GeoPoint;
 
 use super::mesh;
+use crate::RenderLoadStatus;
 use crate::map::{GeoAnchor, MapCamera, MapCameraResource};
 
 /// Per-frame RTS play state pushed by the UI layer. Unlike [`EditorScene`]
@@ -828,6 +829,50 @@ pub(crate) fn sync_editor_play_scenes(
             .insert(object.key, (new_entity, unit.moving));
         cache.entities.push(new_entity);
     }
+}
+
+/// Reports marker-scene and animation readiness to the UI loading overlay.
+/// `commands.spawn` is deferred, so newly spawned roots are counted on the
+/// following frame; the short delay is intentional and avoids a full-screen
+/// dialog flashing before the asset server has even seen the handles.
+pub(crate) fn track_marker_loads(
+    asset_server: Res<AssetServer>,
+    roots: Query<(Option<&WorldAssetRoot>, Option<&Mesh3d>), With<EditorPlayKey>>,
+    animations: Query<&EditorPlayAnimation>,
+    players: Query<(), With<AnimationPlayer>>,
+    mut status: ResMut<RenderLoadStatus>,
+) {
+    let mut markers_loaded = 0;
+    let mut markers_total = 0;
+    for (scene, mesh) in &roots {
+        let load_state = scene
+            .map(|scene| asset_server.get_load_state(scene.0.id()))
+            .or_else(|| mesh.map(|mesh| asset_server.get_load_state(mesh.0.id())))
+            .flatten();
+        if load_state.is_some() {
+            markers_total += 1;
+            if matches!(load_state, Some(LoadState::Loaded | LoadState::Failed(_))) {
+                markers_loaded += 1;
+            }
+        }
+    }
+
+    let mut animations_total = 0;
+    let mut animations_loaded = 0;
+    for animation in &animations {
+        animations_total += 1;
+        if animation
+            .player
+            .is_some_and(|player| players.contains(player))
+        {
+            animations_loaded += 1;
+        }
+    }
+
+    status.markers_loaded = markers_loaded;
+    status.markers_total = markers_total;
+    status.animations_loaded = animations_loaded;
+    status.animations_total = animations_total;
 }
 
 /// Keeps the Play move gizmo on its runtime unit while the gizmo is dragged.

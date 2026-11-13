@@ -22,6 +22,7 @@ use crate::widgets;
 pub fn draw(context: &egui::Context, client: &mut ClientUi) {
     if client.state.screen == Screen::BigScreen {
         crate::editor::panels::draw_big_screen(context, client);
+        crate::loading_overlay::draw(context, client);
         return;
     }
     match client.state.screen {
@@ -30,6 +31,9 @@ pub fn draw(context: &egui::Context, client: &mut ClientUi) {
         Screen::Preview | Screen::MapEditor => crate::editor::panels::draw(context, client),
         Screen::Workspace => draw_shell(context, client),
         Screen::BigScreen => {}
+    }
+    if matches!(client.state.screen, Screen::Preview | Screen::MapEditor) {
+        crate::loading_overlay::draw(context, client);
     }
     crate::assets_screen::draw_sync_overlay(context, client);
     draw_modal(context, client);

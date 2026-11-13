@@ -2,6 +2,7 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
 mod editor;
+mod load_status;
 mod map;
 mod preview;
 mod stress;
@@ -11,6 +12,7 @@ pub use editor::{
     EditorParticleKind, EditorParticleSettings, EditorPlayFrame, EditorPlayModel, EditorPlayUnit,
     EditorRenderPlugin, EditorScene, EditorSceneKind, EditorSceneObject, EditorShapeKind,
 };
+pub use load_status::RenderLoadStatus;
 pub use map::{
     BaseLayerResource, CAMERA_FOV_Y, CameraFlightState, DemoMarker, GeoAnchor, MapCamera,
     MapCameraResource, MapCursorResource, MapRenderPlugin, MapUpdateSet, SkyMode, Tile,
@@ -36,6 +38,7 @@ pub struct TacticalRenderPlugin;
 impl Plugin for TacticalRenderPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(Color::srgb(0.025, 0.045, 0.075)))
+            .init_resource::<RenderLoadStatus>()
             .add_plugins((
                 FrameTimeDiagnosticsPlugin::default(),
                 twg_gltf_draco::GltfDracoDecoderPlugin,
