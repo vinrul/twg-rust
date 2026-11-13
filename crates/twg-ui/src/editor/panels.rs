@@ -3390,7 +3390,7 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                 egui::Color32::from_white_alpha(190),
             );
 
-            egui::Area::new(egui::Id::new("editor_view_controls"))
+            let controls = egui::Area::new(egui::Id::new("editor_view_controls"))
                 // Keep the zoom/bearing panel clear of the Inspector on the
                 // right edge of the viewport.
                 .fixed_pos(egui::pos2(rect.right() - 156.0, rect.top() + 12.0))
@@ -3442,14 +3442,37 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                                 )
                                 .selectable(false),
                             );
-                            if big_screen {
-                                ui.separator();
-                                if ui.button("Tutup layar").clicked() {
-                                    editor.close_big_screen_requested = true;
-                                }
-                            }
                         });
                 });
+
+            if big_screen {
+                let width = controls.response.rect.width();
+                let button_width = (width - 12.0).max(80.0);
+                egui::Area::new(egui::Id::new("editor_big_screen_close"))
+                    .fixed_pos(egui::pos2(
+                        controls.response.rect.left(),
+                        controls.response.rect.bottom() + 6.0,
+                    ))
+                    .order(egui::Order::Foreground)
+                    .show(&context, |ui| {
+                        egui::Frame::new()
+                            .fill(theme::color(DARK.card))
+                            .stroke(egui::Stroke::new(1.0, theme::color(DARK.border)))
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .inner_margin(egui::Margin::same(6))
+                            .show(ui, |ui| {
+                                if ui
+                                    .add_sized(
+                                        [button_width, 24.0],
+                                        egui::Button::new("Tutup layar"),
+                                    )
+                                    .clicked()
+                                {
+                                    editor.close_big_screen_requested = true;
+                                }
+                            });
+                    });
+            }
         });
 }
 
