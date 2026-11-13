@@ -60,9 +60,8 @@ pub async fn delete_snapshot(
 
 /// Saves command state (`MOVE`/`ROT`/`ZOOM`) and acknowledges the publish.
 ///
-/// The real-time fan-out is implemented in Phase 7. Until then the endpoint
-/// persists state and returns the Centrifugo-shaped acknowledgement so legacy
-/// clients keep working.
+/// Live clients publish over the `twg.ws.v1` WebSocket; this HTTP endpoint is
+/// kept for the parity tooling and writes the same stored state.
 pub async fn publish_commands(
     State(state): State<AppState>,
     Extension(context): Extension<AuthContext>,

@@ -13,27 +13,8 @@ pub const DEFAULT_RATE_LIMIT: u32 = 10;
 pub const DEFAULT_RATE_WINDOW_SECONDS: u64 = 60;
 pub const DEFAULT_WS_TICKET_TTL_SECONDS: u64 = 30;
 pub const DEFAULT_WS_HISTORY_LIMIT: usize = 256;
-pub const DEFAULT_CHANNEL: &str = "twg-jagradewata";
 pub const DEFAULT_ASSETS_DIR: &str = "asset-store";
 pub const DEFAULT_GLTF_TRANSFORM: &str = "gltf-transform";
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct CentrifugoConfig {
-    pub address: String,
-    pub key: String,
-    pub channel: String,
-}
-
-impl std::fmt::Debug for CentrifugoConfig {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CentrifugoConfig")
-            .field("address", &self.address)
-            .field("key", &"<redacted>")
-            .field("channel", &self.channel)
-            .finish()
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitConfig {
@@ -63,7 +44,6 @@ pub struct ServerConfig {
     pub rate_limit: RateLimitConfig,
     pub ws_ticket_ttl: Duration,
     pub ws_history_limit: usize,
-    pub centrifugo: Option<CentrifugoConfig>,
 }
 
 impl ServerConfig {
@@ -146,28 +126,6 @@ impl ServerConfig {
             .transpose()?
             .unwrap_or(DEFAULT_WS_HISTORY_LIMIT)
             .max(16);
-        let dual_publish = env::var("CENTRIFUGO_DUAL_PUBLISH")
-            .ok()
-            .map(|value| parse_bool(&value))
-            .unwrap_or(false);
-        let centrifugo = if dual_publish {
-            match (env::var("CENTRIFUGO_ADDR"), env::var("CENTRIFUGO_KEY")) {
-                (Ok(address), Ok(key)) if !address.is_empty() && !key.is_empty() => {
-                    Some(CentrifugoConfig {
-                        address,
-                        key,
-                        channel: env::var("CHANNEL").unwrap_or_else(|_| DEFAULT_CHANNEL.to_owned()),
-                    })
-                }
-                _ => {
-                    return Err(ConfigError::Missing(
-                        "CENTRIFUGO_ADDR and CENTRIFUGO_KEY for CENTRIFUGO_DUAL_PUBLISH",
-                    ));
-                }
-            }
-        } else {
-            None
-        };
 
         Ok(Self {
             address: env::var("HTTP_SERVER_ADDRESS").unwrap_or_else(|_| DEFAULT_ADDRESS.to_owned()),
@@ -184,7 +142,6 @@ impl ServerConfig {
             },
             ws_ticket_ttl: Duration::from_secs(ws_ticket_ttl),
             ws_history_limit,
-            centrifugo,
         })
     }
 }
@@ -204,7 +161,6 @@ impl std::fmt::Debug for ServerConfig {
             .field("rate_limit", &self.rate_limit)
             .field("ws_ticket_ttl", &self.ws_ticket_ttl)
             .field("ws_history_limit", &self.ws_history_limit)
-            .field("centrifugo", &self.centrifugo)
             .finish()
     }
 }
@@ -250,13 +206,6 @@ pub fn parse_list(value: &str) -> Vec<String> {
         .filter(|entry| !entry.is_empty())
         .map(ToOwned::to_owned)
         .collect()
-}
-
-pub fn parse_bool(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 #[cfg(test)]

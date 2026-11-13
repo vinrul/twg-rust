@@ -57,8 +57,8 @@ lama: **89 check PASS** plus 8 safety check. Detail ada di
 
 Fase 7: realtime `twg.ws.v1` — tiket WebSocket sekali pakai 30 detik, upgrade
 `/ws`, channel per skenario dengan otorisasi satker, sequence, idempotency,
-ack/error, presence, heartbeat, resume dari history, resync dengan snapshot
-fallback, dan dual-publish Centrifugo opsional. Smoke test end-to-end PASS
+ack/error, presence, heartbeat, resume dari history, dan resync dengan snapshot
+fallback. Smoke test end-to-end PASS
 (termasuk cross-satker, duplicate command, fan-out 8 klien, dan reconnect storm).
 Spesifikasi ada di [protokol realtime](docs/REALTIME_PROTOCOL.md), laporan di
 [laporan Fase 7](docs/PHASE7_REPORT.md).
@@ -100,10 +100,7 @@ apps/
   desktop/              binary native Bevy
   web/                  library WASM + Trunk
   online-admin/         app desktop admin: user online + kick sesi
-docker/
-  centrifugo/          config Centrifugo untuk testing lokal
-compose.yaml           PostgreSQL + Centrifugo
-```
+compose.yaml           PostgreSQL untuk development lokal
 tools/
   web-stress.mjs       harness stress browser (Chrome DevTools Protocol)
   client-smoke.mjs     smoke client shell web (sesi, API, WebSocket, screenshot)
@@ -201,7 +198,7 @@ lama `app.env` masih didukung dan menimpa `.env` bila ada.
 `TOKEN_SYMMETRIC_KEY` wajib tepat 32 byte. `readyz` melakukan ping PostgreSQL;
 `GET /tiles/...` tetap tersedia untuk proxy tile.
 
-### PostgreSQL dan Centrifugo lokal (Docker Desktop)
+### PostgreSQL lokal (Docker Desktop)
 
 ```bash
 docker compose up -d
@@ -212,8 +209,7 @@ docker compose ps
 
 | Service | Container | Address |
 |---|---|---|
-| PostgreSQL 16 | `twg-db-local` | `127.0.0.1:55432` |
-| Centrifugo 6.10 | `twg-centrifugo-local` | `127.0.0.1:8000` |
+| PostgreSQL 18 | `twg-db-local` | `127.0.0.1:55432` |
 
 Nilai database diambil dari `.env` (`POSTGRES_USER`, `POSTGRES_PASSWORD`,
 `POSTGRES_DB`, `POSTGRES_PORT`). Volume data bernama `twg_twg-db-data`;
@@ -227,16 +223,8 @@ docker exec -i twg-db-local psql -U twg_baseline -d twg_baseline \
   -v ON_ERROR_STOP=1 -f - < baseline/fixtures/seed.sql
 ```
 
-Centrifugo untuk testing dual-publish:
-
-- HTTP API: `http://127.0.0.1:8000/api`, header `X-API-Key: twg-centrifugo-test-key`
-- Health: `http://127.0.0.1:8000/health`
-- Channel lama: `twg-jagradewata`
-- Config: `docker/centrifugo/config.json`
-
-Config testing mengaktifkan `client.insecure` dan `allowed_origins: ["*"]`;
-jangan dipakai di produksi. `CENTRIFUGO_DUAL_PUBLISH=true` di `.env` membuat
-server Rust ikut mem-publish event ke channel tersebut.
+Realtime berjalan langsung di server Rust (`GET /ws`), jadi tidak ada
+container tambahan yang perlu dijalankan.
 
 Desktop:
 
@@ -597,9 +585,7 @@ dari provider.
 Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
 `WS_TICKET_TTL_SECONDS` mengatur umur tiket (default 30 detik) dan
 `WS_HISTORY_LIMIT` mengatur jumlah event yang disimpan untuk resume (default
-256). Dual-publish ke channel Centrifugo lama diaktifkan dengan
-`CENTRIFUGO_DUAL_PUBLISH=true` beserta `CENTRIFUGO_ADDR`, `CENTRIFUGO_KEY`, dan
-`CHANNEL`. Detail protokol ada di [protokol realtime](docs/REALTIME_PROTOCOL.md).
+256). Detail protokol ada di [protokol realtime](docs/REALTIME_PROTOCOL.md).
 
 ## Dependency policy
 

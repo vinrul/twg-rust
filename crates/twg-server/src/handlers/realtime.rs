@@ -501,7 +501,6 @@ async fn publish(
     };
     state.realtime.hub.record_event(event.clone());
     state.realtime.hub.broadcast(skenario_id, event.clone());
-    state.realtime.publish_legacy(&event);
     if let Some(key) = &idempotency_key {
         state
             .realtime

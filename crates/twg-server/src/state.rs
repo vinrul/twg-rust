@@ -46,11 +46,7 @@ impl AppState {
             read_store,
             write_store,
             asset_store,
-            realtime: Arc::new(Realtime::new(
-                config.ws_ticket_ttl,
-                config.ws_history_limit,
-                config.centrifugo.clone(),
-            )),
+            realtime: Arc::new(Realtime::new(config.ws_ticket_ttl, config.ws_history_limit)),
             rate_limiter: Arc::new(RateLimiter::new(&config.rate_limit)),
             uploads_dir: config.uploads_dir.clone(),
             uploads: Arc::new(LocalUploadStorage::new(config.uploads_dir.clone())),
@@ -70,7 +66,7 @@ impl AppState {
             read_store: None,
             write_store: None,
             asset_store: None,
-            realtime: Arc::new(Realtime::new(std::time::Duration::from_secs(30), 64, None)),
+            realtime: Arc::new(Realtime::new(std::time::Duration::from_secs(30), 64)),
             rate_limiter: Arc::new(RateLimiter::new(&rate_limit)),
             uploads_dir: PathBuf::from("uploads"),
             uploads: Arc::new(LocalUploadStorage::new(

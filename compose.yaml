@@ -29,14 +29,5 @@ services:
       retries: 20
       start_period: 5s
 
-  centrifugo:
-    image: centrifugo/centrifugo:v6.2.5
-    container_name: twg-centrifugo-local
-    restart: unless-stopped
-    ports:
-      - "${CENTRIFUGO_PORT:-8000}:8000"
-    volumes:
-      - ./docker/centrifugo/config.json:/centrifugo/config.json:ro
-
 volumes:
   twg-db-data:

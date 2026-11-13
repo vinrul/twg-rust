@@ -255,31 +255,9 @@ Heartbeat:
 - Sequence dan idempotency disimpan di memori proses. Untuk deployment
   multi-instance, keduanya perlu dipindahkan ke store bersama.
 
-## 9. Pemetaan channel lama ke baru
+## 9. Catatan migrasi
 
-| Lama (Centrifugo) | Baru (`twg.ws.v1`) |
-|---|---|
-| Channel global `twg-jagradewata` | `subscribe { skenario_id }` per skenario |
-| Filter `satker_id` di klien | Otorisasi satker di server saat subscribe/publish |
-| Tidak ada sequence | `sequence` per skenario |
-| Tidak ada resume | `last_sequence` + history + `resync` |
-| Tidak ada ack | `ack`/`error` dengan `request_id` |
-| Tidak ada idempotency | `idempotency_key` per skenario |
-
-Dual-publish (opsional) diaktifkan dengan:
-
-```text
-CENTRIFUGO_DUAL_PUBLISH=true
-CENTRIFUGO_ADDR=http://127.0.0.1:8000/api
-CENTRIFUGO_KEY=<key>
-CHANNEL=twg-jagradewata
-```
-
-Untuk development, `compose.yaml` menyediakan Centrifugo 6 di port 8000 dengan
-API key `twg-centrifugo-test-key` (lihat `docker/centrifugo/config.json`).
-Config tersebut memakai `client.insecure` dan `allowed_origins: ["*"]`; hanya
-untuk testing lokal, bukan produksi.
-
-Saat aktif, setiap event yang diterima juga dikirim ke channel Centrifugo lama
-dengan bentuk payload yang sama (termasuk `command`, `data`, `marker_id`,
-`satker_id`), sehingga client React lama tetap menerima command selama migrasi.
+Seluruh client memakai `twg.ws.v1` langsung ke server Rust (`GET /ws`). Jembatan
+dual-publish Centrifugo sudah dihapus, channel global lama `twg-jagradewata`
+tidak lagi dipakai, dan filter `satker_id` di klien digantikan otorisasi satker
+di server saat subscribe/publish.

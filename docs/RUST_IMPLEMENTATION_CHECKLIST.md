@@ -702,10 +702,9 @@ Jika gagal:
 ### 10.3 Transisi Centrifugo
 
 - [x] Dokumentasikan pemetaan channel lama ke channel baru.
-- [x] Sediakan mode dual-publish bila diperlukan. `CENTRIFUGO_DUAL_PUBLISH`
-  meneruskan event ke channel lama; belum diuji terhadap Centrifugo live.
-- [ ] Pastikan client lama tetap berfungsi selama transisi.
-- [ ] Tentukan kriteria kapan Centrifugo dimatikan.
+- [x] Aplikasi sudah full Rust; tidak ada lagi client React lama.
+- [x] Hapus dual-publish Centrifugo dari server dan `compose.yaml`.
+- [x] Centrifugo dimatikan: realtime memakai `twg.ws.v1` native di server Rust.
 
 ### Exit gate fase 7
 
