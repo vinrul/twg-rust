@@ -349,8 +349,10 @@ Payload snapshot (JSON string di field `data`):
 
 Unit dan rute dicocokkan lewat UUID server (`markers.id` dan `plot_lines.id`),
 sehingga client yang sama-sama punya skenario dapat menerapkannya tanpa ID
-lokal. Ukuran frame tetap dibatasi 64 KB; snapshot dengan unit sangat banyak
-harus dipangkas.
+lokal. Rute multiple marker tetap dikirim sebagai satu entri `routes` (progres
+jalur) ditambah satu entri `units` untuk setiap marker yang bergerak, jadi
+client tidak perlu menghitung formasinya sendiri. Ukuran frame tetap dibatasi
+64 KB; snapshot dengan unit sangat banyak harus dipangkas.
 
 ## 11. Layar besar
 

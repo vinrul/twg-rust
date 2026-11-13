@@ -13,8 +13,8 @@ use crate::widgets;
 use super::input::distance_meters;
 use super::model::{
     AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, PlaybackState, marker_color,
-    parse_hex_color, particle_kind_label,
+    MIN_MARKER_SCALE, ObjectKey, ObjectType, ParticleSettings, PlaybackState, RouteAnimation,
+    RouteAnimationKind, RouteFormation, marker_color, parse_hex_color, particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,13 +290,18 @@ fn draw_animation_play_panel(
                             PlaybackState::Playing => "Berjalan",
                         };
                         ui.label(theme::muted(status));
-                        if animation.marker_key.is_none() {
+                        if animation.marker_keys.is_empty() {
                             ui.label(theme::danger(
                                 "Marker rute tidak ditemukan atau tidak bisa bergerak.",
                             ));
                             ui.separator();
                             continue;
                         }
+                        ui.label(theme::muted(&format!(
+                            "{} marker · formasi {}",
+                            animation.marker_keys.len(),
+                            animation.formation.label()
+                        )));
                         let running = animation.state == PlaybackState::Playing
                             && !animation.is_finished();
                         let resume = animation.state == PlaybackState::Paused;
@@ -1182,7 +1187,8 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         .default_open(true)
         .show(ui, |ui| {
             ui.label(theme::muted(
-                "Menggerakkan satu marker mengikuti garis dengan kecepatan tetap.",
+                "Single marker: satu marker mengikuti garis. Multiple marker: banyak marker \
+                 bergerak bersama dalam formasi (grid).",
             ));
             ui.add_space(4.0);
             if ui
@@ -1194,7 +1200,18 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                 .on_hover_text("Gambar garis rute di peta")
                 .clicked()
             {
-                editor.begin_route_draw();
+                editor.begin_route_draw(RouteAnimationKind::Single);
+            }
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Multiple marker rute")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Gambar rute untuk beberapa marker dengan formasi grid")
+                .clicked()
+            {
+                editor.begin_route_draw(RouteAnimationKind::Multiple);
             }
         });
 }
@@ -2617,99 +2634,8 @@ fn draw_object_inspector(
                     .checkbox(&mut animation.repeat, "Ulangi (repeat)")
                     .on_hover_text("Mulai lagi dari titik pertama setelah mencapai ujung rute.")
                     .changed();
-                ui.label("Marker yang bergerak");
-                ui.horizontal(|ui| {
-                    ui.label(theme::muted("Cari"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut editor.route_marker_search)
-                            .hint_text("Nama marker...")
-                            .desired_width(150.0),
-                    );
-                });
-                let options = editor.animation_marker_options(key);
-                let option_count = options.len();
-                let mut marker = animation.marker_id;
-                widgets::combo(
-                    ui,
-                    egui::Id::new(("route_marker", key)),
-                    &mut marker,
-                    &options,
-                );
-                if animation.marker_id != marker {
-                    animation.marker_id = marker;
-                    changed = true;
-                }
-                if option_count <= 1 {
-                    if editor.route_marker_search.trim().is_empty() {
-                        ui.label(theme::muted(
-                            "Belum ada marker tersimpan. Simpan skenario (Ctrl+S) setelah membuat marker.",
-                        ));
-                    } else {
-                        ui.label(theme::muted(
-                            "Tidak ada marker yang cocok dengan pencarian.",
-                        ));
-                    }
-                }
-                let picking = editor.pick_route_marker == Some(key);
-                if ui
-                    .button(if picking {
-                        "Klik marker di peta... (Batal)"
-                    } else {
-                        "Pilih marker di peta"
-                    })
-                    .clicked()
-                {
-                    if picking {
-                        editor.pick_route_marker = None;
-                    } else {
-                        editor.end_point_edit();
-                        editor.pick_route_marker = Some(key);
-                        editor.log("Klik marker di peta untuk dijadikan target rute. Esc batal.");
-                    }
-                }
-                match animation.marker_id {
-                    Some(id) => {
-                        let marker_object = editor.objects.iter().find(|object| {
-                            object.server_id == Some(id)
-                                && matches!(&object.kind, EditorKind::Marker(_))
-                        });
-                        match marker_object {
-                            Some(object) => {
-                                let animatable = match &object.kind {
-                                    EditorKind::Marker(marker) => {
-                                        editor.marker_is_animatable(marker)
-                                    }
-                                    _ => false,
-                                };
-                                if !animatable {
-                                    ui.label(theme::danger(
-                                        "Marker ini tidak bisa bergerak. Ubah mode pindah asetnya \
-                                         menjadi Free/Limited atau pakai model animasi.",
-                                    ));
-                                }
-                            }
-                            None => {
-                                ui.label(theme::danger(
-                                    "Marker rute tidak ditemukan. Pilih marker lain lalu simpan.",
-                                ));
-                            }
-                        }
-                        let used_elsewhere = editor.objects.iter().any(|other| {
-                            other.key != key
-                                && matches!(&other.kind, EditorKind::Line(line) if
-                                    line.animation.as_ref().and_then(|route| route.marker_id)
-                                        == Some(id))
-                        });
-                        if used_elsewhere {
-                            ui.label(theme::danger("Marker ini sudah dipakai rute lain."));
-                        }
-                    }
-                    None => {
-                        ui.label(theme::muted(
-                            "Pilih dari daftar (bisa dicari) atau klik marker langsung di peta.",
-                        ));
-                    }
-                }
+                ui.separator();
+                changed |= draw_route_marker_selector(ui, editor, key, animation);
                 ui.label(theme::muted(
                     "Titik, warna, lebar, dan alpha garis tetap bisa diedit seperti line biasa.",
                 ));
@@ -3169,6 +3095,213 @@ fn draw_object_inspector(
     if duplicate {
         editor.duplicate_selected();
     }
+}
+
+/// Marker picker shared by single and multiple routes. Single routes bind one
+/// marker; multiple routes keep an ordered marker list and append picks.
+fn draw_route_marker_selector(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    key: ObjectKey,
+    animation: &mut RouteAnimation,
+) -> bool {
+    let mut changed = false;
+    let multiple = animation.kind == RouteAnimationKind::Multiple;
+
+    if multiple {
+        ui.label(theme::title("Formasi"));
+        let mut formation = animation.formation;
+        let options = RouteFormation::ALL
+            .iter()
+            .map(|formation| (*formation, formation.label().to_owned()))
+            .collect::<Vec<_>>();
+        widgets::combo(
+            ui,
+            egui::Id::new(("route_formation", key)),
+            &mut formation,
+            &options,
+        );
+        if formation != animation.formation {
+            animation.formation = formation;
+            changed = true;
+        }
+        if animation.formation == RouteFormation::Grid {
+            ui.horizontal(|ui| {
+                ui.label("Kolom grid");
+                let mut columns = animation.columns.clamp(1, 64);
+                if ui
+                    .add(egui::DragValue::new(&mut columns).range(1..=64))
+                    .changed()
+                {
+                    animation.columns = columns;
+                    changed = true;
+                }
+                let rows = animation.marker_ids.len().div_ceil(columns.max(1));
+                ui.label(theme::muted(&format!(
+                    "{} marker · {rows} baris",
+                    animation.marker_ids.len()
+                )));
+            });
+        }
+        ui.label("Marker yang bergerak");
+        if animation.marker_ids.is_empty() {
+            ui.label(theme::muted(
+                "Belum ada marker. Tambahkan dari daftar atau klik marker di peta.",
+            ));
+        }
+        let mut remove = None;
+        for (index, id) in animation.marker_ids.iter().enumerate() {
+            let marker = editor
+                .objects
+                .iter()
+                .find(|object| object.server_id == Some(*id));
+            let name = marker
+                .map(|object| object.name.clone())
+                .unwrap_or_else(|| "Marker tidak ditemukan".to_owned());
+            let animatable = marker.is_some_and(|object| match &object.kind {
+                EditorKind::Marker(marker) => editor.marker_is_animatable(marker),
+                _ => false,
+            });
+            ui.horizontal_top(|ui| {
+                ui.label(format!("{}. {name}", index + 1));
+                if marker.is_none() {
+                    ui.label(theme::danger("· hilang"));
+                } else if !animatable {
+                    ui.label(theme::danger("· tidak bisa bergerak"));
+                }
+                if ui.small_button("Hapus").clicked() {
+                    remove = Some(index);
+                }
+            });
+        }
+        if let Some(index) = remove {
+            animation.marker_ids.remove(index);
+            changed = true;
+        }
+        ui.add_space(4.0);
+    } else {
+        ui.label("Marker yang bergerak");
+    }
+
+    ui.horizontal(|ui| {
+        ui.label(theme::muted("Cari"));
+        ui.add(
+            egui::TextEdit::singleline(&mut editor.route_marker_search)
+                .hint_text("Nama marker...")
+                .desired_width(150.0),
+        );
+    });
+
+    let current_ids = animation.all_marker_ids();
+    let mut options = editor.animation_marker_options(key);
+    if multiple {
+        options.retain(|(id, _)| id.is_none_or(|id| !current_ids.contains(&id)));
+        if let Some(first) = options.first_mut() {
+            first.1 = "— Tambah marker —".to_owned();
+        }
+    }
+    let option_count = options.len();
+    let mut picked = animation.marker_id;
+    widgets::combo(
+        ui,
+        egui::Id::new(("route_marker", key)),
+        &mut picked,
+        &options,
+    );
+    if multiple {
+        if let Some(id) = picked
+            && !animation.marker_ids.contains(&id)
+        {
+            animation.marker_ids.push(id);
+            changed = true;
+        }
+    } else if animation.marker_id != picked {
+        animation.marker_id = picked;
+        changed = true;
+    }
+
+    if option_count <= 1 {
+        if editor.route_marker_search.trim().is_empty() {
+            ui.label(theme::muted(if multiple {
+                "Tidak ada marker lain yang bisa ditambahkan."
+            } else {
+                "Belum ada marker tersimpan. Simpan skenario (Ctrl+S) setelah membuat marker."
+            }));
+        } else {
+            ui.label(theme::muted(
+                "Tidak ada marker yang cocok dengan pencarian.",
+            ));
+        }
+    }
+
+    let picking = editor.pick_route_marker == Some(key);
+    let pick_label = if picking {
+        "Selesai pilih marker di peta"
+    } else if multiple {
+        "Tambah marker dari peta"
+    } else {
+        "Pilih marker di peta"
+    };
+    if ui.button(pick_label).clicked() {
+        if picking {
+            editor.pick_route_marker = None;
+        } else {
+            editor.end_point_edit();
+            editor.pick_route_marker = Some(key);
+            editor.log(if multiple {
+                "Klik marker di peta untuk menambahkannya. Klik lagi untuk marker lain; Esc selesai."
+            } else {
+                "Klik marker di peta untuk dijadikan target rute. Esc batal."
+            });
+        }
+    }
+
+    if !multiple {
+        match animation.marker_id {
+            Some(id) => {
+                let marker_object = editor.objects.iter().find(|object| {
+                    object.server_id == Some(id) && matches!(&object.kind, EditorKind::Marker(_))
+                });
+                match marker_object {
+                    Some(object) => {
+                        let animatable = match &object.kind {
+                            EditorKind::Marker(marker) => editor.marker_is_animatable(marker),
+                            _ => false,
+                        };
+                        if !animatable {
+                            ui.label(theme::danger(
+                                "Marker ini tidak bisa bergerak. Ubah mode pindah asetnya \
+                                 menjadi Free/Limited atau pakai model animasi.",
+                            ));
+                        }
+                    }
+                    None => {
+                        ui.label(theme::danger(
+                            "Marker rute tidak ditemukan. Pilih marker lain lalu simpan.",
+                        ));
+                    }
+                }
+            }
+            None => {
+                ui.label(theme::muted(
+                    "Pilih dari daftar (bisa dicari) atau klik marker langsung di peta.",
+                ));
+            }
+        }
+    }
+
+    let ids = animation.all_marker_ids();
+    let used_elsewhere = editor.objects.iter().any(|other| {
+        other.key != key
+            && matches!(&other.kind, EditorKind::Line(line) if
+                line.animation.as_ref().is_some_and(|route|
+                    route.all_marker_ids().iter().any(|id| ids.contains(id))))
+    });
+    if used_elsewhere {
+        ui.label(theme::danger("Ada marker yang juga dipakai rute lain."));
+    }
+
+    changed
 }
 
 /// Small square spinner button. The arrow is painted directly because the

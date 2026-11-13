@@ -231,7 +231,9 @@ mod tests {
         PlayRouteAnimation {
             route_key,
             name: "Rute".to_owned(),
-            marker_key: None,
+            marker_keys: Vec::new(),
+            formation: super::super::model::RouteFormation::Grid,
+            columns: 4,
             points: vec![
                 GeoPoint::new(115.225, -8.648),
                 GeoPoint::new(115.226, -8.648),

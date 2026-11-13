@@ -515,6 +515,29 @@ Dropdown **Model** di toolbar mengatur shading model glTF di viewport editor:
 editor — **Play** (dan game/simulasi/taktikal) selalu menampilkan tekstur, dan
 marker dari katalog lokal tetap memakai warna kategori.
 
+**Animasi rute**
+
+Tab **Buat** punya dua tombol rute: **+ Single marker rute** dan **+ Multiple
+marker rute**. Keduanya menggambar polyline di peta (Enter atau klik ganda
+untuk selesai), lalu Inspector mengatur kecepatan, urutan tampil di tab
+**Animasi**, dan opsi ulang otomatis.
+
+- **Single marker rute** menggerakkan satu marker sepanjang jalur dengan
+  kecepatan tetap. Marker dipilih dari daftar di Inspector atau dengan tombol
+  **Pilih marker di peta** lalu klik marker.
+- **Multiple marker rute** menggerakkan beberapa marker sekaligus dalam satu
+  formasi. Marker ditambahkan berurutan (tombol **Tambah marker dari peta**
+  tetap aktif sampai ditekan **Selesai pilih marker di peta**), bisa dihapus
+  satu per satu, dan urutannya menentukan slot formasi.
+- Formasi yang tersedia saat ini **Grid** dengan jumlah **Kolom** yang bisa
+  diatur (1–64). Baris terakhir boleh lebih pendek, misalnya 8 marker dengan 3
+  kolom menjadi 3/3/2 dan tetap lurus dengan kolom di atasnya. Formasi berputar
+  mengikuti arah jalur sehingga bentuknya tidak berubah di tikungan; jenis
+  formasi lain (lingkaran, segitiga) bisa ditambahkan lewat `RouteFormation`.
+- Marker yang sudah terkunci ke rute tidak ikut formasi klik kanan. Memberi
+  perintah gerak ke salah satu marker mem-pause seluruh rute multiple, dan
+  **Resume** mengembalikan semua marker ke formasinya.
+
 **Mode Play (RTS)**
 
 Tombol **▶ Play** menjalankan skenario sebagai simulasi RTS sederhana di
@@ -532,9 +555,10 @@ viewport editor:
 - **Klik kanan** di tanah memerintahkan unit bergerak. Bila beberapa unit
   dipilih, mereka otomatis membentuk formasi grid di sekitar titik tujuan.
 - Marker yang sedang digerakkan animasi rute otomatis di-pause rutenya ketika
-  kamu memberi perintah gerak, lalu marker bergerak bebas. Rute yang di-pause,
-  stop, atau selesai melepaskan marker; **Resume** mengembalikan marker ke jalur
-  rute sesuai progress terakhir.
+  kamu memberi perintah gerak, lalu marker bergerak bebas. Mem-pause satu
+  marker juga mem-pause seluruh rute multiple dan melepaskan semua markernya.
+  Rute yang di-pause, stop, atau selesai melepaskan marker; **Resume**
+  mengembalikan marker ke jalur rute sesuai progress terakhir.
 - Unit memutar arah mengikuti gerakan dan memutar klip animasi (file
   `animated`) hanya selagi bergerak. Saat berhenti atau sampai tujuan, model
   kembali ke tampilan **idle** (file `idle`), bukan animasi yang di-pause.

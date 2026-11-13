@@ -31,7 +31,7 @@ use super::model::MarkerAssetModel;
 use super::model::{
     BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, LineObject,
     MarkerObject, ObjectKey, ObjectType, ParticleObject, ParticleSettings, RouteAnimation,
-    TextObject, unit_for_uuid,
+    RouteAnimationKind, RouteFormation, TextObject, unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1535,8 +1535,16 @@ fn line_keterangan(line: &LineObject) -> String {
     serde_json::json!({
         "animation": {
             "type": "route",
+            "kind": animation.kind.key(),
             "speed": animation.speed,
             "marker_id": animation.marker_id.map(|id| id.to_string()),
+            "marker_ids": animation
+                .marker_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>(),
+            "formation": animation.formation.key(),
+            "columns": animation.columns.max(1),
             "repeat": animation.repeat,
             "order": animation.order,
         }
@@ -1550,16 +1558,59 @@ fn parse_route_animation(raw: &str) -> Option<RouteAnimation> {
     if animation.get("type")?.as_str()? != "route" {
         return None;
     }
+    let marker_id = animation
+        .get("marker_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let mut marker_ids = animation
+        .get("marker_ids")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|value| Uuid::parse_str(value).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let kind = animation
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(RouteAnimationKind::from_key)
+        .unwrap_or_else(|| {
+            if marker_ids.is_empty() {
+                RouteAnimationKind::Single
+            } else {
+                RouteAnimationKind::Multiple
+            }
+        });
+    // A legacy multiple route may only carry the first marker id. Fold it into
+    // the ordered list so the formation still has a marker to place.
+    if kind == RouteAnimationKind::Multiple
+        && let Some(marker_id) = marker_id
+        && !marker_ids.contains(&marker_id)
+    {
+        marker_ids.insert(0, marker_id);
+    }
     Some(RouteAnimation {
+        kind,
         speed: animation
             .get("speed")
             .and_then(Value::as_f64)
             .unwrap_or(5.0)
             .clamp(0.1, 100.0),
-        marker_id: animation
-            .get("marker_id")
+        marker_id,
+        marker_ids,
+        formation: animation
+            .get("formation")
             .and_then(Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok()),
+            .map(RouteFormation::from_key)
+            .unwrap_or_default(),
+        columns: animation
+            .get("columns")
+            .and_then(Value::as_u64)
+            .unwrap_or(4)
+            .clamp(1, 64) as usize,
         repeat: animation
             .get("repeat")
             .and_then(Value::as_bool)
@@ -2000,6 +2051,7 @@ mod tests {
             marker_id: Some(marker_id),
             repeat: true,
             order: 3,
+            ..RouteAnimation::default()
         });
 
         let parsed = parse_route_animation(&line_keterangan(&line)).expect("route metadata");
@@ -2007,6 +2059,7 @@ mod tests {
         assert_eq!(parsed.marker_id, Some(marker_id));
         assert!(parsed.repeat);
         assert_eq!(parsed.order, 3);
+        assert_eq!(parsed.kind, RouteAnimationKind::Single);
         assert!(parse_route_animation("").is_none());
         assert!(
             parse_route_animation(&line_keterangan(&LineObject::new(vec![
@@ -2015,6 +2068,30 @@ mod tests {
             ])))
             .is_none()
         );
+    }
+
+    #[test]
+    fn multiple_route_metadata_round_trips_markers_and_formation() {
+        let ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        let mut line = LineObject::new(vec![[115.2, -8.6], [115.21, -8.61]]);
+        line.animation = Some(RouteAnimation {
+            kind: RouteAnimationKind::Multiple,
+            marker_ids: ids.to_vec(),
+            formation: RouteFormation::Grid,
+            columns: 3,
+            ..RouteAnimation::default()
+        });
+
+        let parsed = parse_route_animation(&line_keterangan(&line)).expect("multi metadata");
+        assert_eq!(parsed.kind, RouteAnimationKind::Multiple);
+        assert_eq!(parsed.marker_ids, ids);
+        assert_eq!(parsed.formation, RouteFormation::Grid);
+        assert_eq!(parsed.columns, 3);
+
+        let legacy = parse_route_animation(r#"{"animation":{"type":"route","marker_id":null}}"#)
+            .expect("legacy route");
+        assert_eq!(legacy.kind, RouteAnimationKind::Single);
+        assert!(legacy.marker_ids.is_empty());
     }
 
     #[test]

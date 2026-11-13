@@ -249,8 +249,11 @@ pub struct PlayLimitedUnit {
 pub struct PlayRouteAnimation {
     pub route_key: ObjectKey,
     pub name: String,
-    /// Marker object that follows the route, when it still exists.
-    pub marker_key: Option<ObjectKey>,
+    /// Marker objects that follow the route, in formation-slot order.
+    pub marker_keys: Vec<ObjectKey>,
+    pub formation: RouteFormation,
+    /// Number of formation columns for grid layouts.
+    pub columns: usize,
     pub points: Vec<GeoPoint>,
     pub altitudes: Vec<f64>,
     /// Metres per second along the polyline.
@@ -474,23 +477,115 @@ impl MarkerObject {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RouteAnimationKind {
+    /// One marker follows the route.
+    #[default]
+    Single,
+    /// Multiple markers follow the route in a formation.
+    Multiple,
+}
+
+impl RouteAnimationKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Single => "Single marker rute",
+            Self::Multiple => "Multiple marker rute",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Multiple => "multiple",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Self {
+        match value {
+            "multiple" => Self::Multiple,
+            _ => Self::Single,
+        }
+    }
+}
+
+/// Formation used by a multi-marker route. Only grids exist today, but the
+/// enum is the extension point for circles, triangles, and future layouts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RouteFormation {
+    #[default]
+    Grid,
+}
+
+impl RouteFormation {
+    pub const ALL: [Self; 1] = [Self::Grid];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "Grid",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Self {
+        match value {
+            "grid" => Self::Grid,
+            _ => Self::Grid,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RouteAnimation {
+    /// Single or multi-marker route.
+    pub kind: RouteAnimationKind,
     /// Metres per second along the polyline.
     pub speed: f64,
-    /// Server id of the marker that follows the route.
+    /// Server id of the single marker that follows the route. Kept for legacy
+    /// scenarios and the single-marker inspector.
     pub marker_id: Option<Uuid>,
+    /// Ordered server ids of the markers in a multiple-marker route.
+    pub marker_ids: Vec<Uuid>,
+    pub formation: RouteFormation,
+    /// Number of columns in a grid formation.
+    pub columns: usize,
     /// Restart from the first point after reaching the end.
     pub repeat: bool,
     /// Position in the Play animation order, persisted in the route metadata.
     pub order: i32,
 }
 
+impl RouteAnimation {
+    /// All marker ids that follow this route. Legacy single routes and malformed
+    /// metadata still resolve through `marker_id`.
+    pub fn all_marker_ids(&self) -> Vec<Uuid> {
+        let mut ids = Vec::new();
+        if let Some(id) = self.marker_id {
+            ids.push(id);
+        }
+        for id in &self.marker_ids {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        ids
+    }
+}
+
 impl Default for RouteAnimation {
     fn default() -> Self {
         Self {
+            kind: RouteAnimationKind::Single,
             speed: 5.0,
             marker_id: None,
+            marker_ids: Vec::new(),
+            formation: RouteFormation::Grid,
+            columns: 4,
             repeat: false,
             order: 0,
         }
@@ -1357,6 +1452,8 @@ pub struct EditorState {
     pub route_marker_search: String,
     /// Route waiting for a marker picked directly on the map.
     pub pick_route_marker: Option<ObjectKey>,
+    /// Animation type created when the current route draft is finished.
+    pub pending_route_kind: RouteAnimationKind,
     /// Daftar Anim filter: list only route animations hidden from the map.
     pub anim_filter_hidden: bool,
     /// Daftar Anim filter: list only locked route animations.
@@ -1487,6 +1584,7 @@ impl EditorState {
             sky: SkyMode::Black,
             route_marker_search: String::new(),
             pick_route_marker: None,
+            pending_route_kind: RouteAnimationKind::Single,
             anim_filter_hidden: false,
             anim_filter_locked: false,
             locked: BTreeSet::new(),
@@ -1620,15 +1718,17 @@ impl EditorState {
             let EditorKind::Line(line) = &object.kind else {
                 continue;
             };
-            let Some(marker_id) = line.animation.as_ref().and_then(|route| route.marker_id) else {
+            let Some(route) = &line.animation else {
                 continue;
             };
-            if let Some(marker) = self.objects.iter().find(|candidate| {
-                candidate.server_id == Some(marker_id)
-                    && matches!(candidate.kind, EditorKind::Marker(_))
-                    && candidate.visible
-            }) {
-                markers.insert(marker.key);
+            for marker_id in route.all_marker_ids() {
+                if let Some(marker) = self.objects.iter().find(|candidate| {
+                    candidate.server_id == Some(marker_id)
+                        && matches!(candidate.kind, EditorKind::Marker(_))
+                        && candidate.visible
+                }) {
+                    markers.insert(marker.key);
+                }
             }
         }
         markers
@@ -1835,19 +1935,25 @@ impl EditorState {
             if points.len() < 2 {
                 continue;
             }
-            let marker_key = route.marker_id.and_then(|id| {
-                self.objects.iter().find_map(|candidate| {
-                    let EditorKind::Marker(marker) = &candidate.kind else {
-                        return None;
-                    };
-                    (candidate.server_id == Some(id) && self.marker_is_animatable(marker))
-                        .then_some(candidate.key)
+            let marker_keys = route
+                .all_marker_ids()
+                .into_iter()
+                .filter_map(|id| {
+                    self.objects.iter().find_map(|candidate| {
+                        let EditorKind::Marker(marker) = &candidate.kind else {
+                            return None;
+                        };
+                        (candidate.server_id == Some(id) && self.marker_is_animatable(marker))
+                            .then_some(candidate.key)
+                    })
                 })
-            });
+                .collect::<Vec<_>>();
             animations.push(PlayRouteAnimation {
                 route_key: object.key,
                 name: object.name.clone(),
-                marker_key,
+                marker_keys,
+                formation: route.formation,
+                columns: route.columns.max(1),
                 points: points.clone(),
                 altitudes: line.altitudes.clone(),
                 speed: route.speed.clamp(0.1, 100.0),
@@ -1870,11 +1976,8 @@ impl EditorState {
     pub(super) fn sync_play_controlled(&mut self) {
         let mut controlled = BTreeSet::new();
         for animation in &self.play.animations {
-            if animation.state == PlaybackState::Playing
-                && !animation.is_finished()
-                && let Some(key) = animation.marker_key
-            {
-                controlled.insert(key);
+            if animation.state == PlaybackState::Playing && !animation.is_finished() {
+                controlled.extend(animation.marker_keys.iter().copied());
             }
         }
         self.play.controlled = controlled;
@@ -2030,30 +2133,50 @@ impl EditorState {
         let Some(animation) = self.play.animations.get(index) else {
             return;
         };
-        let Some(marker_key) = animation.marker_key else {
+        if animation.marker_keys.is_empty() {
             return;
-        };
-        let Some((position, altitude, heading)) = route_sample(
+        }
+        let Some((base, altitude, heading)) = route_sample(
             &animation.points,
             &animation.altitudes,
             animation.progress_m,
         ) else {
             return;
         };
-        if let Some(unit) = self.play.units.get_mut(&marker_key) {
-            unit.position = position;
-            unit.altitude = altitude as f32;
-            unit.heading_deg = heading;
-            unit.target = None;
-        }
-        if let Some(unit) = self.play.limited.get_mut(&marker_key) {
-            unit.position = position;
-            unit.altitude = altitude as f32;
-            unit.heading_deg = heading;
-        }
-        for obstacle in &mut self.play.obstacles {
-            if obstacle.key == Some(marker_key) {
-                obstacle.center = position;
+        let offsets = formation_offsets(
+            animation.marker_keys.len(),
+            animation.formation,
+            animation.columns,
+            PLAY_FORMATION_SPACING,
+        );
+        // Grid slots are relative to the direction of travel: the first row is
+        // in front, columns stay perpendicular to the route, and the formation
+        // therefore keeps its shape through every bend.
+        let heading_rad = f64::from(heading.to_radians());
+        let forward_east = heading_rad.sin();
+        let forward_north = heading_rad.cos();
+        let right_east = heading_rad.cos();
+        let right_north = -heading_rad.sin();
+
+        for (marker_key, (right, forward)) in animation.marker_keys.iter().zip(offsets) {
+            let east = right * right_east + forward * forward_east;
+            let north = right * right_north + forward * forward_north;
+            let position = GeoPoint::from_local_offset(base, east, north).unwrap_or(base);
+            if let Some(unit) = self.play.units.get_mut(marker_key) {
+                unit.position = position;
+                unit.altitude = altitude as f32;
+                unit.heading_deg = heading;
+                unit.target = None;
+            }
+            if let Some(unit) = self.play.limited.get_mut(marker_key) {
+                unit.position = position;
+                unit.altitude = altitude as f32;
+                unit.heading_deg = heading;
+            }
+            for obstacle in &mut self.play.obstacles {
+                if obstacle.key == Some(*marker_key) {
+                    obstacle.center = position;
+                }
             }
         }
     }
@@ -2073,7 +2196,7 @@ impl EditorState {
                 continue;
             }
             if let Some(index) = self.play.animations.iter().position(|animation| {
-                animation.marker_key == Some(*key)
+                animation.marker_keys.contains(key)
                     && animation.state == PlaybackState::Playing
                     && !animation.is_finished()
             }) {
@@ -2364,6 +2487,13 @@ impl EditorState {
     /// Creates the line behind a route animation and selects it so the
     /// Inspector shows its speed and marker settings.
     pub fn add_route(&mut self, points: Vec<GeoPoint>) {
+        self.add_route_kind(points, RouteAnimationKind::Single);
+    }
+
+    /// Creates a route of the requested kind. Multiple routes start with an
+    /// empty marker list and a grid formation; the Inspector adds markers and
+    /// configures the columns.
+    pub fn add_route_kind(&mut self, points: Vec<GeoPoint>, kind: RouteAnimationKind) {
         if points.len() < 2 {
             return;
         }
@@ -2377,13 +2507,14 @@ impl EditorState {
         line.color = "#ffb020".to_owned();
         line.width = 0.5;
         line.animation = Some(RouteAnimation {
+            kind,
             order: self.next_route_order(),
             ..RouteAnimation::default()
         });
         self.objects.push(EditorObject {
             key,
             server_id: None,
-            name: format!("Single marker rute {key}"),
+            name: format!("{} {key}", kind.label()),
             visible: true,
             dirty: true,
             kind: EditorKind::Line(line),
@@ -2392,14 +2523,20 @@ impl EditorState {
         self.selected.insert(key);
         self.dirty = true;
         self.touch();
-        self.log("Rute dibuat. Atur kecepatan dan marker di Inspector.");
+        self.log(match kind {
+            RouteAnimationKind::Single => "Rute dibuat. Atur kecepatan dan marker di Inspector.",
+            RouteAnimationKind::Multiple => {
+                "Rute multiple dibuat. Tambahkan marker dan atur formasi grid di Inspector."
+            }
+        });
     }
 
     /// Starts drawing a new route from the Animasi tab.
-    pub fn begin_route_draw(&mut self) {
+    pub fn begin_route_draw(&mut self, kind: RouteAnimationKind) {
         if !self.loaded {
             return;
         }
+        self.pending_route_kind = kind;
         self.end_point_edit();
         self.selected.clear();
         self.set_tool(EditorTool::Line);
@@ -2435,8 +2572,8 @@ impl EditorState {
             let EditorKind::Line(line) = &object.kind else {
                 continue;
             };
-            if let Some(marker_id) = line.animation.as_ref().and_then(|route| route.marker_id) {
-                used.insert(marker_id);
+            if let Some(route) = &line.animation {
+                used.extend(route.all_marker_ids());
             }
         }
         let mut options = self
@@ -2467,8 +2604,11 @@ impl EditorState {
     }
 
     /// Assigns the marker picked on the map to a route and marks the line dirty.
+    /// Single-marker routes replace their target; multiple-marker routes append
+    /// the marker and keep the picker active for the next click.
     pub fn assign_route_marker(&mut self, route_key: ObjectKey, marker_id: Uuid) {
         let mut assigned = false;
+        let mut multiple = false;
         for object in &mut self.objects {
             if object.key != route_key {
                 continue;
@@ -2476,17 +2616,33 @@ impl EditorState {
             if let EditorKind::Line(line) = &mut object.kind
                 && let Some(animation) = &mut line.animation
             {
-                animation.marker_id = Some(marker_id);
+                match animation.kind {
+                    RouteAnimationKind::Single => {
+                        animation.marker_id = Some(marker_id);
+                    }
+                    RouteAnimationKind::Multiple => {
+                        if !animation.marker_ids.contains(&marker_id) {
+                            animation.marker_ids.push(marker_id);
+                        }
+                    }
+                }
+                multiple = animation.kind == RouteAnimationKind::Multiple;
                 object.dirty = true;
                 assigned = true;
             }
             break;
         }
         if assigned {
-            self.pick_route_marker = None;
+            if !multiple {
+                self.pick_route_marker = None;
+            }
             self.dirty = true;
             self.touch();
-            self.log("Marker rute dipilih dari peta.");
+            self.log(if multiple {
+                "Marker ditambahkan ke rute multiple. Klik marker lain atau Esc untuk selesai."
+            } else {
+                "Marker rute dipilih dari peta."
+            });
         }
     }
 
@@ -3294,7 +3450,36 @@ fn polyline_length(points: &[GeoPoint]) -> f64 {
         .sum()
 }
 
-/// Position, altitude, and heading at `distance` metres along a polyline.
+/// Formation slot offsets in metres, as `(right, forward)` relative to the
+/// route heading. Slots are generated in the marker list order; the first row
+/// is the front row. Only edges of a partial last row are omitted, so the
+/// columns of a grid stay aligned.
+fn formation_offsets(
+    count: usize,
+    formation: RouteFormation,
+    columns: usize,
+    spacing: f64,
+) -> Vec<(f64, f64)> {
+    if count == 0 {
+        return Vec::new();
+    }
+    match formation {
+        RouteFormation::Grid => {
+            let columns = columns.max(1).min(count);
+            let rows = count.div_ceil(columns);
+            (0..count)
+                .map(|index| {
+                    let row = index / columns;
+                    let column = index % columns;
+                    let right = (column as f64 - (columns as f64 - 1.0) / 2.0) * spacing;
+                    let forward = ((rows as f64 - 1.0) / 2.0 - row as f64) * spacing;
+                    (right, forward)
+                })
+                .collect()
+        }
+    }
+}
+
 fn route_sample(
     points: &[GeoPoint],
     altitudes: &[f64],
@@ -3934,6 +4119,7 @@ mod tests {
                 marker_id: Some(marker_id),
                 repeat: false,
                 order: 0,
+                ..RouteAnimation::default()
             });
         }
 
@@ -3975,6 +4161,7 @@ mod tests {
                 marker_id: Some(marker_id),
                 repeat: false,
                 order: 0,
+                ..RouteAnimation::default()
             });
         }
 
@@ -4013,6 +4200,7 @@ mod tests {
                 marker_id: Some(marker_id),
                 repeat: true,
                 order: 0,
+                ..RouteAnimation::default()
             });
         }
 
@@ -4031,6 +4219,213 @@ mod tests {
         let unit = editor.play.units.get(&marker_key).expect("animated unit");
         let offset = unit.position.local_offset(base).expect("offset");
         assert!(offset.east_meters.abs() < 0.1);
+    }
+
+    #[test]
+    fn formation_offsets_keep_grid_rows_and_columns_aligned() {
+        let offsets = formation_offsets(8, RouteFormation::Grid, 4, 2.6);
+        assert_eq!(offsets.len(), 8);
+        let front = offsets[0].1;
+        for (_, forward) in &offsets[..4] {
+            assert!((forward - front).abs() < 1.0e-9);
+        }
+        for (_, forward) in &offsets[4..] {
+            assert!((forward - (front - 2.6)).abs() < 1.0e-9);
+        }
+        let rights = offsets[..4]
+            .iter()
+            .map(|(right, _)| *right)
+            .collect::<Vec<_>>();
+        for (right, expected) in rights.iter().zip([-3.9, -1.3, 1.3, 3.9]) {
+            assert!((right - expected).abs() < 1.0e-9, "right {right}");
+        }
+
+        // A partial last row stays aligned under the first columns.
+        let partial = formation_offsets(8, RouteFormation::Grid, 3, 2.6);
+        assert_eq!(partial.len(), 8);
+        assert!((partial[6].0 - partial[0].0).abs() < 1.0e-9);
+        assert!((partial[7].0 - partial[1].0).abs() < 1.0e-9);
+        assert!((partial[6].1 - (partial[0].1 - 2.0 * 2.6)).abs() < 1.0e-9);
+
+        // One marker sits on the route point, without an offset.
+        assert_eq!(
+            formation_offsets(1, RouteFormation::Grid, 4, 2.6),
+            vec![(0.0, 0.0)]
+        );
+        assert!(formation_offsets(0, RouteFormation::Grid, 4, 2.6).is_empty());
+    }
+
+    /// Builds a multiple route that drives `count` animated markers over a
+    /// straight east-bound segment.
+    fn add_multiple_route(
+        editor: &mut EditorState,
+        count: usize,
+        columns: usize,
+        start: GeoPoint,
+        end: GeoPoint,
+    ) -> Vec<ObjectKey> {
+        let mut keys = Vec::new();
+        let mut ids = Vec::new();
+        for _ in 0..count {
+            let key = add_animated_marker(editor, &Uuid::new_v4().to_string(), start);
+            let id = Uuid::new_v4();
+            editor.object_mut(key).expect("marker").server_id = Some(id);
+            keys.push(key);
+            ids.push(id);
+        }
+        editor.add_route_kind(vec![start, end], RouteAnimationKind::Multiple);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        if let Some(object) = editor.object_mut(route_key)
+            && let EditorKind::Line(line) = &mut object.kind
+        {
+            line.animation = Some(RouteAnimation {
+                kind: RouteAnimationKind::Multiple,
+                speed: 50.0,
+                marker_ids: ids,
+                formation: RouteFormation::Grid,
+                columns,
+                repeat: false,
+                order: 0,
+                ..RouteAnimation::default()
+            });
+        }
+        keys
+    }
+
+    #[test]
+    fn multiple_route_moves_every_marker_in_a_grid() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 100.0, 0.0).expect("east");
+        let keys = add_multiple_route(&mut editor, 8, 4, base, end);
+
+        editor.start_play();
+        assert_eq!(editor.play.animations[0].marker_keys.len(), 8);
+        assert!(editor.play.controlled.is_empty());
+
+        editor.play_route_animation(0);
+        assert!(keys.iter().all(|key| editor.play.controlled.contains(key)));
+        editor.play_tick(0.1);
+
+        // Heading east: rows advance east (forward) and columns spread north.
+        let offsets = keys
+            .iter()
+            .map(|key| {
+                editor.play.units[key]
+                    .position
+                    .local_offset(base)
+                    .expect("offset")
+            })
+            .collect::<Vec<_>>();
+        for (index, offset) in offsets.iter().enumerate() {
+            let row = index / 4;
+            let column = index % 4;
+            let forward = if row == 0 { 1.3 } else { -1.3 };
+            let north = (1.5 - column as f64) * 2.6;
+            assert!(
+                (offset.east_meters - (5.0 + forward)).abs() < 0.25,
+                "marker {index} east {}",
+                offset.east_meters
+            );
+            assert!(
+                (offset.north_meters - north).abs() < 0.25,
+                "marker {index} north {}",
+                offset.north_meters
+            );
+        }
+
+        editor.stop_route_animation(0);
+        assert!(editor.play.controlled.is_empty());
+    }
+
+    #[test]
+    fn formation_rotates_with_the_route_heading_and_keeps_spacing() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 0.0, 100.0).expect("north");
+        let keys = add_multiple_route(&mut editor, 4, 2, base, end);
+
+        editor.start_play();
+        editor.play_route_animation(0);
+        editor.play_tick(0.1);
+
+        let offsets = keys
+            .iter()
+            .map(|key| {
+                editor.play.units[key]
+                    .position
+                    .local_offset(base)
+                    .expect("offset")
+            })
+            .collect::<Vec<_>>();
+        // Heading north: columns spread east and rows advance north.
+        assert!((offsets[0].east_meters + 1.3).abs() < 0.25);
+        assert!((offsets[1].east_meters - 1.3).abs() < 0.25);
+        assert!((offsets[0].north_meters - 6.3).abs() < 0.25);
+        assert!((offsets[2].north_meters - 3.7).abs() < 0.25);
+        let column_gap = offsets[1].east_meters - offsets[0].east_meters;
+        assert!((column_gap - 2.6).abs() < 1.0e-6, "gap {column_gap}");
+    }
+
+    #[test]
+    fn manual_order_on_one_marker_pauses_the_whole_multiple_route() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 40.0, 0.0).expect("east");
+        let keys = add_multiple_route(&mut editor, 4, 2, base, end);
+        if let Some(object) = editor.objects.iter_mut().find(
+            |object| matches!(&object.kind, EditorKind::Line(line) if line.animation.is_some()),
+        ) && let EditorKind::Line(line) = &mut object.kind
+            && let Some(animation) = &mut line.animation
+        {
+            animation.speed = 5.0;
+        }
+
+        editor.start_play();
+        editor.play_route_animation(0);
+        editor.play_tick(0.1);
+        assert!(keys.iter().all(|key| editor.play.controlled.contains(key)));
+
+        editor.selected.clear();
+        editor.selected.insert(keys[1]);
+        let target = GeoPoint::from_local_offset(base, 40.0, 30.0).expect("north east");
+        editor.play_move_selected(target);
+
+        assert_eq!(editor.play.animations[0].state, PlaybackState::Paused);
+        assert!(editor.play.controlled.is_empty());
+        assert_eq!(editor.play.units[&keys[1]].target, Some(target));
+        for key in &keys[..1] {
+            assert!(editor.play.units[key].target.is_none());
+        }
+    }
+
+    #[test]
+    fn multiple_route_marker_picking_appends_and_dedupes() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let end = GeoPoint::from_local_offset(base, 10.0, 0.0).expect("east");
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let key = add_animated_marker(&mut editor, &Uuid::new_v4().to_string(), base);
+            let id = Uuid::new_v4();
+            editor.object_mut(key).expect("marker").server_id = Some(id);
+            ids.push(id);
+        }
+        editor.add_route_kind(vec![base, end], RouteAnimationKind::Multiple);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        editor.pick_route_marker = Some(route_key);
+
+        editor.assign_route_marker(route_key, ids[0]);
+        editor.assign_route_marker(route_key, ids[1]);
+        editor.assign_route_marker(route_key, ids[0]);
+
+        let EditorKind::Line(line) = &editor.object(route_key).expect("route").kind else {
+            panic!("expected line");
+        };
+        let animation = line.animation.as_ref().expect("route animation");
+        assert_eq!(animation.marker_ids, ids);
+        // Multiple picking keeps the picker armed for the next marker.
+        assert_eq!(editor.pick_route_marker, Some(route_key));
     }
 
     #[test]

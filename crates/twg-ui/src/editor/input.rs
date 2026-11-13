@@ -259,7 +259,7 @@ pub fn editor_input(
             .filter(|animation| {
                 animation.state == PlaybackState::Playing && !animation.is_finished()
             })
-            .filter_map(|animation| animation.marker_key)
+            .flat_map(|animation| animation.marker_keys.iter().copied())
             .collect::<std::collections::BTreeSet<_>>();
         play_frame
             .units
@@ -1700,7 +1700,7 @@ fn finish_draft(editor: &mut EditorState) {
             editor.set_tool(EditorTool::Select);
         }
         Draft::Route(points) if points.len() >= 2 => {
-            editor.add_route(points);
+            editor.add_route_kind(points, editor.pending_route_kind);
             editor.set_tool(EditorTool::Select);
         }
         Draft::Polygon(points) if points.len() >= 3 => {
