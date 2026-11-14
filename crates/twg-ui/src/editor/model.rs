@@ -204,6 +204,11 @@ pub(crate) const PLAY_FORMATION_SPACING: f64 = 2.6;
 /// Bounds for the authored formation spacing, in metres.
 pub(crate) const MIN_ROUTE_SPACING: f64 = 0.5;
 pub(crate) const MAX_ROUTE_SPACING: f64 = 50.0;
+/// Default gap between members of a delayed sequence, in seconds.
+pub(crate) const DEFAULT_GROUP_DELAY: f64 = 2.0;
+/// Bounds for the authored sequence delay, in seconds.
+pub(crate) const MIN_GROUP_DELAY: f64 = 0.1;
+pub(crate) const MAX_GROUP_DELAY: f64 = 3600.0;
 const PLAY_LOOKAHEAD_METERS: f64 = 6.0;
 
 /// Runtime state of one movable unit in Play mode. Positions live here (not in
@@ -300,6 +305,60 @@ pub struct PlayVisibilityAnimation {
     pub order: i32,
 }
 
+/// Resolved member of a combine/sequence group. Indices point into
+/// [`PlayState::animations`] and [`PlayState::visibility_animations`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayGroupMember {
+    Route(usize),
+    Visibility(usize),
+}
+
+/// One authored combine/sequence group resolved for Play mode.
+#[derive(Debug, Clone)]
+pub struct PlayGroupAnimation {
+    pub group_key: ObjectKey,
+    pub name: String,
+    pub kind: GroupAnimationKind,
+    pub members: Vec<PlayGroupMember>,
+    /// Authored members that could not be resolved locally.
+    pub missing: usize,
+    pub advance: SequenceAdvance,
+    pub delay_seconds: f64,
+    pub state: PlaybackState,
+    /// Next member to start. The first member is started by
+    /// [`EditorState::play_group_animation`].
+    pub step: usize,
+    /// Seconds since the group started playing.
+    pub elapsed: f64,
+    /// Seconds since the current `AfterFinish` step started.
+    pub step_elapsed: f64,
+    /// Group time when the next delayed member starts.
+    pub next_at: f64,
+    /// Persisted play order shared with the scenario editor.
+    pub order: i32,
+}
+
+impl PlayGroupAnimation {
+    /// True when the group has nothing left to run: every member was started
+    /// and no member route is still playing. Visibility members count as
+    /// instant.
+    pub fn is_finished(&self, routes: &[PlayRouteAnimation]) -> bool {
+        if self.members.is_empty() {
+            return true;
+        }
+        let routes_done = self.members.iter().all(|member| match member {
+            PlayGroupMember::Route(index) => routes
+                .get(*index)
+                .is_none_or(|route| route.state == PlaybackState::Stopped || route.is_finished()),
+            PlayGroupMember::Visibility(_) => true,
+        });
+        match self.kind {
+            GroupAnimationKind::Combine => routes_done,
+            GroupAnimationKind::Sequence => self.step >= self.members.len() && routes_done,
+        }
+    }
+}
+
 /// RTS play mode state: movable animated markers plus static obstacles.
 #[derive(Debug, Clone, Default)]
 pub struct PlayState {
@@ -313,6 +372,8 @@ pub struct PlayState {
     pub animations: Vec<PlayRouteAnimation>,
     /// Authored spawn/hide animations available in the Play panel.
     pub visibility_animations: Vec<PlayVisibilityAnimation>,
+    /// Authored combine/sequence groups available in the Play panel.
+    pub groups: Vec<PlayGroupAnimation>,
     /// Objects hidden at runtime by spawn/hide animations. Runtime-only state:
     /// it never touches the authored scenario or the editor visibility flags.
     pub hidden: BTreeSet<ObjectKey>,
@@ -333,6 +394,9 @@ impl PlayState {
         self.units.values().any(|unit| unit.target.is_some())
             || self.animations.iter().any(|animation| {
                 animation.state == PlaybackState::Playing && !animation.is_finished()
+            })
+            || self.groups.iter().any(|group| {
+                group.state == PlaybackState::Playing && !group.is_finished(&self.animations)
             })
     }
 
@@ -696,6 +760,118 @@ impl Default for VisibilityAnimation {
     }
 }
 
+/// Group animation category. `Combine` plays every member at the same time;
+/// `Sequence` plays them in order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupAnimationKind {
+    #[default]
+    Combine,
+    Sequence,
+}
+
+impl GroupAnimationKind {
+    pub const ALL: [Self; 2] = [Self::Combine, Self::Sequence];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Combine => "Combine",
+            Self::Sequence => "Sequence",
+        }
+    }
+
+    pub const fn tagline(self) -> &'static str {
+        match self {
+            Self::Combine => "Combine (jalan bersamaan)",
+            Self::Sequence => "Sequence (berurutan)",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Combine => "Semua animasi anggota diputar bersamaan ketika grup dijalankan.",
+            Self::Sequence => {
+                "Animasi anggota diputar berurutan. Urutan dan waktu mulai diatur di Inspector."
+            }
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Combine => "combine",
+            Self::Sequence => "sequence",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Self {
+        match value {
+            "sequence" => Self::Sequence,
+            _ => Self::Combine,
+        }
+    }
+}
+
+/// When a sequence starts its next member.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SequenceAdvance {
+    /// Wait until the previous member finishes, then start the next one.
+    #[default]
+    AfterFinish,
+    /// Start the next member after a fixed delay, even if the previous member
+    /// is still running (members overlap).
+    Delay,
+}
+
+impl SequenceAdvance {
+    pub const ALL: [Self; 2] = [Self::AfterFinish, Self::Delay];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::AfterFinish => "Setelah animasi selesai",
+            Self::Delay => "Jeda detik (tumpang tindih)",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::AfterFinish => "after",
+            Self::Delay => "delay",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Self {
+        match value {
+            "delay" => Self::Delay,
+            _ => Self::AfterFinish,
+        }
+    }
+}
+
+/// Authored combine/sequence group. Members are server ids of route and
+/// spawn/hide animations stored as other `plot_lines` rows.
+#[derive(Clone, Debug)]
+pub struct GroupAnimation {
+    pub kind: GroupAnimationKind,
+    pub members: Vec<Uuid>,
+    /// Sequence only.
+    pub advance: SequenceAdvance,
+    /// Sequence only: seconds between member starts in [`SequenceAdvance::Delay`].
+    pub delay_seconds: f64,
+    /// Position in the shared Play animation order.
+    pub order: i32,
+}
+
+impl Default for GroupAnimation {
+    fn default() -> Self {
+        Self {
+            kind: GroupAnimationKind::Combine,
+            members: Vec::new(),
+            advance: SequenceAdvance::AfterFinish,
+            delay_seconds: DEFAULT_GROUP_DELAY,
+            order: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LineObject {
     pub points: Vec<[f64; 2]>,
@@ -708,6 +884,8 @@ pub struct LineObject {
     pub animation: Option<RouteAnimation>,
     /// Set for spawn/hide animations. These lines carry no drawable geometry.
     pub visibility: Option<VisibilityAnimation>,
+    /// Set for combine/sequence groups. These lines also carry no geometry.
+    pub group: Option<GroupAnimation>,
 }
 
 impl LineObject {
@@ -721,6 +899,7 @@ impl LineObject {
             alpha: 0.9,
             animation: None,
             visibility: None,
+            group: None,
         }
     }
 
@@ -1253,9 +1432,14 @@ impl EditorObject {
         matches!(&self.kind, EditorKind::Line(line) if line.visibility.is_some())
     }
 
-    /// Any animation object (route or spawn/hide).
+    /// Combine/sequence groups are stored on a line row without geometry.
+    pub fn is_group_animation(&self) -> bool {
+        matches!(&self.kind, EditorKind::Line(line) if line.group.is_some())
+    }
+
+    /// Any animation object (route, spawn/hide, or group).
     pub fn is_animation(&self) -> bool {
-        self.is_animation_route() || self.is_visibility_animation()
+        self.is_animation_route() || self.is_visibility_animation() || self.is_group_animation()
     }
 
     /// Position of this animation in the persisted Play order.
@@ -1266,6 +1450,7 @@ impl EditorObject {
                 .as_ref()
                 .map(|route| route.order)
                 .or_else(|| line.visibility.as_ref().map(|visibility| visibility.order))
+                .or_else(|| line.group.as_ref().map(|group| group.order))
                 .unwrap_or(0),
             _ => 0,
         }
@@ -1282,7 +1467,8 @@ impl EditorObject {
                     line.visibility
                         .as_ref()
                         .map(|visibility| visibility.kind.label())
-                }),
+                })
+                .or_else(|| line.group.as_ref().map(|group| group.kind.label())),
             _ => None,
         }
     }
@@ -1859,16 +2045,49 @@ impl EditorState {
         })
     }
 
-    /// Markers driven by the selected route animations, plus the route whose
-    /// marker picker is armed. The editor overlay rings them, so targets are
-    /// visible even in scenarios with hundreds of markers and while new markers
-    /// are being picked on the map.
+    /// Selected animation objects, expanded with the members of any selected
+    /// combine/sequence group. The route picker is folded in so its markers stay
+    /// highlighted while picking on the map.
+    fn selected_animation_keys(&self) -> BTreeSet<ObjectKey> {
+        let mut keys = self.selected.clone();
+        if let Some(key) = self.pick_route_marker {
+            keys.insert(key);
+        }
+        let mut expanded = BTreeSet::new();
+        for key in &keys {
+            expanded.insert(*key);
+            let Some(object) = self.object(*key) else {
+                continue;
+            };
+            if !object.visible {
+                continue;
+            }
+            let EditorKind::Line(line) = &object.kind else {
+                continue;
+            };
+            let Some(group) = &line.group else {
+                continue;
+            };
+            for member_id in &group.members {
+                if let Some(member) = self
+                    .objects
+                    .iter()
+                    .find(|candidate| candidate.server_id == Some(*member_id))
+                {
+                    expanded.insert(member.key);
+                }
+            }
+        }
+        expanded
+    }
+
+    /// Markers driven by the selected route animations (including routes inside
+    /// a selected group), plus the route whose marker picker is armed. The
+    /// editor overlay rings them, so targets are visible even in scenarios with
+    /// hundreds of markers and while new markers are being picked on the map.
     pub fn selected_route_markers(&self) -> BTreeSet<ObjectKey> {
         let mut markers = BTreeSet::new();
-        let mut animation_keys = self.selected.clone();
-        if let Some(key) = self.pick_route_marker {
-            animation_keys.insert(key);
-        }
+        let animation_keys = self.selected_animation_keys();
         for key in &animation_keys {
             let Some(object) = self.object(*key) else {
                 continue;
@@ -1896,12 +2115,14 @@ impl EditorState {
         markers
     }
 
-    /// Markers and particles targeted by the selected spawn/hide animations.
-    /// The editor overlay rings them in red dashed strokes while the animation
-    /// is selected, including while new targets are being picked on the map.
+    /// Markers and particles targeted by the selected spawn/hide animations
+    /// (including those inside a selected group). The editor overlay rings them
+    /// in red dashed strokes while the animation is selected, including while
+    /// new targets are being picked on the map.
     pub fn selected_visibility_targets(&self) -> BTreeSet<ObjectKey> {
         let mut targets = BTreeSet::new();
-        for key in &self.selected {
+        let animation_keys = self.selected_animation_keys();
+        for key in &animation_keys {
             let Some(object) = self.object(*key) else {
                 continue;
             };
@@ -2116,7 +2337,71 @@ impl EditorState {
             }
         }
         self.init_play_animations();
+        self.init_play_groups();
         self.play_sync_pending = true;
+    }
+
+    /// Resolves combine/sequence groups after routes and spawn/hide animations
+    /// exist. Group members reference other animation objects by server id.
+    fn init_play_groups(&mut self) {
+        let mut groups = Vec::new();
+        for object in &self.objects {
+            if !self.visible.allows(ObjectType::Line) {
+                continue;
+            }
+            let EditorKind::Line(line) = &object.kind else {
+                continue;
+            };
+            let Some(group) = &line.group else {
+                continue;
+            };
+            let mut members = Vec::new();
+            let mut missing = 0;
+            for member_id in &group.members {
+                let Some(member) = self
+                    .objects
+                    .iter()
+                    .find(|candidate| candidate.server_id == Some(*member_id))
+                else {
+                    missing += 1;
+                    continue;
+                };
+                if let Some(index) = self
+                    .play
+                    .animations
+                    .iter()
+                    .position(|animation| animation.route_key == member.key)
+                {
+                    members.push(PlayGroupMember::Route(index));
+                } else if let Some(index) = self
+                    .play
+                    .visibility_animations
+                    .iter()
+                    .position(|animation| animation.animation_key == member.key)
+                {
+                    members.push(PlayGroupMember::Visibility(index));
+                } else {
+                    missing += 1;
+                }
+            }
+            groups.push(PlayGroupAnimation {
+                group_key: object.key,
+                name: object.name.clone(),
+                kind: group.kind,
+                members,
+                missing,
+                advance: group.advance,
+                delay_seconds: group.delay_seconds.clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY),
+                state: PlaybackState::Stopped,
+                step: 0,
+                elapsed: 0.0,
+                step_elapsed: 0.0,
+                next_at: 0.0,
+                order: group.order,
+            });
+        }
+        groups.sort_by_key(|group| group.order);
+        self.play.groups = groups;
     }
 
     /// Resolves spawn/hide animations and computes the initial hidden set:
@@ -2356,6 +2641,7 @@ impl EditorState {
         if released {
             self.sync_play_controlled();
         }
+        self.advance_play_groups(dt);
     }
 
     /// Starts or resumes a route. A finished route restarts from the first point.
@@ -2424,6 +2710,167 @@ impl EditorState {
         // click; Play movement itself still avoids per-frame rebuilds.
         self.touch();
         self.play_sync_pending = true;
+    }
+
+    /// Starts a combine/sequence group. Combine starts every member at once;
+    /// sequence starts the first member and schedules the rest.
+    pub fn play_group_animation(&mut self, index: usize) {
+        let Some(group) = self.play.groups.get(index) else {
+            return;
+        };
+        if group.members.is_empty() {
+            return;
+        }
+        let kind = group.kind;
+        let members = group.members.clone();
+        let delay = group.delay_seconds.clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY);
+        // A group run starts from a clean member state, so replaying a finished
+        // group does not inherit positions or visibility from the last run.
+        self.reset_group_members(&members);
+        {
+            let group = &mut self.play.groups[index];
+            group.state = PlaybackState::Playing;
+            group.step = 0;
+            group.elapsed = 0.0;
+            group.step_elapsed = 0.0;
+            group.next_at = 0.0;
+        }
+        match kind {
+            GroupAnimationKind::Combine => {
+                for member in &members {
+                    self.start_group_member(*member);
+                }
+                self.play.groups[index].step = members.len();
+            }
+            GroupAnimationKind::Sequence => {
+                self.start_group_member(members[0]);
+                let group = &mut self.play.groups[index];
+                group.step = 1;
+                group.next_at = delay;
+            }
+        }
+        self.play_sync_pending = true;
+    }
+
+    /// Stops a group and restores its members to their starting state: routes
+    /// back to the first point, spawn targets hidden, hide targets visible.
+    pub fn stop_group_animation(&mut self, index: usize) {
+        let Some(group) = self.play.groups.get(index) else {
+            return;
+        };
+        let members = group.members.clone();
+        self.reset_group_members(&members);
+        let group = &mut self.play.groups[index];
+        group.state = PlaybackState::Stopped;
+        group.step = 0;
+        group.elapsed = 0.0;
+        group.step_elapsed = 0.0;
+        group.next_at = 0.0;
+        self.play_sync_pending = true;
+    }
+
+    fn reset_group_members(&mut self, members: &[PlayGroupMember]) {
+        for member in members {
+            match *member {
+                PlayGroupMember::Route(route) => self.stop_route_animation(route),
+                PlayGroupMember::Visibility(visibility) => {
+                    self.reset_group_visibility(visibility);
+                }
+            }
+        }
+    }
+
+    fn start_group_member(&mut self, member: PlayGroupMember) {
+        match member {
+            PlayGroupMember::Route(index) => {
+                if let Some(route) = self.play.animations.get_mut(index) {
+                    // A group run always starts its routes from the beginning.
+                    route.progress_m = 0.0;
+                }
+                self.play_route_animation(index);
+            }
+            PlayGroupMember::Visibility(index) => self.play_visibility_animation(index),
+        }
+    }
+
+    /// Restores one spawn/hide member to its initial visibility, used when a
+    /// group is stopped.
+    fn reset_group_visibility(&mut self, index: usize) {
+        let Some(animation) = self.play.visibility_animations.get(index) else {
+            return;
+        };
+        let targets = animation.targets.clone();
+        match animation.kind {
+            VisibilityAnimationKind::Spawn => {
+                for key in &targets {
+                    self.play.hidden.insert(*key);
+                }
+            }
+            VisibilityAnimationKind::Hide => {
+                for key in &targets {
+                    self.play.hidden.remove(key);
+                }
+            }
+        }
+        self.selected.retain(|key| !self.play.hidden.contains(key));
+        self.touch();
+        self.play_sync_pending = true;
+    }
+
+    /// Advances sequence scheduling. Combine groups need no scheduling: all
+    /// members start together and keep running until they finish.
+    fn advance_play_groups(&mut self, dt: f64) {
+        let mut starts = Vec::new();
+        {
+            let PlayState {
+                groups, animations, ..
+            } = &mut self.play;
+            for (group_index, group) in groups.iter_mut().enumerate() {
+                if group.state != PlaybackState::Playing || group.members.is_empty() {
+                    continue;
+                }
+                group.elapsed += dt;
+                group.step_elapsed += dt;
+                match group.kind {
+                    GroupAnimationKind::Combine => {}
+                    GroupAnimationKind::Sequence => match group.advance {
+                        SequenceAdvance::Delay => {
+                            let delay = group.delay_seconds.clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY);
+                            while group.step < group.members.len()
+                                && group.elapsed + 1.0e-9 >= group.next_at
+                            {
+                                starts.push((group_index, group.step));
+                                group.step += 1;
+                                group.next_at += delay;
+                            }
+                        }
+                        SequenceAdvance::AfterFinish => {
+                            while group.step < group.members.len() {
+                                let member = group.members[group.step - 1];
+                                if !group_member_done(member, group.step_elapsed, animations) {
+                                    break;
+                                }
+                                starts.push((group_index, group.step));
+                                group.step += 1;
+                                group.step_elapsed = 0.0;
+                            }
+                        }
+                    },
+                }
+            }
+        }
+        for (group_index, member_index) in starts {
+            let Some(member) = self
+                .play
+                .groups
+                .get(group_index)
+                .and_then(|group| group.members.get(member_index))
+                .copied()
+            else {
+                continue;
+            };
+            self.start_group_member(member);
+        }
     }
 
     /// Restores the starting visibility: spawn targets hidden, hide targets
@@ -2942,6 +3389,123 @@ impl EditorState {
         }
     }
 
+    /// Creates a combine/sequence group. Its members are added from the
+    /// Inspector because member animations must already have server ids.
+    pub fn add_group_animation(&mut self, kind: GroupAnimationKind) {
+        if !self.loaded {
+            return;
+        }
+        self.push_undo();
+        let key = self.alloc_key();
+        let order = self.next_animation_order();
+        let name = format!("{} {}", kind.label(), self.group_count(kind) + 1);
+        let mut line = LineObject::new(Vec::new());
+        line.group = Some(GroupAnimation {
+            kind,
+            order,
+            ..GroupAnimation::default()
+        });
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name,
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Line(line),
+        });
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+        self.log(match kind {
+            GroupAnimationKind::Combine => {
+                "Combine dibuat. Tambahkan animasi anggota di Inspector; Play menjalankan \
+                 semuanya bersamaan."
+            }
+            GroupAnimationKind::Sequence => {
+                "Sequence dibuat. Tambahkan anggota, atur urutan, dan pilih waktu mulai di \
+                 Inspector."
+            }
+        });
+    }
+
+    fn group_count(&self, kind: GroupAnimationKind) -> usize {
+        self.objects
+            .iter()
+            .filter(|object| {
+                matches!(&object.kind, EditorKind::Line(line) if
+                    line.group.as_ref().is_some_and(|group| group.kind == kind))
+            })
+            .count()
+    }
+
+    /// Saved route and spawn/hide animations that can join a group. Groups
+    /// cannot be nested, and existing members are left out.
+    pub fn group_member_options(&self, group_key: ObjectKey) -> Vec<(Option<Uuid>, String)> {
+        let mut used = Vec::new();
+        if let Some(object) = self.object(group_key)
+            && let EditorKind::Line(line) = &object.kind
+            && let Some(group) = &line.group
+        {
+            used = group.members.clone();
+        }
+        let mut options = self
+            .objects
+            .iter()
+            .filter_map(|object| {
+                let id = object.server_id?;
+                if object.key == group_key || used.contains(&id) {
+                    return None;
+                }
+                let label = match &object.kind {
+                    EditorKind::Line(line) if line.animation.is_some() => {
+                        format!("Rute · {}", object.name)
+                    }
+                    EditorKind::Line(line) => {
+                        let visibility = line.visibility.as_ref()?;
+                        format!("{} · {}", visibility.kind.label(), object.name)
+                    }
+                    _ => return None,
+                };
+                Some((Some(id), label))
+            })
+            .collect::<Vec<_>>();
+        options.sort_by_key(|left| left.1.to_lowercase());
+        let mut result = vec![(None, "— Tambah animasi —".to_owned())];
+        result.extend(options);
+        result
+    }
+
+    /// Appends a saved route or spawn/hide animation to a group.
+    pub fn assign_group_member(&mut self, group_key: ObjectKey, member_key: ObjectKey) {
+        let Some(member) = self.object(member_key) else {
+            return;
+        };
+        if !(member.is_animation_route() || member.is_visibility_animation()) {
+            return;
+        }
+        let Some(id) = member.server_id else {
+            return;
+        };
+        let Some(object) = self.object_mut(group_key) else {
+            return;
+        };
+        let EditorKind::Line(line) = &mut object.kind else {
+            return;
+        };
+        let Some(group) = &mut line.group else {
+            return;
+        };
+        if group.members.contains(&id) {
+            return;
+        }
+        group.members.push(id);
+        object.dirty = true;
+        self.dirty = true;
+        self.touch();
+        self.log("Anggota animasi gabungan ditambahkan.");
+    }
+
     /// Marker assets that Play can move: animated models and static `Free` or
     /// `Limited` assets.
     pub fn marker_is_animatable(&self, marker: &MarkerObject) -> bool {
@@ -3194,6 +3758,12 @@ impl EditorState {
                     visibility.order = position;
                     object.dirty = true;
                 }
+                if let Some(group) = &mut line.group
+                    && group.order != position
+                {
+                    group.order = position;
+                    object.dirty = true;
+                }
             }
         }
         self.dirty = true;
@@ -3338,6 +3908,11 @@ impl EditorState {
                     // Keep the category and targets, but reorder the copy after
                     // the original so both lists stay unique.
                     visibility.order = next_order;
+                    next_order = next_order.saturating_add(1);
+                } else if let Some(group) = &mut line.group {
+                    // The copy keeps its members but moves to the end of the
+                    // shared Play order.
+                    group.order = next_order;
                     next_order = next_order.saturating_add(1);
                 }
             }
@@ -3972,6 +4547,32 @@ fn polyline_length(points: &[GeoPoint]) -> f64 {
 /// route heading. Slots are generated in the marker list order; the first row
 /// is the front row. Only edges of a partial last row are omitted, so the
 /// columns of a grid stay aligned.
+/// True when a sequence member has finished its step. Visibility animations
+/// are instant; routes finish at the end of the polyline (or after one full
+/// loop for repeating routes).
+fn group_member_done(
+    member: PlayGroupMember,
+    step_elapsed: f64,
+    routes: &[PlayRouteAnimation],
+) -> bool {
+    let PlayGroupMember::Route(index) = member else {
+        return true;
+    };
+    let Some(route) = routes.get(index) else {
+        return true;
+    };
+    match route.state {
+        PlaybackState::Stopped => true,
+        PlaybackState::Paused => false,
+        PlaybackState::Playing => {
+            route.is_finished()
+                || (route.repeat
+                    && route.length_m > 0.0
+                    && step_elapsed + 1.0e-9 >= route.length_m / route.speed.max(0.1))
+        }
+    }
+}
+
 fn formation_offsets(
     count: usize,
     formation: RouteFormation,
@@ -4504,6 +5105,40 @@ mod tests {
     #[test]
     fn parse_hex_color_reads_rgb() {
         assert_eq!(parse_hex_color("#ff8000"), [1.0, 128.0 / 255.0, 0.0, 1.0]);
+    }
+
+    fn add_group_route(
+        editor: &mut EditorState,
+        base: GeoPoint,
+        offset: f64,
+        length: f64,
+        speed: f64,
+    ) -> (ObjectKey, Uuid) {
+        let start = GeoPoint::from_local_offset(base, offset, 0.0).expect("route start");
+        let end = GeoPoint::from_local_offset(start, length, 0.0).expect("route end");
+        editor.add_route(vec![start, end]);
+        let key = *editor.selected.iter().next().expect("route selected");
+        if let EditorKind::Line(line) = &mut editor.object_mut(key).expect("route").kind
+            && let Some(animation) = &mut line.animation
+        {
+            animation.speed = speed;
+        }
+        let id = Uuid::new_v4();
+        editor.object_mut(key).expect("route").server_id = Some(id);
+        (key, id)
+    }
+
+    fn add_group(
+        editor: &mut EditorState,
+        kind: GroupAnimationKind,
+        members: &[ObjectKey],
+    ) -> ObjectKey {
+        editor.add_group_animation(kind);
+        let key = *editor.selected.iter().next().expect("group selected");
+        for member in members {
+            editor.assign_group_member(key, *member);
+        }
+        key
     }
 
     fn animated_asset(id: &str) -> MarkerAssetModel {
@@ -5298,6 +5933,98 @@ mod tests {
         assert!(editor.selected_visibility_targets().is_empty());
         editor.select_only(animation_key);
         assert_eq!(editor.selected_visibility_targets().len(), 2);
+    }
+
+    #[test]
+    fn combine_group_plays_routes_and_spawn_together() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "11111111-1111-4111-8111-111111111111", base);
+        editor.object_mut(marker_key).expect("marker").server_id = Some(Uuid::new_v4());
+
+        editor.select_only(marker_key);
+        editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+        let spawn_key = *editor.selected.iter().next().expect("spawn selected");
+        editor.object_mut(spawn_key).expect("spawn").server_id = Some(Uuid::new_v4());
+
+        let (route_key, _) = add_group_route(&mut editor, base, 5.0, 50.0, 5.0);
+        let group_key = add_group(
+            &mut editor,
+            GroupAnimationKind::Combine,
+            &[route_key, spawn_key],
+        );
+        assert_eq!(editor.play.groups.len(), 0);
+
+        editor.start_play();
+        assert!(editor.play.hidden.contains(&marker_key));
+        assert_eq!(editor.play.groups.len(), 1);
+        assert_eq!(editor.play.groups[0].members.len(), 2);
+
+        editor.play_group_animation(0);
+        assert!(!editor.play.hidden.contains(&marker_key));
+        assert_eq!(editor.play.animations[0].state, PlaybackState::Playing);
+        assert_eq!(editor.play.groups[0].state, PlaybackState::Playing);
+        assert_eq!(editor.play.groups[0].step, 2);
+
+        let EditorKind::Line(line) = &editor.object(group_key).expect("group").kind else {
+            panic!("expected line");
+        };
+        assert_eq!(line.group.as_ref().unwrap().members.len(), 2);
+    }
+
+    #[test]
+    fn sequence_after_finish_starts_the_next_member() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let (first, _) = add_group_route(&mut editor, base, 0.0, 10.0, 100.0);
+        let (second, _) = add_group_route(&mut editor, base, 20.0, 10.0, 100.0);
+        add_group(&mut editor, GroupAnimationKind::Sequence, &[first, second]);
+
+        editor.start_play();
+        editor.play_group_animation(0);
+        assert_eq!(editor.play.animations[0].state, PlaybackState::Playing);
+        assert_eq!(editor.play.animations[1].state, PlaybackState::Stopped);
+        assert_eq!(editor.play.groups[0].step, 1);
+
+        editor.play_tick(0.1);
+        assert!(editor.play.animations[0].is_finished());
+        assert_eq!(editor.play.animations[1].state, PlaybackState::Playing);
+        assert_eq!(editor.play.groups[0].step, 2);
+    }
+
+    #[test]
+    fn delayed_sequence_starts_members_without_waiting_for_finish() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let (first, _) = add_group_route(&mut editor, base, 0.0, 100.0, 5.0);
+        let (second, _) = add_group_route(&mut editor, base, 120.0, 100.0, 5.0);
+        let group_key = add_group(&mut editor, GroupAnimationKind::Sequence, &[first, second]);
+        if let EditorKind::Line(line) = &mut editor.object_mut(group_key).expect("group").kind
+            && let Some(group) = &mut line.group
+        {
+            group.advance = SequenceAdvance::Delay;
+            group.delay_seconds = 2.0;
+        }
+
+        editor.start_play();
+        editor.play_group_animation(0);
+        for _ in 0..19 {
+            editor.play_tick(0.1);
+        }
+        assert_eq!(editor.play.animations[1].state, PlaybackState::Stopped);
+        assert!(!editor.play.animations[0].is_finished());
+
+        editor.play_tick(0.1);
+        assert_eq!(editor.play.animations[1].state, PlaybackState::Playing);
+        // The first member keeps running while the second one starts.
+        assert!(!editor.play.animations[0].is_finished());
+        assert_eq!(editor.play.groups[0].step, 2);
+
+        editor.stop_group_animation(0);
+        assert_eq!(editor.play.animations[0].state, PlaybackState::Stopped);
+        assert_eq!(editor.play.animations[1].state, PlaybackState::Stopped);
+        assert_eq!(editor.play.groups[0].step, 0);
     }
 
     #[test]

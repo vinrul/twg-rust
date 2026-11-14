@@ -29,10 +29,11 @@ use crate::state::{ClientUi, JobKind, ToastKind};
 #[cfg(not(target_arch = "wasm32"))]
 use super::model::MarkerAssetModel;
 use super::model::{
-    BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, LineObject,
-    MAX_ROUTE_SPACING, MIN_ROUTE_SPACING, MarkerObject, ObjectKey, ObjectType,
-    PLAY_FORMATION_SPACING, ParticleObject, ParticleSettings, RouteAnimation, RouteAnimationKind,
-    RouteFormation, TextObject, VisibilityAnimation, VisibilityAnimationKind, unit_for_uuid,
+    BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, GroupAnimation,
+    GroupAnimationKind, LineObject, MAX_GROUP_DELAY, MAX_ROUTE_SPACING, MIN_GROUP_DELAY,
+    MIN_ROUTE_SPACING, MarkerObject, ObjectKey, ObjectType, PLAY_FORMATION_SPACING, ParticleObject,
+    ParticleSettings, RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance,
+    TextObject, VisibilityAnimation, VisibilityAnimationKind, unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1292,6 +1293,7 @@ fn line_object(line: Line) -> EditorObject {
             alpha: line.alpha,
             animation: parse_route_animation(&line.keterangan),
             visibility: parse_visibility_animation(&line.keterangan),
+            group: parse_group_animation(&line.keterangan),
         }),
     }
 }
@@ -1573,23 +1575,41 @@ fn line_keterangan(line: &LineObject) -> String {
         })
         .to_string();
     }
-    let Some(visibility) = &line.visibility else {
+    if let Some(visibility) = &line.visibility {
+        return serde_json::json!({
+            "animation": {
+                "type": visibility.kind.key(),
+                "marker_ids": visibility
+                    .marker_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>(),
+                "particle_ids": visibility
+                    .particle_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>(),
+                "order": visibility.order,
+            }
+        })
+        .to_string();
+    }
+    let Some(group) = &line.group else {
         return String::new();
     };
     serde_json::json!({
         "animation": {
-            "type": visibility.kind.key(),
-            "marker_ids": visibility
-                .marker_ids
+            "type": group.kind.key(),
+            "members": group
+                .members
                 .iter()
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>(),
-            "particle_ids": visibility
-                .particle_ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>(),
-            "order": visibility.order,
+            "advance": group.advance.key(),
+            "delay": group
+                .delay_seconds
+                .clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY),
+            "order": group.order,
         }
     })
     .to_string()
@@ -1622,6 +1642,46 @@ fn parse_visibility_animation(raw: &str) -> Option<VisibilityAnimation> {
         kind,
         marker_ids: ids("marker_ids"),
         particle_ids: ids("particle_ids"),
+        order: animation
+            .get("order")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(0, i32::MAX as i64) as i32,
+    })
+}
+
+/// Parses combine/sequence metadata stored in `plot_lines.keterangan`.
+fn parse_group_animation(raw: &str) -> Option<GroupAnimation> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let animation = value.get("animation")?;
+    let kind = match animation.get("type")?.as_str()? {
+        "combine" => GroupAnimationKind::Combine,
+        "sequence" => GroupAnimationKind::Sequence,
+        _ => return None,
+    };
+    Some(GroupAnimation {
+        kind,
+        members: animation
+            .get("members")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|value| Uuid::parse_str(value).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        advance: animation
+            .get("advance")
+            .and_then(Value::as_str)
+            .map(SequenceAdvance::from_key)
+            .unwrap_or_default(),
+        delay_seconds: animation
+            .get("delay")
+            .and_then(Value::as_f64)
+            .unwrap_or(super::model::DEFAULT_GROUP_DELAY)
+            .clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY),
         order: animation
             .get("order")
             .and_then(Value::as_i64)
@@ -2204,6 +2264,31 @@ mod tests {
             parse_visibility_animation(r#"{"animation":{"type":"route","kind":"single"}}"#)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn group_metadata_round_trips_members_and_sequence_settings() {
+        let members = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        let mut line = LineObject::new(Vec::new());
+        line.group = Some(GroupAnimation {
+            kind: GroupAnimationKind::Sequence,
+            members: members.to_vec(),
+            advance: SequenceAdvance::Delay,
+            delay_seconds: 2.5,
+            order: 6,
+        });
+
+        let raw = line_keterangan(&line);
+        let parsed = parse_group_animation(&raw).expect("group metadata");
+        assert_eq!(parsed.kind, GroupAnimationKind::Sequence);
+        assert_eq!(parsed.members, members);
+        assert_eq!(parsed.advance, SequenceAdvance::Delay);
+        assert!((parsed.delay_seconds - 2.5).abs() < 1.0e-9);
+        assert_eq!(parsed.order, 6);
+        // Route and visibility parsers must ignore group metadata.
+        assert!(parse_route_animation(&raw).is_none());
+        assert!(parse_visibility_animation(&raw).is_none());
+        assert!(parse_group_animation(r#"{"animation":{"type":"route"}}"#).is_none());
     }
 
     #[test]

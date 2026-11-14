@@ -58,6 +58,22 @@ impl EditorState {
                 }))
             })
             .collect::<Vec<_>>();
+        let groups = self
+            .play
+            .groups
+            .iter()
+            .filter_map(|group| {
+                let id = self.object(group.group_key)?.server_id?;
+                Some(json!({
+                    "line_id": id.to_string(),
+                    "state": playback_key(group.state),
+                    "step": group.step,
+                    "elapsed": group.elapsed,
+                    "step_elapsed": group.step_elapsed,
+                    "next_at": group.next_at,
+                }))
+            })
+            .collect::<Vec<_>>();
         // Hidden markers/particles travel as server UUIDs too. The receiver
         // resolves them against its own scene, so spawn/hide animations look
         // identical on every client and on the big screen.
@@ -71,6 +87,7 @@ impl EditorState {
         json!({
             "units": units,
             "routes": routes,
+            "groups": groups,
             "hidden": hidden,
         })
     }
@@ -112,6 +129,51 @@ impl EditorState {
                 self.apply_route_animation(index);
             }
             self.sync_play_controlled();
+        }
+        if let Some(groups) = snapshot.get("groups").and_then(Value::as_array) {
+            for group in groups {
+                let Some(line_id) = group
+                    .get("line_id")
+                    .and_then(Value::as_str)
+                    .and_then(|value| Uuid::parse_str(value).ok())
+                else {
+                    continue;
+                };
+                let Some(index) = self.play.groups.iter().position(|animation| {
+                    self.object(animation.group_key)
+                        .is_some_and(|object| object.server_id == Some(line_id))
+                }) else {
+                    continue;
+                };
+                let state = match group.get("state").and_then(Value::as_str) {
+                    Some("playing") => PlaybackState::Playing,
+                    Some("paused") => PlaybackState::Paused,
+                    _ => PlaybackState::Stopped,
+                };
+                let step = group.get("step").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let elapsed = group
+                    .get("elapsed")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                let step_elapsed = group
+                    .get("step_elapsed")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                let next_at = group
+                    .get("next_at")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                if let Some(local) = self.play.groups.get_mut(index) {
+                    local.state = state;
+                    local.step = step.min(local.members.len());
+                    local.elapsed = elapsed;
+                    local.step_elapsed = step_elapsed;
+                    local.next_at = next_at;
+                }
+            }
         }
         if let Some(hidden) = snapshot.get("hidden").and_then(Value::as_array) {
             let targets = self.object_keys_by_server_id();
@@ -231,8 +293,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::super::model::{
-        EditorKind, EditorObject, EditorState, LineObject, MarkerObject, PLAY_FORMATION_SPACING,
-        PlayRouteAnimation, PlayUnit, PlaybackState,
+        EditorKind, EditorObject, EditorState, GroupAnimationKind, LineObject, MarkerObject,
+        PLAY_FORMATION_SPACING, PlayGroupAnimation, PlayGroupMember, PlayRouteAnimation, PlayUnit,
+        PlaybackState, SequenceAdvance,
     };
 
     fn marker(id: Uuid, point: GeoPoint) -> EditorObject {
@@ -267,6 +330,24 @@ mod tests {
             obstacle: false,
             altitude: 0.0,
             animated: true,
+        }
+    }
+
+    fn group(group_key: u64) -> PlayGroupAnimation {
+        PlayGroupAnimation {
+            group_key,
+            name: "Sequence".to_owned(),
+            kind: GroupAnimationKind::Sequence,
+            members: vec![PlayGroupMember::Visibility(0)],
+            missing: 0,
+            advance: SequenceAdvance::Delay,
+            delay_seconds: 2.0,
+            state: PlaybackState::Stopped,
+            step: 0,
+            elapsed: 0.0,
+            step_elapsed: 0.0,
+            next_at: 0.0,
+            order: 0,
         }
     }
 
@@ -327,6 +408,36 @@ mod tests {
         let animation = &receiver.play.animations[0];
         assert_eq!(animation.state, PlaybackState::Playing);
         assert!((animation.progress_m - 12.5).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn play_snapshot_round_trips_group_progress() {
+        let group_id = Uuid::new_v4();
+
+        let mut source = EditorState::new();
+        source.play.active = true;
+        source.objects.push(route(group_id, 2));
+        source.play.groups.push(group(2));
+        source.play.groups[0].state = PlaybackState::Playing;
+        source.play.groups[0].step = 1;
+        source.play.groups[0].elapsed = 2.5;
+        source.play.groups[0].step_elapsed = 0.5;
+        source.play.groups[0].next_at = 4.0;
+
+        let snapshot = source.play_snapshot();
+
+        let mut receiver = EditorState::new();
+        receiver.play.active = true;
+        receiver.objects.push(route(group_id, 2));
+        receiver.play.groups.push(group(2));
+        receiver.apply_play_snapshot(&snapshot);
+
+        let group = &receiver.play.groups[0];
+        assert_eq!(group.state, PlaybackState::Playing);
+        assert_eq!(group.step, 1);
+        assert!((group.elapsed - 2.5).abs() < 1.0e-9);
+        assert!((group.step_elapsed - 0.5).abs() < 1.0e-9);
+        assert!((group.next_at - 4.0).abs() < 1.0e-9);
     }
 
     #[test]

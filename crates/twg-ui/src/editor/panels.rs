@@ -13,10 +13,10 @@ use crate::widgets;
 use super::input::distance_meters;
 use super::model::{
     AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    MAX_ROUTE_SPACING, MIN_MARKER_SCALE, MIN_ROUTE_SPACING, ObjectKey, ObjectType,
-    ParticleSettings, PlaybackState, RouteAnimation, RouteAnimationKind, RouteFormation,
-    VisibilityAnimation, VisibilityAnimationKind, marker_color, parse_hex_color,
-    particle_kind_label,
+    GroupAnimation, GroupAnimationKind, MAX_GROUP_DELAY, MAX_ROUTE_SPACING, MIN_GROUP_DELAY,
+    MIN_MARKER_SCALE, MIN_ROUTE_SPACING, ObjectKey, ObjectType, ParticleSettings, PlaybackState,
+    RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance, VisibilityAnimation,
+    VisibilityAnimationKind, marker_color, parse_hex_color, particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +278,7 @@ fn draw_animation_play_panel(
                 .show(ui, |ui| {
                     if editor.play.animations.is_empty()
                         && editor.play.visibility_animations.is_empty()
+                        && editor.play.groups.is_empty()
                     {
                         ui.label(theme::muted(
                             "Belum ada animasi. Buat rute atau spawn/hide di tab Animasi saat \
@@ -307,8 +308,8 @@ fn draw_animation_play_panel(
                             animation.marker_keys.len(),
                             animation.formation.label()
                         )));
-                        let running = animation.state == PlaybackState::Playing
-                            && !animation.is_finished();
+                        let running =
+                            animation.state == PlaybackState::Playing && !animation.is_finished();
                         let resume = animation.state == PlaybackState::Paused;
                         ui.horizontal_wrapped(|ui| {
                             if !running
@@ -334,65 +335,133 @@ fn draw_animation_play_panel(
                             RouteCommand::Stop => editor.stop_route_animation(index),
                         }
                     }
-                    if editor.play.visibility_animations.is_empty() {
-                        return;
-                    }
-                    ui.separator();
-                    ui.label(theme::title("Spawn & Hide"));
-                    ui.label(theme::muted("Animasi visibilitas objek saat Play."));
-                    let mut trigger = None;
-                    for (index, animation) in
-                        editor.play.visibility_animations.iter().enumerate()
-                    {
-                        let total = animation.targets.len();
-                        let hidden = animation
-                            .targets
-                            .iter()
-                            .filter(|key| editor.play.hidden.contains(key))
-                            .count();
-                        let status = if total == 0 {
-                            "Belum ada target"
-                        } else if hidden == 0 {
-                            "Tampil"
-                        } else if hidden == total {
-                            "Tersembunyi"
-                        } else {
-                            "Sebagian tersembunyi"
-                        };
-                        ui.label(egui::RichText::new(&animation.name).strong());
-                        ui.label(theme::muted(&format!(
-                            "{} · {} target · {status}",
-                            animation.kind.label(),
-                            total,
-                        )));
-                        if animation.missing > 0 {
-                            ui.label(theme::danger(&format!(
-                                "{} target tidak ditemukan di skenario ini.",
-                                animation.missing
-                            )));
-                        }
-                        let enabled = match animation.kind {
-                            VisibilityAnimationKind::Spawn => total > 0 && hidden > 0,
-                            VisibilityAnimationKind::Hide => total > 0 && hidden < total,
-                        };
-                        let label = match animation.kind {
-                            VisibilityAnimationKind::Spawn => "Munculkan",
-                            VisibilityAnimationKind::Hide => "Sembunyikan",
-                        };
-                        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                            trigger = Some(index);
-                        }
+                    if !editor.play.visibility_animations.is_empty() {
                         ui.separator();
+                        ui.label(theme::title("Spawn & Hide"));
+                        ui.label(theme::muted("Animasi visibilitas objek saat Play."));
+                        let mut trigger = None;
+                        for (index, animation) in
+                            editor.play.visibility_animations.iter().enumerate()
+                        {
+                            let total = animation.targets.len();
+                            let hidden = animation
+                                .targets
+                                .iter()
+                                .filter(|key| editor.play.hidden.contains(key))
+                                .count();
+                            let status = if total == 0 {
+                                "Belum ada target"
+                            } else if hidden == 0 {
+                                "Tampil"
+                            } else if hidden == total {
+                                "Tersembunyi"
+                            } else {
+                                "Sebagian tersembunyi"
+                            };
+                            ui.label(egui::RichText::new(&animation.name).strong());
+                            ui.label(theme::muted(&format!(
+                                "{} · {} target · {status}",
+                                animation.kind.label(),
+                                total,
+                            )));
+                            if animation.missing > 0 {
+                                ui.label(theme::danger(&format!(
+                                    "{} target tidak ditemukan di skenario ini.",
+                                    animation.missing
+                                )));
+                            }
+                            let enabled = match animation.kind {
+                                VisibilityAnimationKind::Spawn => total > 0 && hidden > 0,
+                                VisibilityAnimationKind::Hide => total > 0 && hidden < total,
+                            };
+                            let label = match animation.kind {
+                                VisibilityAnimationKind::Spawn => "Munculkan",
+                                VisibilityAnimationKind::Hide => "Sembunyikan",
+                            };
+                            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                                trigger = Some(index);
+                            }
+                            ui.separator();
+                        }
+                        if let Some(index) = trigger {
+                            editor.play_visibility_animation(index);
+                        }
+                        if ui
+                            .button("Reset visibilitas")
+                            .on_hover_text(
+                                "Kembali ke kondisi awal: target spawn tersembunyi, target hide \
+                                 tampil.",
+                            )
+                            .clicked()
+                        {
+                            editor.reset_play_visibility();
+                        }
                     }
-                    if let Some(index) = trigger {
-                        editor.play_visibility_animation(index);
-                    }
-                    if ui
-                        .button("Reset visibilitas")
-                        .on_hover_text("Kembali ke kondisi awal: target spawn tersembunyi, target hide tampil.")
-                        .clicked()
-                    {
-                        editor.reset_play_visibility();
+                    if !editor.play.groups.is_empty() {
+                        ui.separator();
+                        ui.label(theme::title("Gabungan"));
+                        ui.label(theme::muted("Combine dan Sequence."));
+                        let mut play_group = None;
+                        let mut stop_group = None;
+                        for (index, group) in editor.play.groups.iter().enumerate() {
+                            let finished = group.is_finished(&editor.play.animations);
+                            let status = match group.state {
+                                PlaybackState::Stopped => "Berhenti".to_owned(),
+                                PlaybackState::Paused => "Jeda".to_owned(),
+                                PlaybackState::Playing if finished => "Selesai".to_owned(),
+                                PlaybackState::Playing => match group.kind {
+                                    GroupAnimationKind::Combine => "Berjalan".to_owned(),
+                                    GroupAnimationKind::Sequence => format!(
+                                        "Langkah {}/{}",
+                                        group.step.min(group.members.len()),
+                                        group.members.len()
+                                    ),
+                                },
+                            };
+                            ui.label(egui::RichText::new(&group.name).strong());
+                            ui.label(theme::muted(&format!(
+                                "{} · {} anggota · {status}",
+                                group.kind.label(),
+                                group.members.len()
+                            )));
+                            if group.missing > 0 {
+                                ui.label(theme::danger(&format!(
+                                    "{} anggota tidak ditemukan di skenario ini.",
+                                    group.missing
+                                )));
+                            }
+                            if group.members.is_empty() {
+                                ui.label(theme::danger("Belum ada anggota animasi."));
+                                ui.separator();
+                                continue;
+                            }
+                            let running = group.state == PlaybackState::Playing && !finished;
+                            ui.horizontal_wrapped(|ui| {
+                                if !running
+                                    && ui
+                                        .button(if group.state == PlaybackState::Stopped {
+                                            "Play"
+                                        } else {
+                                            "Play ulang"
+                                        })
+                                        .clicked()
+                                {
+                                    play_group = Some(index);
+                                }
+                                if group.state != PlaybackState::Stopped
+                                    && ui.button("Stop").clicked()
+                                {
+                                    stop_group = Some(index);
+                                }
+                            });
+                            ui.separator();
+                        }
+                        if let Some(index) = play_group {
+                            editor.play_group_animation(index);
+                        }
+                        if let Some(index) = stop_group {
+                            editor.stop_group_animation(index);
+                        }
                     }
                 });
         });
@@ -1314,6 +1383,40 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                 editor.add_visibility_animation(VisibilityAnimationKind::Hide);
             }
         });
+
+    ui.add_space(4.0);
+    egui::CollapsingHeader::new("Gabungan")
+        .id_salt("editor_animation_create_group")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(theme::muted(
+                "Combine menjalankan semua animasi anggota bersamaan. Sequence menjalankan \
+                 anggota berurutan; urutan dan waktu mulai diatur di Inspector.",
+            ));
+            ui.add_space(4.0);
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Combine animasi")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Gabungkan beberapa animasi dan jalankan semuanya bersamaan")
+                .clicked()
+            {
+                editor.add_group_animation(GroupAnimationKind::Combine);
+            }
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Sequence animasi")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Gabungkan beberapa animasi dan jalankan berurutan")
+                .clicked()
+            {
+                editor.add_group_animation(GroupAnimationKind::Sequence);
+            }
+        });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1321,16 +1424,26 @@ enum AnimationListGroup {
     Route,
     Spawn,
     Hide,
+    Combine,
+    Sequence,
 }
 
 impl AnimationListGroup {
-    const ALL: [Self; 3] = [Self::Route, Self::Spawn, Self::Hide];
+    const ALL: [Self; 5] = [
+        Self::Route,
+        Self::Spawn,
+        Self::Hide,
+        Self::Combine,
+        Self::Sequence,
+    ];
 
     const fn title(self) -> &'static str {
         match self {
             Self::Route => "Rute",
             Self::Spawn => "Spawn (munculkan)",
             Self::Hide => "Hide (sembunyikan)",
+            Self::Combine => "Combine (bersamaan)",
+            Self::Sequence => "Sequence (berurutan)",
         }
     }
 
@@ -1339,6 +1452,8 @@ impl AnimationListGroup {
             Self::Route => "editor_animation_list_route",
             Self::Spawn => "editor_animation_list_spawn",
             Self::Hide => "editor_animation_list_hide",
+            Self::Combine => "editor_animation_list_combine",
+            Self::Sequence => "editor_animation_list_sequence",
         }
     }
 }
@@ -1350,10 +1465,19 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         .filter_map(|object| {
             let group = match &object.kind {
                 EditorKind::Line(line) if line.animation.is_some() => AnimationListGroup::Route,
-                EditorKind::Line(line) => match line.visibility.as_ref()?.kind {
-                    VisibilityAnimationKind::Spawn => AnimationListGroup::Spawn,
-                    VisibilityAnimationKind::Hide => AnimationListGroup::Hide,
-                },
+                EditorKind::Line(line) => {
+                    if let Some(visibility) = line.visibility.as_ref() {
+                        match visibility.kind {
+                            VisibilityAnimationKind::Spawn => AnimationListGroup::Spawn,
+                            VisibilityAnimationKind::Hide => AnimationListGroup::Hide,
+                        }
+                    } else {
+                        match line.group.as_ref()?.kind {
+                            GroupAnimationKind::Combine => AnimationListGroup::Combine,
+                            GroupAnimationKind::Sequence => AnimationListGroup::Sequence,
+                        }
+                    }
+                }
                 _ => return None,
             };
             Some((
@@ -2768,7 +2892,9 @@ fn draw_object_inspector(
             changed |= ui.text_edit_multiline(&mut marker.keterangan).changed();
         }
         EditorKind::Line(line) => {
-            if let Some(visibility) = &mut line.visibility {
+            if let Some(group) = &mut line.group {
+                changed |= draw_group_inspector(ui, editor, key, group, &mut undo);
+            } else if let Some(visibility) = &mut line.visibility {
                 ui.label(theme::title(match visibility.kind {
                     VisibilityAnimationKind::Spawn => "Animasi spawn",
                     VisibilityAnimationKind::Hide => "Animasi hide",
@@ -3657,6 +3783,153 @@ fn draw_visibility_target_selector(
         ));
     }
 
+    changed
+}
+
+/// Inspector for a combine/sequence group: member list, order, and sequence
+/// timing. Members reference saved route and spawn/hide animations.
+fn draw_group_inspector(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    key: ObjectKey,
+    group: &mut GroupAnimation,
+    undo: &mut bool,
+) -> bool {
+    let mut changed = false;
+    ui.label(theme::title(match group.kind {
+        GroupAnimationKind::Combine => "Animasi combine",
+        GroupAnimationKind::Sequence => "Animasi sequence",
+    }));
+    ui.label(theme::muted(group.kind.description()));
+    ui.separator();
+
+    if group.kind == GroupAnimationKind::Sequence {
+        ui.label(theme::title("Waktu mulai"));
+        let mut advance = group.advance;
+        let options = SequenceAdvance::ALL
+            .iter()
+            .map(|advance| (*advance, advance.label().to_owned()))
+            .collect::<Vec<_>>();
+        widgets::combo(
+            ui,
+            egui::Id::new(("group_advance", key)),
+            &mut advance,
+            &options,
+        );
+        if advance != group.advance {
+            group.advance = advance;
+            changed = true;
+            *undo = true;
+        }
+        if group.advance == SequenceAdvance::Delay {
+            ui.horizontal(|ui| {
+                ui.label("Jeda");
+                let mut delay = group.delay_seconds.clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY);
+                let response = ui.add(
+                    egui::DragValue::new(&mut delay)
+                        .range(MIN_GROUP_DELAY..=MAX_GROUP_DELAY)
+                        .speed(0.1)
+                        .suffix(" s"),
+                );
+                if response.gained_focus() || response.drag_started() {
+                    *undo = true;
+                }
+                if response.changed() {
+                    group.delay_seconds = delay;
+                    changed = true;
+                }
+            });
+            ui.label(theme::muted(
+                "Contoh: jeda 2 detik → anggota 1 jalan, 2 detik kemudian anggota 2 jalan \
+                 meski anggota 1 belum selesai.",
+            ));
+        } else {
+            ui.label(theme::muted(
+                "Anggota berikutnya mulai setelah anggota sebelumnya selesai.",
+            ));
+        }
+        ui.separator();
+    }
+
+    ui.label(theme::title("Anggota"));
+    if group.members.is_empty() {
+        ui.label(theme::muted(
+            "Belum ada anggota. Tambahkan animasi rute, spawn, atau hide di bawah.",
+        ));
+    }
+    let mut remove = None;
+    let mut move_request = None;
+    let last = group.members.len().saturating_sub(1);
+    for (index, id) in group.members.iter().enumerate() {
+        let member = editor
+            .objects
+            .iter()
+            .find(|object| object.server_id == Some(*id));
+        let name = member
+            .map(|object| object.name.clone())
+            .unwrap_or_else(|| "Animasi tidak ditemukan".to_owned());
+        let category = member
+            .and_then(|object| object.animation_label())
+            .unwrap_or("Animasi");
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if reorder_arrow_button(ui, true, index > 0) {
+                move_request = Some((index, -1));
+            }
+            if reorder_arrow_button(ui, false, index < last) {
+                move_request = Some((index, 1));
+            }
+            ui.add_space(4.0);
+            ui.label(format!("{}. {category} · {name}", index + 1));
+            if member.is_none() {
+                ui.label(theme::danger("· hilang"));
+            }
+            if ui.small_button("Hapus").clicked() {
+                remove = Some(index);
+            }
+        });
+    }
+    if let Some((index, delta)) = move_request {
+        let target = (index as isize + delta).clamp(0, last as isize) as usize;
+        if target != index {
+            group.members.swap(index, target);
+            changed = true;
+            *undo = true;
+        }
+    }
+    if let Some(index) = remove {
+        group.members.remove(index);
+        changed = true;
+        *undo = true;
+    }
+
+    ui.add_space(4.0);
+    let options = editor.group_member_options(key);
+    let option_count = options.len();
+    let mut picked: Option<Uuid> = None;
+    widgets::combo(
+        ui,
+        egui::Id::new(("group_member", key)),
+        &mut picked,
+        &options,
+    );
+    if let Some(id) = picked
+        && !group.members.contains(&id)
+    {
+        group.members.push(id);
+        changed = true;
+        *undo = true;
+    }
+    if option_count <= 1 {
+        ui.label(theme::muted(
+            "Tidak ada animasi tersimpan lain. Simpan skenario dulu agar animasi baru bisa \
+             menjadi anggota.",
+        ));
+    }
+    ui.label(theme::muted(
+        "Urutan anggota menentukan urutan Sequence. Combine tetap menjalankan semuanya \
+         bersamaan.",
+    ));
     changed
 }
 

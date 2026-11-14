@@ -565,6 +565,33 @@ peta saat Play. Tab **Buat** punya bagian **Spawn & Hide**:
   metadata `plot_lines.keterangan` dengan `type` `spawn`/`hide` (legacy
   `remove` diterima saat memuat).
 
+**Animasi gabungan (Combine & Sequence)**
+
+Kategori **Gabungan** menggabungkan beberapa animasi yang sudah ada (rute,
+spawn, atau hide) menjadi satu tombol Play. Tab **Buat** punya dua tombol:
+
+- **+ Combine animasi** — semua anggota dijalankan bersamaan saat grup di-Play.
+- **+ Sequence animasi** — anggota dijalankan berurutan. Inspector mengatur
+  urutan anggota dan waktu mulai anggota berikutnya:
+  - **Setelah animasi selesai** — anggota 2 mulai ketika anggota 1 selesai,
+    anggota 3 ketika anggota 2 selesai, dan seterusnya.
+  - **Jeda detik (tumpang tindih)** — anggota berikutnya mulai setelah N detik
+    tanpa menunggu anggota sebelumnya selesai. Contoh jeda 2 detik dengan 3
+    anggota: anggota 1 jalan di detik 0, anggota 2 di detik 2, anggota 3 di
+    detik 4; ketiganya boleh berjalan bersamaan.
+- Anggota ditambahkan dari daftar animasi tersimpan di Inspector, bisa dihapus
+  dan diurutkan dengan tombol panah. Animasi yang baru dibuat perlu disimpan
+  dulu agar muncul di daftar anggota. Grup tidak bisa bersarang di dalam grup
+  lain.
+- Di panel Play, grup punya tombol **Play** / **Play ulang** dan **Stop**.
+  Menjalankan grup selalu mengulang anggotanya dari awal; **Stop**
+  mengembalikan rute ke titik pertama dan visibilitas spawn/hide ke kondisi
+  awal.
+- Grup disimpan di metadata `plot_lines.keterangan` dengan `type` `combine`
+  atau `sequence`, `members` berisi UUID animasi anggota, `advance`, `delay`,
+  dan `order`. Memilih grup di Daftar Anim ikut menyorot target semua
+  anggotanya di peta.
+
 **Mode Play (RTS)**
 
 Tombol **▶ Play** menjalankan skenario sebagai simulasi RTS sederhana di
@@ -608,9 +635,9 @@ Panel kiri punya tab **Animasi** dan **Skenario** (daftar skenario satu operasi)
 Selama layar ini terbuka:
 
 - Gerakan unit, perintah klik kanan, pemindahan aset `Limited` lewat gizmo,
-  Play/Pause/Stop rute, serta tombol spawn/hide disiarkan ke client lain yang
-  juga membuka skenario itu dari menu Simulasi, sehingga semua komputer
-  melihat simulasi yang sama.
+  Play/Pause/Stop rute, tombol spawn/hide, serta Combine/Sequence disiarkan ke
+  client lain yang juga membuka skenario itu dari menu Simulasi, sehingga semua
+  komputer melihat simulasi yang sama.
   Selama simulasi bergerak, snapshot juga dikirim berkala agar layar besar dan
   client yang bergabung terlambat tetap dekat dengan posisi terbaru.
 - Client baru menerima snapshot state terakhir saat bergabung. Server menyimpan

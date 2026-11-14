@@ -344,6 +344,16 @@ Payload snapshot (JSON string di field `data`):
   "routes": [
     { "line_id": "...", "state": "playing", "progress_m": 12.5 }
   ],
+  "groups": [
+    {
+      "line_id": "...",
+      "state": "playing",
+      "step": 2,
+      "elapsed": 4.0,
+      "step_elapsed": 1.2,
+      "next_at": 6.0
+    }
+  ],
   "hidden": ["<marker_id>", "<particle_id>"]
 }
 ```
@@ -356,8 +366,16 @@ client tidak perlu menghitung formasinya sendiri. Field `hidden` berisi UUID
 marker dan particle yang sedang disembunyikan animasi **spawn/hide**; client
 menerapkannya dengan memperbarui daftar objek tersembunyi lalu membangun ulang
 scene hanya jika daftar itu berubah. Field ini opsional agar snapshot lama
-tetap kompatibel (snapshot tanpa `hidden` tidak mengubah visibilitas). Ukuran
-frame tetap dibatasi 64 KB; snapshot dengan unit sangat banyak harus dipangkas.
+tetap kompatibel (snapshot tanpa `hidden` tidak mengubah visibilitas).
+
+Entri `groups` menyinkronkan grup **Combine/Sequence**. `step` adalah jumlah
+anggota yang sudah dimulai, `elapsed` waktu sejak grup dijalankan,
+`step_elapsed` waktu langkah Sequence aktif, dan `next_at` waktu grup untuk
+anggota Delay berikutnya. Client yang menerima snapshot tidak memutar ulang
+efek anggota yang sudah berjalan; posisi rute dan daftar `hidden` sudah
+membawa hasilnya. Nilai ini hanya melanjutkan penjadwalan Sequence di client
+lain. Ukuran frame tetap dibatasi 64 KB; snapshot dengan unit sangat banyak
+harus dipangkas.
 
 ## 11. Layar besar
 
