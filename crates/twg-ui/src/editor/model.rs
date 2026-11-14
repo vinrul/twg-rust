@@ -1859,12 +1859,17 @@ impl EditorState {
         })
     }
 
-    /// Markers driven by the selected route animations. The editor overlay
-    /// rings them, so the target marker is visible even in scenarios with
-    /// hundreds of markers.
+    /// Markers driven by the selected route animations, plus the route whose
+    /// marker picker is armed. The editor overlay rings them, so targets are
+    /// visible even in scenarios with hundreds of markers and while new markers
+    /// are being picked on the map.
     pub fn selected_route_markers(&self) -> BTreeSet<ObjectKey> {
         let mut markers = BTreeSet::new();
-        for key in &self.selected {
+        let mut animation_keys = self.selected.clone();
+        if let Some(key) = self.pick_route_marker {
+            animation_keys.insert(key);
+        }
+        for key in &animation_keys {
             let Some(object) = self.object(*key) else {
                 continue;
             };
@@ -5222,6 +5227,37 @@ mod tests {
         // itself does not highlight routes in return.
         editor.select_only(marker_key);
         assert!(editor.selected_route_markers().is_empty());
+    }
+
+    #[test]
+    fn arming_the_route_picker_highlights_existing_markers() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.225, -8.648);
+        let marker_key = add_static_marker(
+            &mut editor,
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            point,
+            AssetMoveMode::Free,
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        let end = GeoPoint::from_local_offset(point, 10.0, 0.0).expect("east");
+        editor.add_route(vec![point, end]);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        editor.assign_route_marker(route_key, marker_id);
+
+        // The picker keeps the route's existing markers highlighted even when
+        // the selection is cleared while picking a new marker on the map.
+        editor.select_only(marker_key);
+        assert!(editor.selected_route_markers().is_empty());
+        editor.pick_route_marker = Some(route_key);
+        assert_eq!(
+            editor
+                .selected_route_markers()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![marker_key]
+        );
     }
 
     #[test]

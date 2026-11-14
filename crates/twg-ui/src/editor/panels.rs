@@ -4010,9 +4010,10 @@ fn draw_play_overlay(painter: &egui::Painter, editor: &EditorState) {
 fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
     let selected_stroke = egui::Stroke::new(2.4, theme::color(DARK.warning));
     let hover_stroke = egui::Stroke::new(1.4, theme::color(DARK.foreground));
-    // A selected route animation rings the marker it drives, so the target is
-    // easy to spot on a map with many markers. Spawn/hide targets use a red
-    // dashed ring so the two kinds of animation stay distinguishable.
+    // A selected route animation (or the route whose marker picker is armed)
+    // rings every marker it already drives, so targets are easy to spot on a
+    // map with many markers. Spawn/hide targets use a red dashed ring so the
+    // two kinds of animation stay distinguishable.
     let route_markers = editor.selected_route_markers();
     let visibility_targets = editor.selected_visibility_targets();
     let route_stroke = egui::Stroke::new(2.0, theme::color(DARK.success));
