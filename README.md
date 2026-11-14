@@ -542,6 +542,29 @@ untuk selesai), lalu Inspector mengatur kecepatan, urutan tampil di tab
   perintah gerak ke salah satu marker mem-pause seluruh rute multiple, dan
   **Resume** mengembalikan semua marker ke formasinya.
 
+**Animasi spawn & hide (visibilitas)**
+
+Dua kategori animasi ini terpisah dari rute dan mengatur apakah objek tampil di
+peta saat Play. Tab **Buat** punya bagian **Spawn & Hide**:
+
+- **+ Spawn objek** membuat animasi yang menyembunyikan target sejak Play
+  dimulai; target muncul ketika tombol **Munculkan** ditekan di panel Animasi
+  saat Play.
+- **+ Hide objek** membuat animasi yang menampilkan target sejak Play dimulai;
+  target langsung hilang ketika tombol **Sembunyikan** ditekan.
+- Target bisa **marker 3D/model** dan **particle**. Marker/particle yang sedang
+  dipilih saat tombol dibuat otomatis menjadi target; target lain ditambahkan
+  dari daftar di Inspector atau dengan **Tambah target dari peta**. Marker atau
+  particle baru yang belum tersimpan disimpan otomatis saat dipilih, lalu
+  diikat ke animasi.
+- Objek yang tersembunyi tidak digambar, tidak bisa dipilih, dan tidak menjadi
+  penghalang sampai dimunculkan kembali. **Reset visibilitas** di panel Play
+  mengembalikan kondisi awal (target spawn tersembunyi, target hide tampil).
+- Status spawn/hide ikut disiarkan lewat snapshot realtime, sehingga client
+  Simulasi lain dan layar besar melihat objek yang sama. Animasi disimpan di
+  metadata `plot_lines.keterangan` dengan `type` `spawn`/`hide` (legacy
+  `remove` diterima saat memuat).
+
 **Mode Play (RTS)**
 
 Tombol **▶ Play** menjalankan skenario sebagai simulasi RTS sederhana di
@@ -572,7 +595,9 @@ viewport editor:
   per frame agar perubahan status banyak unit sekaligus tidak menyebabkan
   hitch.
 - Unit yang akan melewati marker statis berbelok menghindar, lalu kembali
-  menuju titik tujuan setelah penghalang terlewati.
+  menuju titik tujuan setelah penghalang terlewati. Marker/particle yang
+  disembunyikan animasi spawn/hide tidak menghalangi dan tidak bisa diklik
+  sampai dimunculkan lagi.
 - Posisi selama Play tidak mengubah posisi marker di skenario. **Stop**
   mengembalikan editor ke tampilan authoring semula.
 
@@ -582,9 +607,10 @@ Menu **Simulasi** membuka skenario langsung dalam layar play tanpa dock editor.
 Panel kiri punya tab **Animasi** dan **Skenario** (daftar skenario satu operasi).
 Selama layar ini terbuka:
 
-- Gerakan unit, perintah klik kanan, pemindahan aset `Limited` lewat gizmo, dan
-  Play/Pause/Stop rute disiarkan ke client lain yang juga membuka skenario itu
-  dari menu Simulasi, sehingga semua komputer melihat simulasi yang sama.
+- Gerakan unit, perintah klik kanan, pemindahan aset `Limited` lewat gizmo,
+  Play/Pause/Stop rute, serta tombol spawn/hide disiarkan ke client lain yang
+  juga membuka skenario itu dari menu Simulasi, sehingga semua komputer
+  melihat simulasi yang sama.
   Selama simulasi bergerak, snapshot juga dikirim berkala agar layar besar dan
   client yang bergabung terlambat tetap dekat dengan posisi terbaru.
 - Client baru menerima snapshot state terakhir saat bergabung. Server menyimpan

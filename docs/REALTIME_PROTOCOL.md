@@ -343,7 +343,8 @@ Payload snapshot (JSON string di field `data`):
   ],
   "routes": [
     { "line_id": "...", "state": "playing", "progress_m": 12.5 }
-  ]
+  ],
+  "hidden": ["<marker_id>", "<particle_id>"]
 }
 ```
 
@@ -351,8 +352,12 @@ Unit dan rute dicocokkan lewat UUID server (`markers.id` dan `plot_lines.id`),
 sehingga client yang sama-sama punya skenario dapat menerapkannya tanpa ID
 lokal. Rute multiple marker tetap dikirim sebagai satu entri `routes` (progres
 jalur) ditambah satu entri `units` untuk setiap marker yang bergerak, jadi
-client tidak perlu menghitung formasinya sendiri. Ukuran frame tetap dibatasi
-64 KB; snapshot dengan unit sangat banyak harus dipangkas.
+client tidak perlu menghitung formasinya sendiri. Field `hidden` berisi UUID
+marker dan particle yang sedang disembunyikan animasi **spawn/hide**; client
+menerapkannya dengan memperbarui daftar objek tersembunyi lalu membangun ulang
+scene hanya jika daftar itu berubah. Field ini opsional agar snapshot lama
+tetap kompatibel (snapshot tanpa `hidden` tidak mengubah visibilitas). Ukuran
+frame tetap dibatasi 64 KB; snapshot dengan unit sangat banyak harus dipangkas.
 
 ## 11. Layar besar
 

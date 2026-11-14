@@ -286,6 +286,20 @@ pub enum PlaybackState {
     Paused,
 }
 
+/// One authored spawn/hide animation resolved for Play mode. Targets that no
+/// longer resolve (deleted markers/particles) are counted in `missing`.
+#[derive(Debug, Clone)]
+pub struct PlayVisibilityAnimation {
+    pub animation_key: ObjectKey,
+    pub name: String,
+    pub kind: VisibilityAnimationKind,
+    pub targets: Vec<ObjectKey>,
+    /// Authored targets that could not be resolved locally.
+    pub missing: usize,
+    /// Persisted play order shared with the scenario editor.
+    pub order: i32,
+}
+
 /// RTS play mode state: movable animated markers plus static obstacles.
 #[derive(Debug, Clone, Default)]
 pub struct PlayState {
@@ -297,6 +311,11 @@ pub struct PlayState {
     pub obstacles: Vec<PlayObstacle>,
     /// Authored route animations available in the Play panel.
     pub animations: Vec<PlayRouteAnimation>,
+    /// Authored spawn/hide animations available in the Play panel.
+    pub visibility_animations: Vec<PlayVisibilityAnimation>,
+    /// Objects hidden at runtime by spawn/hide animations. Runtime-only state:
+    /// it never touches the authored scenario or the editor visibility flags.
+    pub hidden: BTreeSet<ObjectKey>,
     /// Markers currently driven by a playing route. Manual orders pause that
     /// route so the marker can be moved again.
     pub controlled: BTreeSet<ObjectKey>,
@@ -315,6 +334,11 @@ impl PlayState {
             || self.animations.iter().any(|animation| {
                 animation.state == PlaybackState::Playing && !animation.is_finished()
             })
+    }
+
+    /// True when Play should draw the object at all.
+    pub fn is_visible(&self, key: ObjectKey) -> bool {
+        !self.hidden.contains(&key)
     }
 }
 
@@ -601,6 +625,77 @@ impl Default for RouteAnimation {
     }
 }
 
+/// Visibility animation category, kept separate from routes. `Spawn` hides its
+/// targets when Play starts and reveals them when the animation plays; `Hide`
+/// does the opposite.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VisibilityAnimationKind {
+    #[default]
+    Spawn,
+    Hide,
+}
+
+impl VisibilityAnimationKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Spawn => "Spawn",
+            Self::Hide => "Hide",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Spawn => {
+                "Objek disembunyikan saat Play dimulai, lalu muncul ketika animasi diputar."
+            }
+            Self::Hide => "Objek tampil saat Play dimulai, lalu hilang ketika animasi diputar.",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Spawn => "spawn",
+            Self::Hide => "hide",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Self {
+        match value {
+            // `remove` is the legacy name for the same hide animation.
+            "hide" | "remove" => Self::Hide,
+            _ => Self::Spawn,
+        }
+    }
+}
+
+/// Targets of a spawn/hide animation, stored by server UUID. Markers and
+/// particles are kept apart because they live in different server tables.
+#[derive(Clone, Debug)]
+pub struct VisibilityAnimation {
+    pub kind: VisibilityAnimationKind,
+    pub marker_ids: Vec<Uuid>,
+    pub particle_ids: Vec<Uuid>,
+    /// Position in the shared Play animation order.
+    pub order: i32,
+}
+
+impl VisibilityAnimation {
+    pub fn target_count(&self) -> usize {
+        self.marker_ids.len() + self.particle_ids.len()
+    }
+}
+
+impl Default for VisibilityAnimation {
+    fn default() -> Self {
+        Self {
+            kind: VisibilityAnimationKind::Spawn,
+            marker_ids: Vec::new(),
+            particle_ids: Vec::new(),
+            order: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LineObject {
     pub points: Vec<[f64; 2]>,
@@ -611,6 +706,8 @@ pub struct LineObject {
     pub alpha: f64,
     /// Set for lines that animate a marker when Play starts.
     pub animation: Option<RouteAnimation>,
+    /// Set for spawn/hide animations. These lines carry no drawable geometry.
+    pub visibility: Option<VisibilityAnimation>,
 }
 
 impl LineObject {
@@ -623,6 +720,7 @@ impl LineObject {
             width: 4.0,
             alpha: 0.9,
             animation: None,
+            visibility: None,
         }
     }
 
@@ -1150,15 +1248,42 @@ impl EditorObject {
         matches!(&self.kind, EditorKind::Line(line) if line.animation.is_some())
     }
 
-    /// Position of this route in the persisted Play order.
-    pub fn route_order(&self) -> i32 {
+    /// Spawn/hide animations are stored on a line row but carry no geometry.
+    pub fn is_visibility_animation(&self) -> bool {
+        matches!(&self.kind, EditorKind::Line(line) if line.visibility.is_some())
+    }
+
+    /// Any animation object (route or spawn/hide).
+    pub fn is_animation(&self) -> bool {
+        self.is_animation_route() || self.is_visibility_animation()
+    }
+
+    /// Position of this animation in the persisted Play order.
+    pub fn animation_order(&self) -> i32 {
         match &self.kind {
             EditorKind::Line(line) => line
                 .animation
                 .as_ref()
                 .map(|route| route.order)
+                .or_else(|| line.visibility.as_ref().map(|visibility| visibility.order))
                 .unwrap_or(0),
             _ => 0,
+        }
+    }
+
+    /// Category label shown next to the animation name.
+    pub fn animation_label(&self) -> Option<&'static str> {
+        match &self.kind {
+            EditorKind::Line(line) => line
+                .animation
+                .as_ref()
+                .map(|route| route.kind.label())
+                .or_else(|| {
+                    line.visibility
+                        .as_ref()
+                        .map(|visibility| visibility.kind.label())
+                }),
+            _ => None,
         }
     }
 }
@@ -1459,12 +1584,19 @@ pub struct EditorState {
     pub sky: SkyMode,
     /// Marker search text for the route inspector.
     pub route_marker_search: String,
+    /// Target search text for the spawn/hide inspector.
+    pub visibility_target_search: String,
     /// Route waiting for a marker picked directly on the map.
     pub pick_route_marker: Option<ObjectKey>,
+    /// Spawn/hide animation waiting for a marker or particle picked on the map.
+    pub pick_visibility_target: Option<ObjectKey>,
     /// Marker picks that wait for the save which gives those markers a server
     /// id. New markers cannot join a route until the server assigns them a
     /// UUID, so a map pick saves first and binds afterwards.
     pub pending_route_picks: Vec<(ObjectKey, ObjectKey)>,
+    /// Same queue for spawn/hide targets. New markers and particles only get a
+    /// server UUID after the first save.
+    pub pending_visibility_picks: Vec<(ObjectKey, ObjectKey)>,
     /// Asks the shell to run the editor save before the next frame.
     pub requested_save: bool,
     /// Animation type created when the current route draft is finished.
@@ -1598,8 +1730,11 @@ impl EditorState {
             base_layer: BaseLayer::OpenStreetMap,
             sky: SkyMode::Black,
             route_marker_search: String::new(),
+            visibility_target_search: String::new(),
             pick_route_marker: None,
+            pick_visibility_target: None,
             pending_route_picks: Vec::new(),
+            pending_visibility_picks: Vec::new(),
             requested_save: false,
             pending_route_kind: RouteAnimationKind::Single,
             anim_filter_hidden: false,
@@ -1634,6 +1769,10 @@ impl EditorState {
         self.locked.clear();
         self.undo.clear();
         self.redo.clear();
+        self.pick_route_marker = None;
+        self.pick_visibility_target = None;
+        self.pending_route_picks.clear();
+        self.pending_visibility_picks.clear();
         self.next_key = 1;
         self.dirty = false;
         self.touch();
@@ -1650,6 +1789,7 @@ impl EditorState {
 
     pub fn set_tool(&mut self, tool: EditorTool) {
         self.pick_route_marker = None;
+        self.pick_visibility_target = None;
         if self.tool == tool {
             return;
         }
@@ -1754,7 +1894,9 @@ impl EditorState {
     pub fn select_only(&mut self, key: ObjectKey) {
         if !self.selected.contains(&key) {
             self.pick_route_marker = None;
+            self.pick_visibility_target = None;
             self.route_marker_search.clear();
+            self.visibility_target_search.clear();
         }
         if self.point_edit.is_some_and(|edit| edit.key != key) {
             self.point_edit = None;
@@ -1832,6 +1974,7 @@ impl EditorState {
     /// - 3D shapes (except the flat ground plate) block movement as well.
     pub fn start_play(&mut self) {
         self.pick_route_marker = None;
+        self.pick_visibility_target = None;
         self.play = PlayState {
             active: true,
             ..PlayState::default()
@@ -1839,6 +1982,9 @@ impl EditorState {
         self.drag = DragState::None;
         self.hover_axis = None;
         self.selected.clear();
+        // Spawn targets are hidden from the first Play frame, so resolve the
+        // authored visibility animations before obstacles are built.
+        self.init_play_visibility();
         for object in &self.objects {
             if !object.visible || !self.visible.allows(object.object_type()) {
                 continue;
@@ -1902,10 +2048,12 @@ impl EditorState {
                             });
                         }
                     } else if marker.obstacle {
+                        // The key lets spawn/hide animations drop this obstacle
+                        // while the marker is hidden and restore it afterwards.
                         self.play.obstacles.push(PlayObstacle {
                             center: point,
                             radius,
-                            key: None,
+                            key: Some(object.key),
                         });
                     }
                 }
@@ -1918,7 +2066,7 @@ impl EditorState {
                     self.play.obstacles.push(PlayObstacle {
                         center: point,
                         radius: building_obstacle_radius(building),
-                        key: None,
+                        key: Some(object.key),
                     });
                 }
                 _ => {}
@@ -1926,6 +2074,56 @@ impl EditorState {
         }
         self.init_play_animations();
         self.play_sync_pending = true;
+    }
+
+    /// Resolves spawn/hide animations and computes the initial hidden set:
+    /// every spawn target starts hidden, hide targets start visible.
+    fn init_play_visibility(&mut self) {
+        let mut animations = Vec::new();
+        let mut hidden = BTreeSet::new();
+        for object in &self.objects {
+            if !self.visible.allows(ObjectType::Line) {
+                continue;
+            }
+            let EditorKind::Line(line) = &object.kind else {
+                continue;
+            };
+            let Some(visibility) = &line.visibility else {
+                continue;
+            };
+            let targets = self.resolve_visibility_targets(visibility);
+            let authored = visibility.target_count();
+            if visibility.kind == VisibilityAnimationKind::Spawn {
+                hidden.extend(targets.iter().copied());
+            }
+            animations.push(PlayVisibilityAnimation {
+                animation_key: object.key,
+                name: object.name.clone(),
+                kind: visibility.kind,
+                missing: authored.saturating_sub(targets.len()),
+                targets,
+                order: visibility.order,
+            });
+        }
+        animations.sort_by_key(|animation| animation.order);
+        self.play.visibility_animations = animations;
+        self.play.hidden = hidden;
+    }
+
+    /// Local object keys currently referenced by a spawn/hide animation.
+    fn resolve_visibility_targets(&self, animation: &VisibilityAnimation) -> Vec<ObjectKey> {
+        self.objects
+            .iter()
+            .filter_map(|object| {
+                let id = object.server_id?;
+                let targeted = match &object.kind {
+                    EditorKind::Marker(_) => animation.marker_ids.contains(&id),
+                    EditorKind::Particle(_) => animation.particle_ids.contains(&id),
+                    _ => false,
+                };
+                targeted.then_some(object.key)
+            })
+            .collect()
     }
 
     /// Resolves authored routes into Play state and records which markers they
@@ -2017,13 +2215,21 @@ impl EditorState {
         }
         // Units are obstacles too, so columns do not walk through each other.
         // Snapshotting once per tick keeps the borrow simple and avoids
-        // allocating a list per unit.
-        let mut obstacles = self.play.obstacles.clone();
+        // allocating a list per unit. Objects hidden by a spawn/hide animation
+        // stop blocking until they are shown again.
+        let hidden = &self.play.hidden;
+        let mut obstacles = self
+            .play
+            .obstacles
+            .iter()
+            .filter(|obstacle| obstacle.key.is_none_or(|key| !hidden.contains(&key)))
+            .cloned()
+            .collect::<Vec<_>>();
         obstacles.extend(
             self.play
                 .units
                 .iter()
-                .filter(|(_, unit)| unit.obstacle)
+                .filter(|(key, unit)| unit.obstacle && !hidden.contains(key))
                 .map(|(key, unit)| PlayObstacle {
                     center: unit.position,
                     radius: unit.radius,
@@ -2144,6 +2350,55 @@ impl EditorState {
         }
         self.apply_route_animation(index);
         self.sync_play_controlled();
+        self.play_sync_pending = true;
+    }
+
+    /// Plays a spawn/hide animation: spawn targets appear, hide targets vanish.
+    /// Hidden objects also leave the selection so a stale ring cannot linger.
+    pub fn play_visibility_animation(&mut self, index: usize) {
+        let Some(animation) = self.play.visibility_animations.get(index) else {
+            return;
+        };
+        let targets = animation.targets.clone();
+        let kind = animation.kind;
+        if targets.is_empty() {
+            return;
+        }
+        match kind {
+            VisibilityAnimationKind::Spawn => {
+                for key in &targets {
+                    self.play.hidden.remove(key);
+                }
+            }
+            VisibilityAnimationKind::Hide => {
+                for key in &targets {
+                    self.play.hidden.insert(*key);
+                }
+                self.selected.retain(|key| !targets.contains(key));
+            }
+        }
+        // Visibility is part of the render scene, so rebuild it once for this
+        // click; Play movement itself still avoids per-frame rebuilds.
+        self.touch();
+        self.play_sync_pending = true;
+    }
+
+    /// Restores the starting visibility: spawn targets hidden, hide targets
+    /// visible.
+    pub fn reset_play_visibility(&mut self) {
+        let hidden = self
+            .play
+            .visibility_animations
+            .iter()
+            .filter(|animation| animation.kind == VisibilityAnimationKind::Spawn)
+            .flat_map(|animation| animation.targets.iter().copied())
+            .collect::<BTreeSet<_>>();
+        if hidden == self.play.hidden {
+            return;
+        }
+        self.play.hidden = hidden;
+        self.selected.retain(|key| !self.play.hidden.contains(key));
+        self.touch();
         self.play_sync_pending = true;
     }
 
@@ -2526,7 +2781,7 @@ impl EditorState {
         line.width = 0.5;
         line.animation = Some(RouteAnimation {
             kind,
-            order: self.next_route_order(),
+            order: self.next_animation_order(),
             ..RouteAnimation::default()
         });
         self.objects.push(EditorObject {
@@ -2555,12 +2810,93 @@ impl EditorState {
             return;
         }
         self.pending_route_kind = kind;
+        self.pick_visibility_target = None;
         self.end_point_edit();
         self.selected.clear();
         self.set_tool(EditorTool::Line);
         self.draft = Draft::Route(Vec::new());
         self.last_click = None;
         self.log("Klik titik rute di peta. Enter atau klik dua kali untuk selesai.");
+    }
+
+    /// Creates a spawn/hide animation. Markers and particles already selected
+    /// become its targets; unsaved ones are queued until the next save assigns
+    /// them a server UUID.
+    pub fn add_visibility_animation(&mut self, kind: VisibilityAnimationKind) {
+        if !self.loaded {
+            return;
+        }
+        self.push_undo();
+        let key = self.alloc_key();
+        let mut animation = VisibilityAnimation {
+            kind,
+            order: self.next_animation_order(),
+            ..VisibilityAnimation::default()
+        };
+        let mut pending = Vec::new();
+        for selected in std::mem::take(&mut self.selected) {
+            let Some(object) = self.object(selected) else {
+                continue;
+            };
+            let targeted = matches!(object.kind, EditorKind::Marker(_) | EditorKind::Particle(_));
+            if !targeted {
+                continue;
+            }
+            match object.server_id {
+                Some(id) => Self::push_visibility_target(&mut animation, &object.kind, id),
+                None => pending.push((key, selected)),
+            }
+        }
+        self.pending_visibility_picks.extend(pending);
+        if !self.pending_visibility_picks.is_empty() {
+            self.requested_save = true;
+        }
+        let name = format!("{} {}", kind.label(), self.visibility_count(kind) + 1);
+        let mut line = LineObject::new(Vec::new());
+        line.visibility = Some(animation);
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name,
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Line(line),
+        });
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+        self.log(match kind {
+            VisibilityAnimationKind::Spawn => {
+                "Spawn dibuat. Target disembunyikan saat Play dimulai dan muncul ketika \
+                 animasi diputar."
+            }
+            VisibilityAnimationKind::Hide => {
+                "Hide dibuat. Target tampil saat Play dimulai dan hilang ketika animasi \
+                 diputar."
+            }
+        });
+    }
+
+    fn visibility_count(&self, kind: VisibilityAnimationKind) -> usize {
+        self.objects
+            .iter()
+            .filter(|object| {
+                matches!(&object.kind, EditorKind::Line(line) if
+                    line.visibility.as_ref().is_some_and(|visibility| visibility.kind == kind))
+            })
+            .count()
+    }
+
+    fn push_visibility_target(animation: &mut VisibilityAnimation, kind: &EditorKind, id: Uuid) {
+        match kind {
+            EditorKind::Marker(_) if !animation.marker_ids.contains(&id) => {
+                animation.marker_ids.push(id);
+            }
+            EditorKind::Particle(_) if !animation.particle_ids.contains(&id) => {
+                animation.particle_ids.push(id);
+            }
+            _ => {}
+        }
     }
 
     /// Marker assets that Play can move: animated models and static `Free` or
@@ -2621,6 +2957,63 @@ impl EditorState {
         result
     }
 
+    /// Markers and particles that can become targets of a spawn/hide animation,
+    /// filtered by the inspector search box.
+    pub fn visibility_target_options(
+        &self,
+        animation_key: ObjectKey,
+    ) -> Vec<(Option<Uuid>, String)> {
+        let needle = self.visibility_target_search.trim().to_lowercase();
+        let mut options = self
+            .objects
+            .iter()
+            .filter_map(|object| {
+                if object.key == animation_key {
+                    return None;
+                }
+                let id = object.server_id?;
+                let kind = match &object.kind {
+                    EditorKind::Marker(_) => "Marker",
+                    EditorKind::Particle(_) => "Particle",
+                    _ => return None,
+                };
+                if !needle.is_empty() && !object.name.to_lowercase().contains(&needle) {
+                    return None;
+                }
+                Some((Some(id), format!("{kind} · {}", object.name)))
+            })
+            .collect::<Vec<_>>();
+        options.sort_by_key(|left| left.1.to_lowercase());
+        let mut result = vec![(None, "— Tambah target —".to_owned())];
+        result.extend(options);
+        result
+    }
+
+    /// Binds a marker or particle picked on the map to a spawn/hide animation.
+    pub fn assign_visibility_target(&mut self, animation_key: ObjectKey, target_key: ObjectKey) {
+        let Some(target) = self.object(target_key) else {
+            return;
+        };
+        let Some(id) = target.server_id else {
+            return;
+        };
+        let kind = target.kind.clone();
+        let Some(object) = self.object_mut(animation_key) else {
+            return;
+        };
+        let EditorKind::Line(line) = &mut object.kind else {
+            return;
+        };
+        let Some(animation) = &mut line.visibility else {
+            return;
+        };
+        Self::push_visibility_target(animation, &kind, id);
+        object.dirty = true;
+        self.dirty = true;
+        self.touch();
+        self.log("Target animasi ditambahkan dari peta.");
+    }
+
     /// Assigns the marker picked on the map to a route and marks the line dirty.
     /// Single-marker routes replace their target; multiple-marker routes append
     /// the marker and keep the picker active for the next click.
@@ -2664,9 +3057,9 @@ impl EditorState {
         }
     }
 
-    /// Binds marker picks that were waiting for the save which assigns server
-    /// ids. Returns true when at least one route gained a marker, so the shell
-    /// can save the updated route metadata immediately. Picks whose marker was
+    /// Binds picks that were waiting for the save which assigns server ids.
+    /// Returns true when at least one animation gained a target, so the shell
+    /// can save the updated metadata immediately. Picks whose target was
     /// created after the save requests were built stay queued for the next
     /// save.
     pub fn apply_pending_route_picks(&mut self) -> bool {
@@ -2689,27 +3082,47 @@ impl EditorState {
                 _ => {}
             }
         }
+        let visibility_picks = std::mem::take(&mut self.pending_visibility_picks);
+        for (animation_key, target_key) in visibility_picks {
+            let animation_ready = self.object(animation_key).is_some_and(|object| {
+                matches!(&object.kind, EditorKind::Line(line) if line.visibility.is_some())
+            });
+            let target_state = self.object(target_key).and_then(|object| {
+                matches!(object.kind, EditorKind::Marker(_) | EditorKind::Particle(_))
+                    .then_some(object.server_id)
+            });
+            match target_state {
+                Some(Some(_)) if animation_ready => {
+                    self.assign_visibility_target(animation_key, target_key);
+                    bound = true;
+                }
+                Some(None) => self
+                    .pending_visibility_picks
+                    .push((animation_key, target_key)),
+                _ => {}
+            }
+        }
         bound
     }
 
-    /// Route keys ordered by the persisted Play order. Ties keep creation
+    /// Animation keys ordered by the persisted Play order. Ties keep creation
     /// order so legacy scenarios without order metadata stay stable.
-    pub fn ordered_route_keys(&self) -> Vec<ObjectKey> {
-        let mut routes = self
+    pub fn ordered_animation_keys(&self) -> Vec<ObjectKey> {
+        let mut animations = self
             .objects
             .iter()
-            .filter(|object| object.is_animation_route())
-            .map(|object| (object.key, object.route_order()))
+            .filter(|object| object.is_animation())
+            .map(|object| (object.key, object.animation_order()))
             .collect::<Vec<_>>();
-        routes.sort_by_key(|(_, order)| *order);
-        routes.into_iter().map(|(key, _)| key).collect()
+        animations.sort_by_key(|(_, order)| *order);
+        animations.into_iter().map(|(key, _)| key).collect()
     }
 
-    /// Moves a route one slot up (`-1`) or down (`+1`) in the Play order and
-    /// rewrites sequential order values, marking changed lines dirty so the
+    /// Moves an animation one slot up (`-1`) or down (`+1`) in the Play order
+    /// and rewrites sequential order values, marking changed lines dirty so the
     /// order is saved with the scenario.
-    pub fn move_route_order(&mut self, key: ObjectKey, delta: isize) -> bool {
-        let mut keys = self.ordered_route_keys();
+    pub fn move_animation_order(&mut self, key: ObjectKey, delta: isize) -> bool {
+        let mut keys = self.ordered_animation_keys();
         let Some(index) = keys.iter().position(|candidate| *candidate == key) else {
             return false;
         };
@@ -2720,16 +3133,22 @@ impl EditorState {
         let target = target as usize;
         self.push_undo();
         keys.swap(index, target);
-        for (position, route_key) in keys.iter().enumerate() {
-            let Some(object) = self.object_mut(*route_key) else {
+        for (position, animation_key) in keys.iter().enumerate() {
+            let Some(object) = self.object_mut(*animation_key) else {
                 continue;
             };
-            if let EditorKind::Line(line) = &mut object.kind
-                && let Some(animation) = &mut line.animation
-            {
+            if let EditorKind::Line(line) = &mut object.kind {
                 let position = position as i32;
-                if animation.order != position {
+                if let Some(animation) = &mut line.animation
+                    && animation.order != position
+                {
                     animation.order = position;
+                    object.dirty = true;
+                }
+                if let Some(visibility) = &mut line.visibility
+                    && visibility.order != position
+                {
+                    visibility.order = position;
                     object.dirty = true;
                 }
             }
@@ -2738,14 +3157,12 @@ impl EditorState {
         true
     }
 
-    /// Next Play order value for a new or duplicated route.
-    fn next_route_order(&self) -> i32 {
+    /// Next Play order value for a new or duplicated animation.
+    fn next_animation_order(&self) -> i32 {
         self.objects
             .iter()
-            .filter_map(|object| match &object.kind {
-                EditorKind::Line(line) => line.animation.as_ref().map(|route| route.order),
-                _ => None,
-            })
+            .filter(|object| object.is_animation())
+            .map(EditorObject::animation_order)
             .max()
             .map_or(0, |max| max.saturating_add(1))
     }
@@ -2860,7 +3277,7 @@ impl EditorState {
             .cloned()
             .collect::<Vec<_>>();
         let mut new_selection = BTreeSet::new();
-        let mut next_order = self.next_route_order();
+        let mut next_order = self.next_animation_order();
         for mut object in originals {
             let key = self.alloc_key();
             object.key = key;
@@ -2869,12 +3286,17 @@ impl EditorState {
             object.name = format!("{} copy", object.name);
             // A route copy must not fight the original over the same marker,
             // and it goes to the end of the Play order.
-            if let EditorKind::Line(line) = &mut object.kind
-                && let Some(animation) = &mut line.animation
-            {
-                animation.marker_id = None;
-                animation.order = next_order;
-                next_order = next_order.saturating_add(1);
+            if let EditorKind::Line(line) = &mut object.kind {
+                if let Some(animation) = &mut line.animation {
+                    animation.marker_id = None;
+                    animation.order = next_order;
+                    next_order = next_order.saturating_add(1);
+                } else if let Some(visibility) = &mut line.visibility {
+                    // Keep the category and targets, but reorder the copy after
+                    // the original so both lists stay unique.
+                    visibility.order = next_order;
+                    next_order = next_order.saturating_add(1);
+                }
             }
             offset_object(&mut object.kind, 8.0, -8.0);
             new_selection.insert(key);
@@ -3225,7 +3647,13 @@ impl EditorState {
                 continue;
             }
             // Routes are authoring guides; hide them while the scenario plays.
-            if self.preview && object.is_animation_route() {
+            // Spawn/hide animations have no geometry at all.
+            if self.preview && object.is_animation() {
+                continue;
+            }
+            // Objects hidden by a spawn/hide animation disappear from the map
+            // until the animation shows them again.
+            if self.preview && !self.play.is_visible(object.key) {
                 continue;
             }
             let Some(point) = object.point() else {
@@ -4559,6 +4987,110 @@ mod tests {
     }
 
     #[test]
+    fn spawn_animation_hides_targets_until_played() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", point);
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+
+        // The selected marker becomes the spawn target automatically.
+        editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+        let EditorKind::Line(line) = &editor
+            .objects
+            .iter()
+            .find(|object| object.is_visibility_animation())
+            .expect("spawn animation")
+            .kind
+        else {
+            panic!("expected line");
+        };
+        assert_eq!(
+            line.visibility.as_ref().unwrap().marker_ids,
+            vec![marker_id]
+        );
+
+        editor.preview = true;
+        editor.start_play();
+        assert!(editor.play.hidden.contains(&marker_key));
+        assert_eq!(editor.play.visibility_animations.len(), 1);
+        assert!(editor.build_scene().objects.is_empty());
+
+        editor.play_visibility_animation(0);
+        assert!(!editor.play.hidden.contains(&marker_key));
+        assert_eq!(editor.build_scene().objects.len(), 1);
+
+        editor.reset_play_visibility();
+        assert!(editor.play.hidden.contains(&marker_key));
+    }
+
+    #[test]
+    fn hide_animation_removes_targets_when_played() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            GeoPoint::new(115.225, -8.648),
+        );
+        editor.object_mut(marker_key).expect("marker").server_id = Some(Uuid::new_v4());
+
+        editor.add_visibility_animation(VisibilityAnimationKind::Hide);
+        editor.preview = true;
+        editor.start_play();
+        assert!(!editor.play.hidden.contains(&marker_key));
+
+        editor.play_visibility_animation(0);
+        assert!(editor.play.hidden.contains(&marker_key));
+        assert!(editor.selected.is_empty());
+    }
+
+    #[test]
+    fn spawn_target_of_an_unsaved_marker_binds_after_save() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "ffffffff-ffff-4fff-8fff-ffffffffffff",
+            GeoPoint::new(115.225, -8.648),
+        );
+        // `add_marker` leaves the server id empty, so the pick must wait.
+        editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+        assert_eq!(editor.pending_visibility_picks.len(), 1);
+        assert!(editor.requested_save);
+        assert!(!editor.apply_pending_route_picks());
+
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        assert!(editor.apply_pending_route_picks());
+        assert!(editor.pending_visibility_picks.is_empty());
+        let animation = editor
+            .objects
+            .iter()
+            .find(|object| object.is_visibility_animation())
+            .expect("spawn animation");
+        let EditorKind::Line(line) = &animation.kind else {
+            panic!("expected line");
+        };
+        assert_eq!(
+            line.visibility.as_ref().unwrap().marker_ids,
+            vec![marker_id]
+        );
+    }
+
+    #[test]
+    fn spawn_and_hide_share_the_play_order() {
+        let mut editor = editor();
+        editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+        let spawn = *editor.selected.iter().next().expect("spawn selected");
+        editor.add_visibility_animation(VisibilityAnimationKind::Hide);
+        let hide = *editor.selected.iter().next().expect("hide selected");
+
+        assert_eq!(editor.ordered_animation_keys(), vec![spawn, hide]);
+        assert!(editor.move_animation_order(hide, -1));
+        assert_eq!(editor.ordered_animation_keys(), vec![hide, spawn]);
+    }
+
+    #[test]
     fn route_order_moves_and_drives_play_order() {
         let mut editor = editor();
         let base = GeoPoint::new(115.225, -8.648);
@@ -4570,14 +5102,14 @@ mod tests {
         let first = add(&mut editor, 10.0);
         let second = add(&mut editor, 20.0);
         let third = add(&mut editor, 30.0);
-        assert_eq!(editor.ordered_route_keys(), vec![first, second, third]);
+        assert_eq!(editor.ordered_animation_keys(), vec![first, second, third]);
 
-        assert!(editor.move_route_order(third, -1));
-        assert_eq!(editor.ordered_route_keys(), vec![first, third, second]);
+        assert!(editor.move_animation_order(third, -1));
+        assert_eq!(editor.ordered_animation_keys(), vec![first, third, second]);
 
         // The top row cannot move up and the last row cannot move down.
-        assert!(!editor.move_route_order(first, -1));
-        assert!(!editor.move_route_order(second, 1));
+        assert!(!editor.move_animation_order(first, -1));
+        assert!(!editor.move_animation_order(second, 1));
 
         editor.start_play();
         let play_order = editor

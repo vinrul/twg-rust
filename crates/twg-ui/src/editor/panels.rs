@@ -15,7 +15,8 @@ use super::model::{
     AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
     MAX_ROUTE_SPACING, MIN_MARKER_SCALE, MIN_ROUTE_SPACING, ObjectKey, ObjectType,
     ParticleSettings, PlaybackState, RouteAnimation, RouteAnimationKind, RouteFormation,
-    marker_color, parse_hex_color, particle_kind_label,
+    VisibilityAnimation, VisibilityAnimationKind, marker_color, parse_hex_color,
+    particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,7 +265,7 @@ fn draw_animation_play_panel(
                 );
             } else {
                 ui.label(theme::title("Animasi"));
-                ui.label(theme::muted("Kontrol rute selama Play."));
+                ui.label(theme::muted("Kontrol animasi selama Play."));
                 ui.separator();
             }
             if play_only && editor.play_panel_tab == 1 {
@@ -275,9 +276,12 @@ fn draw_animation_play_panel(
                 .id_salt("editor_play_animations")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if editor.play.animations.is_empty() {
+                    if editor.play.animations.is_empty()
+                        && editor.play.visibility_animations.is_empty()
+                    {
                         ui.label(theme::muted(
-                            "Belum ada animasi rute. Buat rute di tab Animasi saat mengedit skenario.",
+                            "Belum ada animasi. Buat rute atau spawn/hide di tab Animasi saat \
+                             mengedit skenario.",
                         ));
                         return;
                     }
@@ -329,6 +333,66 @@ fn draw_animation_play_panel(
                             RouteCommand::Pause => editor.pause_route_animation(index),
                             RouteCommand::Stop => editor.stop_route_animation(index),
                         }
+                    }
+                    if editor.play.visibility_animations.is_empty() {
+                        return;
+                    }
+                    ui.separator();
+                    ui.label(theme::title("Spawn & Hide"));
+                    ui.label(theme::muted("Animasi visibilitas objek saat Play."));
+                    let mut trigger = None;
+                    for (index, animation) in
+                        editor.play.visibility_animations.iter().enumerate()
+                    {
+                        let total = animation.targets.len();
+                        let hidden = animation
+                            .targets
+                            .iter()
+                            .filter(|key| editor.play.hidden.contains(key))
+                            .count();
+                        let status = if total == 0 {
+                            "Belum ada target"
+                        } else if hidden == 0 {
+                            "Tampil"
+                        } else if hidden == total {
+                            "Tersembunyi"
+                        } else {
+                            "Sebagian tersembunyi"
+                        };
+                        ui.label(egui::RichText::new(&animation.name).strong());
+                        ui.label(theme::muted(&format!(
+                            "{} · {} target · {status}",
+                            animation.kind.label(),
+                            total,
+                        )));
+                        if animation.missing > 0 {
+                            ui.label(theme::danger(&format!(
+                                "{} target tidak ditemukan di skenario ini.",
+                                animation.missing
+                            )));
+                        }
+                        let enabled = match animation.kind {
+                            VisibilityAnimationKind::Spawn => total > 0 && hidden > 0,
+                            VisibilityAnimationKind::Hide => total > 0 && hidden < total,
+                        };
+                        let label = match animation.kind {
+                            VisibilityAnimationKind::Spawn => "Munculkan",
+                            VisibilityAnimationKind::Hide => "Sembunyikan",
+                        };
+                        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                            trigger = Some(index);
+                        }
+                        ui.separator();
+                    }
+                    if let Some(index) = trigger {
+                        editor.play_visibility_animation(index);
+                    }
+                    if ui
+                        .button("Reset visibilitas")
+                        .on_hover_text("Kembali ke kondisi awal: target spawn tersembunyi, target hide tampil.")
+                        .clicked()
+                    {
+                        editor.reset_play_visibility();
                     }
                 });
         });
@@ -1215,29 +1279,100 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                 editor.begin_route_draw(RouteAnimationKind::Multiple);
             }
         });
+
+    ui.add_space(4.0);
+    egui::CollapsingHeader::new("Spawn & Hide")
+        .id_salt("editor_animation_create_visibility")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(theme::muted(
+                "Spawn: objek disembunyikan saat Play dimulai lalu muncul. Hide: objek \
+                 tampil saat Play dimulai lalu hilang. Marker/particle yang sedang dipilih \
+                 otomatis menjadi target.",
+            ));
+            ui.add_space(4.0);
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Spawn objek")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Buat animasi yang memunculkan target saat diputar")
+                .clicked()
+            {
+                editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+            }
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Hide objek")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Buat animasi yang menyembunyikan target saat diputar")
+                .clicked()
+            {
+                editor.add_visibility_animation(VisibilityAnimationKind::Hide);
+            }
+        });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnimationListGroup {
+    Route,
+    Spawn,
+    Hide,
+}
+
+impl AnimationListGroup {
+    const ALL: [Self; 3] = [Self::Route, Self::Spawn, Self::Hide];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Route => "Rute",
+            Self::Spawn => "Spawn (munculkan)",
+            Self::Hide => "Hide (sembunyikan)",
+        }
+    }
+
+    const fn id_salt(self) -> &'static str {
+        match self {
+            Self::Route => "editor_animation_list_route",
+            Self::Spawn => "editor_animation_list_spawn",
+            Self::Hide => "editor_animation_list_hide",
+        }
+    }
 }
 
 fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
-    let routes = editor
+    let animations = editor
         .objects
         .iter()
-        .filter(|object| object.is_animation_route())
-        .map(|object| {
-            (
+        .filter_map(|object| {
+            let group = match &object.kind {
+                EditorKind::Line(line) if line.animation.is_some() => AnimationListGroup::Route,
+                EditorKind::Line(line) => match line.visibility.as_ref()?.kind {
+                    VisibilityAnimationKind::Spawn => AnimationListGroup::Spawn,
+                    VisibilityAnimationKind::Hide => AnimationListGroup::Hide,
+                },
+                _ => return None,
+            };
+            Some((
                 object.key,
                 object.name.clone(),
                 object.visible,
                 editor.locked.contains(&object.key),
-            )
+                group,
+            ))
         })
         .collect::<Vec<_>>();
 
     ui.add_space(2.0);
     ui.label(theme::muted(
-        "Animasi yang sudah dibuat di skenario ini. Klik untuk memilih dan mengatur di Inspector.",
+        "Animasi yang sudah dibuat di skenario ini. Rute, spawn, dan hide dipisah per \
+         kategori. Klik untuk memilih dan mengatur di Inspector.",
     ));
     ui.add_space(6.0);
-    if routes.is_empty() {
+    if animations.is_empty() {
         ui.label(theme::muted("Belum ada animasi di skenario ini."));
         if ui.button("Buka tab Animasi").clicked() {
             editor.left_tab = 3;
@@ -1246,7 +1381,7 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         return;
     }
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(theme::muted("Filter"));
         if ui
             .selectable_label(editor.anim_filter_hidden, "Tersembunyi")
@@ -1262,88 +1397,93 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         {
             editor.anim_filter_locked = !editor.anim_filter_locked;
         }
+        if (editor.anim_filter_hidden || editor.anim_filter_locked)
+            && ui.small_button("Reset filter").clicked()
+        {
+            editor.anim_filter_hidden = false;
+            editor.anim_filter_locked = false;
+        }
     });
     ui.add_space(4.0);
-
-    let filtered = routes
-        .iter()
-        .filter(|(_, _, visible, locked)| {
-            (!editor.anim_filter_hidden || !*visible) && (!editor.anim_filter_locked || *locked)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
 
     let mut select = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            egui::CollapsingHeader::new(format!("Rute ({})", filtered.len()))
-                .id_salt("editor_animation_list")
-                .default_open(true)
-                .show(ui, |ui| {
-                    if filtered.is_empty() {
-                        ui.label(theme::muted("Tidak ada animasi yang cocok dengan filter."));
-                        if ui.button("Reset filter").clicked() {
-                            editor.anim_filter_hidden = false;
-                            editor.anim_filter_locked = false;
+            for group in AnimationListGroup::ALL {
+                let filtered = animations
+                    .iter()
+                    .filter(|(_, _, visible, locked, row_group)| {
+                        *row_group == group
+                            && (!editor.anim_filter_hidden || !*visible)
+                            && (!editor.anim_filter_locked || *locked)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                egui::CollapsingHeader::new(format!("{} ({})", group.title(), filtered.len()))
+                    .id_salt(group.id_salt())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if filtered.is_empty() {
+                            ui.label(theme::muted("Tidak ada animasi yang cocok dengan filter."));
+                            return;
                         }
-                        return;
-                    }
-                    for (key, name, visible, locked) in &filtered {
-                        ui.horizontal_top(|ui| {
-                            let mut shown = *visible;
-                            if ui
-                                .checkbox(&mut shown, "")
-                                .on_hover_text("Tampilkan animasi di peta")
-                                .changed()
-                            {
-                                if let Some(object) = editor.object_mut(*key) {
-                                    object.visible = shown;
+                        for (key, name, visible, locked, _) in &filtered {
+                            ui.horizontal_top(|ui| {
+                                let mut shown = *visible;
+                                if ui
+                                    .checkbox(&mut shown, "")
+                                    .on_hover_text("Tampilkan animasi di peta")
+                                    .changed()
+                                {
+                                    if let Some(object) = editor.object_mut(*key) {
+                                        object.visible = shown;
+                                    }
+                                    editor.touch();
                                 }
-                                editor.touch();
-                            }
-                            if lock_icon_button(ui, *locked).clicked() {
-                                if *locked {
-                                    editor.locked.remove(key);
-                                } else {
-                                    editor.locked.insert(*key);
+                                if lock_icon_button(ui, *locked).clicked() {
+                                    if *locked {
+                                        editor.locked.remove(key);
+                                    } else {
+                                        editor.locked.insert(*key);
+                                    }
                                 }
-                            }
-                            let selected = editor.selected.contains(key);
-                            let frame = egui::Frame::new()
-                                .inner_margin(egui::Margin::symmetric(4, 2))
-                                .corner_radius(egui::CornerRadius::same(4))
-                                .fill(if selected {
-                                    theme::color_alpha(DARK.ring, 90)
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                });
-                            let mut clicked = false;
-                            frame.show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                clicked |= ui
-                                    .add(
-                                        egui::Label::new(
-                                            egui::RichText::new(name.as_str()).size(FONT_XS).color(
-                                                if *visible {
-                                                    theme::color(DARK.foreground)
-                                                } else {
-                                                    theme::color(DARK.muted_foreground)
-                                                },
-                                            ),
+                                let selected = editor.selected.contains(key);
+                                let frame = egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .fill(if selected {
+                                        theme::color_alpha(DARK.ring, 90)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    });
+                                let mut clicked = false;
+                                frame.show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    clicked |= ui
+                                        .add(
+                                            egui::Label::new(
+                                                egui::RichText::new(name.as_str())
+                                                    .size(FONT_XS)
+                                                    .color(if *visible {
+                                                        theme::color(DARK.foreground)
+                                                    } else {
+                                                        theme::color(DARK.muted_foreground)
+                                                    }),
+                                            )
+                                            .wrap()
+                                            .sense(egui::Sense::click()),
                                         )
-                                        .wrap()
-                                        .sense(egui::Sense::click()),
-                                    )
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked();
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked();
+                                });
+                                if clicked {
+                                    select = Some(*key);
+                                }
                             });
-                            if clicked {
-                                select = Some(*key);
-                            }
-                        });
-                    }
-                });
+                        }
+                    });
+            }
         });
 
     if let Some(key) = select {
@@ -2075,7 +2215,7 @@ fn draw_scene_tree(ui: &mut egui::Ui, editor: &mut EditorState) {
                     .iter()
                     .filter(|object| {
                         object.object_type() == object_type
-                            && !(object_type == ObjectType::Line && object.is_animation_route())
+                            && !(object_type == ObjectType::Line && object.is_animation())
                     })
                     .map(|object| {
                         (
@@ -2196,11 +2336,15 @@ fn draw_animation_order_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
     ui.add_space(8.0);
 
     let rows = editor
-        .ordered_route_keys()
+        .ordered_animation_keys()
         .into_iter()
         .filter_map(|key| {
             let object = editor.object(key)?;
-            Some((key, object.name.clone()))
+            Some((
+                key,
+                object.name.clone(),
+                object.animation_label().unwrap_or("Animasi"),
+            ))
         })
         .collect::<Vec<_>>();
     if rows.is_empty() {
@@ -2210,7 +2354,7 @@ fn draw_animation_order_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
 
     let mut move_request = None;
     let last = rows.len().saturating_sub(1);
-    for (index, (key, name)) in rows.iter().enumerate() {
+    for (index, (key, name, label)) in rows.iter().enumerate() {
         ui.horizontal(|ui| {
             // Keep the two arrows close together; the name gets a little
             // breathing room after them.
@@ -2223,11 +2367,12 @@ fn draw_animation_order_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
             }
             ui.add_space(4.0);
             ui.add(egui::Label::new(egui::RichText::new(name.as_str()).size(FONT_XS)).wrap());
+            ui.label(theme::muted(&format!("· {label}")));
         });
     }
 
     if let Some((key, delta)) = move_request {
-        editor.move_route_order(key, delta);
+        editor.move_animation_order(key, delta);
     }
 }
 
@@ -2623,73 +2768,90 @@ fn draw_object_inspector(
             changed |= ui.text_edit_multiline(&mut marker.keterangan).changed();
         }
         EditorKind::Line(line) => {
-            if let Some(animation) = &mut line.animation {
-                ui.label(theme::title("Animasi rute"));
-                let speed = drag_row(ui, "Kecepatan", &mut animation.speed, 0.1, 0.5, 1, " m/s");
-                undo |= speed.gained_focus() || speed.drag_started();
-                if speed.changed() {
-                    animation.speed = animation.speed.clamp(0.1, 100.0);
-                    changed = true;
-                }
-                changed |= ui
-                    .checkbox(&mut animation.repeat, "Ulangi (repeat)")
-                    .on_hover_text("Mulai lagi dari titik pertama setelah mencapai ujung rute.")
-                    .changed();
+            if let Some(visibility) = &mut line.visibility {
+                ui.label(theme::title(match visibility.kind {
+                    VisibilityAnimationKind::Spawn => "Animasi spawn",
+                    VisibilityAnimationKind::Hide => "Animasi hide",
+                }));
+                ui.label(theme::muted(visibility.kind.description()));
                 ui.separator();
-                changed |= draw_route_marker_selector(ui, editor, key, animation);
-                ui.label(theme::muted(
-                    "Titik, warna, lebar, dan alpha garis tetap bisa diedit seperti line biasa.",
-                ));
+                changed |= draw_visibility_target_selector(ui, editor, key, visibility);
                 ui.separator();
-            }
-            let editing = editor.point_edit_active(key);
-            if ui
-                .button(if editing {
-                    "Selesai edit titik"
-                } else {
-                    "Edit titik"
-                })
-                .clicked()
-            {
-                if editing {
-                    editor.end_point_edit();
-                } else {
-                    editor.begin_point_edit(key);
-                }
-            }
-            if editing {
                 ui.label(theme::muted(
-                    "Klik titik di peta untuk memilih, klik dua kali segmen untuk menambah titik.",
+                    "Animasi ini tidak menggambar garis di peta. Target bisa marker 3D atau \
+                     particle.",
                 ));
-                if let Some(edit) = editor.point_edit
-                    && let Some(index) = edit.point
-                    && index < line.points.len()
-                {
-                    ui.label(format!("Titik {} dari {}", index + 1, line.points.len()));
-                    let mut altitude = line.altitude(index);
-                    let altitude_row = drag_row(ui, "Alt titik", &mut altitude, 0.25, 0.5, 1, " m");
-                    undo |= altitude_row.gained_focus() || altitude_row.drag_started();
-                    if altitude_row.changed() {
-                        if index < line.altitudes.len() {
-                            line.altitudes[index] = altitude.max(0.0);
-                        }
+            } else {
+                if let Some(animation) = &mut line.animation {
+                    ui.label(theme::title("Animasi rute"));
+                    let speed =
+                        drag_row(ui, "Kecepatan", &mut animation.speed, 0.1, 0.5, 1, " m/s");
+                    undo |= speed.gained_focus() || speed.drag_started();
+                    if speed.changed() {
+                        animation.speed = animation.speed.clamp(0.1, 100.0);
                         changed = true;
                     }
-                    if ui.button("Hapus titik").clicked() {
-                        remove_point = true;
-                    }
-                } else {
-                    ui.label(theme::muted("Pilih titik di peta."));
+                    changed |= ui
+                        .checkbox(&mut animation.repeat, "Ulangi (repeat)")
+                        .on_hover_text("Mulai lagi dari titik pertama setelah mencapai ujung rute.")
+                        .changed();
+                    ui.separator();
+                    changed |= draw_route_marker_selector(ui, editor, key, animation);
+                    ui.label(theme::muted(
+                    "Titik, warna, lebar, dan alpha garis tetap bisa diedit seperti line biasa.",
+                ));
+                    ui.separator();
                 }
+                let editing = editor.point_edit_active(key);
+                if ui
+                    .button(if editing {
+                        "Selesai edit titik"
+                    } else {
+                        "Edit titik"
+                    })
+                    .clicked()
+                {
+                    if editing {
+                        editor.end_point_edit();
+                    } else {
+                        editor.begin_point_edit(key);
+                    }
+                }
+                if editing {
+                    ui.label(theme::muted(
+                    "Klik titik di peta untuk memilih, klik dua kali segmen untuk menambah titik.",
+                ));
+                    if let Some(edit) = editor.point_edit
+                        && let Some(index) = edit.point
+                        && index < line.points.len()
+                    {
+                        ui.label(format!("Titik {} dari {}", index + 1, line.points.len()));
+                        let mut altitude = line.altitude(index);
+                        let altitude_row =
+                            drag_row(ui, "Alt titik", &mut altitude, 0.25, 0.5, 1, " m");
+                        undo |= altitude_row.gained_focus() || altitude_row.drag_started();
+                        if altitude_row.changed() {
+                            if index < line.altitudes.len() {
+                                line.altitudes[index] = altitude.max(0.0);
+                            }
+                            changed = true;
+                        }
+                        if ui.button("Hapus titik").clicked() {
+                            remove_point = true;
+                        }
+                    } else {
+                        ui.label(theme::muted("Pilih titik di peta."));
+                    }
+                }
+                color_row(ui, "Warna", &mut line.color, &mut changed);
+                let width = drag_row(ui, "Lebar", &mut line.width, 0.2, 0.5, 1, " m");
+                undo |= width.drag_started();
+                changed |= width.changed();
+                let alpha = drag_row(ui, "Alpha", &mut line.alpha, 0.01, 0.05, 2, "");
+                undo |= alpha.drag_started();
+                changed |= alpha.changed();
+                ui.label(theme::muted(&format!("{} titik", line.points.len())));
             }
-            color_row(ui, "Warna", &mut line.color, &mut changed);
-            let width = drag_row(ui, "Lebar", &mut line.width, 0.2, 0.5, 1, " m");
-            undo |= width.drag_started();
-            changed |= width.changed();
-            let alpha = drag_row(ui, "Alpha", &mut line.alpha, 0.01, 0.05, 2, "");
-            undo |= alpha.drag_started();
-            changed |= alpha.changed();
-            ui.label(theme::muted(&format!("{} titik", line.points.len())));
         }
         EditorKind::Building(building) => {
             ui.horizontal(|ui| {
@@ -3326,6 +3488,173 @@ fn draw_route_marker_selector(
     });
     if used_elsewhere {
         ui.label(theme::danger("Ada marker yang juga dipakai rute lain."));
+    }
+
+    changed
+}
+
+/// Target picker for spawn/hide animations. Targets can be 3D markers and
+/// particles, and picks on the map stay armed so several targets can be added
+/// in a row.
+fn draw_visibility_target_selector(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    key: ObjectKey,
+    animation: &mut VisibilityAnimation,
+) -> bool {
+    let mut changed = false;
+    ui.label(theme::title("Target"));
+    if animation.target_count() == 0 {
+        ui.label(theme::muted(
+            "Belum ada target. Pilih marker/particle dari daftar atau dari peta.",
+        ));
+    }
+
+    let mut remove_marker = None;
+    for (index, id) in animation.marker_ids.iter().enumerate() {
+        let object = editor.objects.iter().find(|object| {
+            object.server_id == Some(*id) && matches!(&object.kind, EditorKind::Marker(_))
+        });
+        let name = object
+            .map(|object| object.name.clone())
+            .unwrap_or_else(|| "Marker tidak ditemukan".to_owned());
+        ui.horizontal_top(|ui| {
+            ui.label(format!("{}. Marker · {name}", index + 1));
+            if object.is_none() {
+                ui.label(theme::danger("· hilang"));
+            }
+            if ui.small_button("Hapus").clicked() {
+                remove_marker = Some(index);
+            }
+        });
+    }
+    if let Some(index) = remove_marker {
+        animation.marker_ids.remove(index);
+        changed = true;
+    }
+
+    let mut remove_particle = None;
+    for (index, id) in animation.particle_ids.iter().enumerate() {
+        let object = editor.objects.iter().find(|object| {
+            object.server_id == Some(*id) && matches!(&object.kind, EditorKind::Particle(_))
+        });
+        let name = object
+            .map(|object| object.name.clone())
+            .unwrap_or_else(|| "Particle tidak ditemukan".to_owned());
+        ui.horizontal_top(|ui| {
+            ui.label(format!("{}. Particle · {name}", index + 1));
+            if object.is_none() {
+                ui.label(theme::danger("· hilang"));
+            }
+            if ui.small_button("Hapus").clicked() {
+                remove_particle = Some(index);
+            }
+        });
+    }
+    if let Some(index) = remove_particle {
+        animation.particle_ids.remove(index);
+        changed = true;
+    }
+
+    ui.horizontal(|ui| {
+        ui.label(theme::muted("Cari"));
+        ui.add(
+            egui::TextEdit::singleline(&mut editor.visibility_target_search)
+                .hint_text("Nama marker/particle...")
+                .desired_width(170.0),
+        );
+    });
+
+    let options = editor.visibility_target_options(key);
+    let option_count = options.len();
+    let mut picked: Option<Uuid> = None;
+    widgets::combo(
+        ui,
+        egui::Id::new(("visibility_target", key)),
+        &mut picked,
+        &options,
+    );
+    if let Some(id) = picked
+        && let Some(object) = editor
+            .objects
+            .iter()
+            .find(|object| object.server_id == Some(id))
+    {
+        match object.kind {
+            EditorKind::Marker(_) if !animation.marker_ids.contains(&id) => {
+                animation.marker_ids.push(id);
+                changed = true;
+            }
+            EditorKind::Particle(_) if !animation.particle_ids.contains(&id) => {
+                animation.particle_ids.push(id);
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+
+    if option_count <= 1 {
+        let searching = !editor.visibility_target_search.trim().is_empty();
+        let unsaved = editor.objects.iter().any(|object| {
+            object.server_id.is_none()
+                && matches!(
+                    &object.kind,
+                    EditorKind::Marker(_) | EditorKind::Particle(_)
+                )
+        });
+        let hint = if searching {
+            "Tidak ada target yang cocok dengan pencarian."
+        } else if unsaved {
+            "Marker/particle di peta belum tersimpan. Klik \"Tambah target dari peta\" \
+             — skenario disimpan otomatis saat target dipilih."
+        } else {
+            "Belum ada marker atau particle tersimpan di skenario ini."
+        };
+        ui.label(theme::muted(hint));
+    }
+
+    let picking = editor.pick_visibility_target == Some(key);
+    if ui
+        .button(if picking {
+            "Selesai pilih target di peta"
+        } else {
+            "Tambah target dari peta"
+        })
+        .clicked()
+    {
+        if picking {
+            editor.pick_visibility_target = None;
+        } else {
+            editor.end_point_edit();
+            editor.pick_route_marker = None;
+            editor.pick_visibility_target = Some(key);
+            editor.log(
+                "Klik marker atau particle di peta untuk dijadikan target. Klik lagi untuk \
+                 target lain; Esc selesai.",
+            );
+        }
+    }
+
+    let ids = animation
+        .marker_ids
+        .iter()
+        .chain(animation.particle_ids.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    let used_elsewhere = editor.objects.iter().any(|other| {
+        other.key != key
+            && matches!(&other.kind, EditorKind::Line(line) if
+                line.visibility.as_ref().is_some_and(|visibility|
+                    visibility
+                        .marker_ids
+                        .iter()
+                        .chain(visibility.particle_ids.iter())
+                        .any(|id| ids.contains(id))))
+    });
+    if used_elsewhere {
+        ui.label(theme::danger(
+            "Ada target yang juga dipakai animasi spawn/hide lain.",
+        ));
     }
 
     changed
@@ -4027,12 +4356,12 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
     let Some((position, key)) = editor.context_menu else {
         return;
     };
-    let is_route = editor
+    let is_animation = editor
         .object(key)
-        .is_some_and(|object| object.is_animation_route());
+        .is_some_and(|object| object.is_animation());
     let visible = editor.object(key).is_some_and(|object| object.visible);
     let locked = editor.is_locked(key);
-    let locked_route = is_route && locked;
+    let locked_animation = is_animation && locked;
     let mut close = false;
     let area = egui::Area::new(egui::Id::new("editor_context_menu"))
         .fixed_pos(position)
@@ -4045,7 +4374,7 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
                 .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
                     ui.set_min_width(150.0);
-                    if is_route {
+                    if is_animation {
                         let hide_label = if visible { "Sembunyikan" } else { "Tampilkan" };
                         if ui.button(hide_label).clicked() {
                             if let Some(object) = editor.object_mut(key) {
@@ -4054,7 +4383,11 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
                             editor.touch();
                             close = true;
                         }
-                        let lock_label = if locked { "Buka kunci" } else { "Kunci rute" };
+                        let lock_label = if locked {
+                            "Buka kunci"
+                        } else {
+                            "Kunci animasi"
+                        };
                         if ui.button(lock_label).clicked() {
                             if locked {
                                 editor.locked.remove(&key);
@@ -4065,18 +4398,19 @@ fn draw_context_menu(context: &egui::Context, editor: &mut EditorState) {
                         }
                         ui.separator();
                     }
-                    let duplicate = ui.add_enabled(!locked_route, egui::Button::new("Duplicate"));
+                    let duplicate =
+                        ui.add_enabled(!locked_animation, egui::Button::new("Duplicate"));
                     if duplicate
-                        .on_disabled_hover_text("Rute terkunci — buka kunci dulu")
+                        .on_disabled_hover_text("Animasi terkunci — buka kunci dulu")
                         .clicked()
                     {
                         editor.select_only(key);
                         editor.duplicate_selected();
                         close = true;
                     }
-                    let delete = ui.add_enabled(!locked_route, egui::Button::new("Hapus"));
+                    let delete = ui.add_enabled(!locked_animation, egui::Button::new("Hapus"));
                     if delete
-                        .on_disabled_hover_text("Rute terkunci — buka kunci dulu")
+                        .on_disabled_hover_text("Animasi terkunci — buka kunci dulu")
                         .clicked()
                     {
                         editor.select_only(key);

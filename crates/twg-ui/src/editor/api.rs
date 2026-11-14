@@ -32,7 +32,7 @@ use super::model::{
     BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, LineObject,
     MAX_ROUTE_SPACING, MIN_ROUTE_SPACING, MarkerObject, ObjectKey, ObjectType,
     PLAY_FORMATION_SPACING, ParticleObject, ParticleSettings, RouteAnimation, RouteAnimationKind,
-    RouteFormation, TextObject, unit_for_uuid,
+    RouteFormation, TextObject, VisibilityAnimation, VisibilityAnimationKind, unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -956,10 +956,13 @@ impl ClientUi {
         let result = self.editor.save_error.take();
         match result {
             Some(error) => {
-                if !self.editor.pending_route_picks.is_empty() {
+                if !self.editor.pending_route_picks.is_empty()
+                    || !self.editor.pending_visibility_picks.is_empty()
+                {
                     self.editor.pending_route_picks.clear();
+                    self.editor.pending_visibility_picks.clear();
                     self.editor
-                        .log("Tautan marker rute dibatalkan karena simpan gagal.");
+                        .log("Tautan target animasi dibatalkan karena simpan gagal.");
                 }
                 self.toast(format!("Simpan gagal: {error}"), ToastKind::Error);
             }
@@ -978,7 +981,10 @@ impl ClientUi {
                 // whose marker was created after the save requests were built
                 // stay queued, so save again to assign their ids too.
                 let bound = self.editor.apply_pending_route_picks();
-                if bound || !self.editor.pending_route_picks.is_empty() {
+                if bound
+                    || !self.editor.pending_route_picks.is_empty()
+                    || !self.editor.pending_visibility_picks.is_empty()
+                {
                     self.editor_save();
                 }
             }
@@ -1285,6 +1291,7 @@ fn line_object(line: Line) -> EditorObject {
             width: line.width,
             alpha: line.alpha,
             animation: parse_route_animation(&line.keterangan),
+            visibility: parse_visibility_animation(&line.keterangan),
         }),
     }
 }
@@ -1541,32 +1548,86 @@ fn line_geom_json(line: &LineObject) -> String {
     serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_owned())
 }
 
-/// Metadata stored in `plot_lines.keterangan` for route animations.
+/// Metadata stored in `plot_lines.keterangan` for animations.
 fn line_keterangan(line: &LineObject) -> String {
-    let Some(animation) = &line.animation else {
+    if let Some(animation) = &line.animation {
+        return serde_json::json!({
+            "animation": {
+                "type": "route",
+                "kind": animation.kind.key(),
+                "speed": animation.speed,
+                "marker_id": animation.marker_id.map(|id| id.to_string()),
+                "marker_ids": animation
+                    .marker_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>(),
+                "formation": animation.formation.key(),
+                "columns": animation.columns.max(1),
+                "spacing": animation
+                    .spacing
+                    .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
+                "repeat": animation.repeat,
+                "order": animation.order,
+            }
+        })
+        .to_string();
+    }
+    let Some(visibility) = &line.visibility else {
         return String::new();
     };
     serde_json::json!({
         "animation": {
-            "type": "route",
-            "kind": animation.kind.key(),
-            "speed": animation.speed,
-            "marker_id": animation.marker_id.map(|id| id.to_string()),
-            "marker_ids": animation
+            "type": visibility.kind.key(),
+            "marker_ids": visibility
                 .marker_ids
                 .iter()
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>(),
-            "formation": animation.formation.key(),
-            "columns": animation.columns.max(1),
-            "spacing": animation
-                .spacing
-                .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
-            "repeat": animation.repeat,
-            "order": animation.order,
+            "particle_ids": visibility
+                .particle_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>(),
+            "order": visibility.order,
         }
     })
     .to_string()
+}
+
+/// Parses the spawn/hide metadata stored in `plot_lines.keterangan`. Route
+/// metadata returns `None` because it has a different `type`.
+fn parse_visibility_animation(raw: &str) -> Option<VisibilityAnimation> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let animation = value.get("animation")?;
+    let kind = match animation.get("type")?.as_str()? {
+        "spawn" => VisibilityAnimationKind::Spawn,
+        "hide" | "remove" => VisibilityAnimationKind::Hide,
+        _ => return None,
+    };
+    let ids = |key: &str| {
+        animation
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|value| Uuid::parse_str(value).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    Some(VisibilityAnimation {
+        kind,
+        marker_ids: ids("marker_ids"),
+        particle_ids: ids("particle_ids"),
+        order: animation
+            .get("order")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(0, i32::MAX as i64) as i32,
+    })
 }
 
 fn parse_route_animation(raw: &str) -> Option<RouteAnimation> {
@@ -2117,6 +2178,32 @@ mod tests {
         assert_eq!(legacy.kind, RouteAnimationKind::Single);
         assert!(legacy.marker_ids.is_empty());
         assert!((legacy.spacing - PLAY_FORMATION_SPACING).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn visibility_metadata_round_trips_markers_and_particles() {
+        let markers = [Uuid::new_v4(), Uuid::new_v4()];
+        let particles = [Uuid::new_v4()];
+        let mut line = LineObject::new(Vec::new());
+        line.visibility = Some(VisibilityAnimation {
+            kind: VisibilityAnimationKind::Hide,
+            marker_ids: markers.to_vec(),
+            particle_ids: particles.to_vec(),
+            order: 4,
+        });
+
+        let raw = line_keterangan(&line);
+        let parsed = parse_visibility_animation(&raw).expect("visibility metadata");
+        assert_eq!(parsed.kind, VisibilityAnimationKind::Hide);
+        assert_eq!(parsed.marker_ids, markers);
+        assert_eq!(parsed.particle_ids, particles);
+        assert_eq!(parsed.order, 4);
+        // Route parsing must not pick up spawn/hide metadata and vice versa.
+        assert!(parse_route_animation(&raw).is_none());
+        assert!(
+            parse_visibility_animation(r#"{"animation":{"type":"route","kind":"single"}}"#)
+                .is_none()
+        );
     }
 
     #[test]

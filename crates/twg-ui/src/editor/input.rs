@@ -500,6 +500,10 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
         if !object.visible || !editor.visible.allows(object.object_type()) {
             continue;
         }
+        // Runtime-hidden objects must not be projected, picked, or labeled.
+        if editor.preview && !editor.play.is_visible(object.key) {
+            continue;
+        }
         let points = match editor.play.units.get(&object.key) {
             Some(unit) => vec![unit.position],
             None => match editor.play.limited.get(&object.key) {
@@ -664,6 +668,30 @@ fn pick_route_marker_object(editor: &EditorState, pointer: egui::Pos2) -> Option
         };
         let distance = distance(point, pointer);
         if distance <= 28.0 && best.is_none_or(|(nearest, _)| distance < nearest) {
+            best = Some((distance, *key));
+        }
+    }
+    best.map(|(_, key)| key)
+}
+
+/// Nearest visible marker or particle for a spawn/hide target. Particles are
+/// projected above their anchor, so they get the same wide radius as particle
+/// selection.
+fn pick_visibility_target_object(editor: &EditorState, pointer: egui::Pos2) -> Option<ObjectKey> {
+    let mut best: Option<(f32, ObjectKey)> = None;
+    for (key, kind, points, _) in &editor.projected {
+        if !matches!(kind, ObjectType::Marker | ObjectType::Particle) || editor.is_locked(*key) {
+            continue;
+        }
+        let Some(point) = points.first() else {
+            continue;
+        };
+        let radius = match kind {
+            ObjectType::Marker => 28.0,
+            _ => 40.0,
+        };
+        let distance = distance(point, pointer);
+        if distance <= radius && best.is_none_or(|(nearest, _)| distance < nearest) {
             best = Some((distance, *key));
         }
     }
@@ -1026,6 +1054,8 @@ fn keyboard_shortcuts(
         if keys.just_pressed(KeyCode::Escape) {
             if editor.pick_route_marker.is_some() {
                 editor.pick_route_marker = None;
+            } else if editor.pick_visibility_target.is_some() {
+                editor.pick_visibility_target = None;
             } else if editor.context_menu.is_some() {
                 editor.context_menu = None;
             } else if editor.point_edit.is_some() {
@@ -1068,6 +1098,33 @@ fn mouse_input(
             .map_state
             .world_to_geo(world.x, world.z)
             .map(|point| editor.snap_point(point));
+
+        // Picking a spawn/hide target from the map also takes precedence over
+        // the normal selection and gizmo clicks.
+        if let Some(animation_key) = editor.pick_visibility_target {
+            match pick_visibility_target_object(editor, pointer) {
+                Some(key) => {
+                    let state = editor
+                        .object(key)
+                        .and_then(|object| object.server_id)
+                        .is_some();
+                    if state {
+                        editor.assign_visibility_target(animation_key, key);
+                    } else {
+                        editor.pending_visibility_picks.push((animation_key, key));
+                        editor.requested_save = true;
+                        editor.log(
+                            "Menyimpan skenario dulu agar target baru bisa dipakai animasi...",
+                        );
+                    }
+                }
+                None if pick_object(editor, pointer).is_some() => {
+                    editor.log("Itu bukan marker atau particle. Klik tepat pada objeknya.");
+                }
+                None => editor.log("Klik tepat pada marker atau particle di peta."),
+            }
+            return;
+        }
 
         // Picking a route marker from the map takes precedence over every
         // other click action while the Inspector asks for it.

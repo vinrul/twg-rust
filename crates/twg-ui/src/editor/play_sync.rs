@@ -4,7 +4,7 @@
 //! play-only screen (opened from Simulasi) syncs its live state with other
 //! clients through the `twg.ws.v1` `play` messages.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use twg_map::GeoPoint;
@@ -58,9 +58,20 @@ impl EditorState {
                 }))
             })
             .collect::<Vec<_>>();
+        // Hidden markers/particles travel as server UUIDs too. The receiver
+        // resolves them against its own scene, so spawn/hide animations look
+        // identical on every client and on the big screen.
+        let hidden = self
+            .play
+            .hidden
+            .iter()
+            .filter_map(|key| self.object(*key).and_then(|object| object.server_id))
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
         json!({
             "units": units,
             "routes": routes,
+            "hidden": hidden,
         })
     }
 
@@ -101,6 +112,25 @@ impl EditorState {
                 self.apply_route_animation(index);
             }
             self.sync_play_controlled();
+        }
+        if let Some(hidden) = snapshot.get("hidden").and_then(Value::as_array) {
+            let targets = self.object_keys_by_server_id();
+            let mut keys = BTreeSet::new();
+            for id in hidden {
+                let Some(id) = id.as_str().and_then(|value| Uuid::parse_str(value).ok()) else {
+                    continue;
+                };
+                if let Some(key) = targets.get(&id) {
+                    keys.insert(*key);
+                }
+            }
+            if keys != self.play.hidden {
+                self.play.hidden = keys;
+                self.selected.retain(|key| !self.play.hidden.contains(key));
+                // Visibility is part of the render scene; rebuild once when
+                // the remote state actually changes.
+                self.touch();
+            }
         }
         let Some(units) = snapshot.get("units").and_then(Value::as_array) else {
             return;
@@ -168,6 +198,19 @@ impl EditorState {
             .iter()
             .filter_map(|object| match &object.kind {
                 EditorKind::Marker(_) => object.server_id.map(|id| (id, object.key)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Markers and particles share one lookup for visibility snapshots.
+    fn object_keys_by_server_id(&self) -> BTreeMap<Uuid, ObjectKey> {
+        self.objects
+            .iter()
+            .filter_map(|object| match &object.kind {
+                EditorKind::Marker(_) | EditorKind::Particle(_) => {
+                    object.server_id.map(|id| (id, object.key))
+                }
                 _ => None,
             })
             .collect()
@@ -284,5 +327,29 @@ mod tests {
         let animation = &receiver.play.animations[0];
         assert_eq!(animation.state, PlaybackState::Playing);
         assert!((animation.progress_m - 12.5).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn play_snapshot_round_trips_hidden_targets() {
+        let marker_id = Uuid::new_v4();
+        let start = GeoPoint::new(115.225, -8.648);
+
+        let mut source = EditorState::new();
+        source.play.active = true;
+        source.objects.push(marker(marker_id, start));
+        source.play.hidden.insert(0);
+
+        let snapshot = source.play_snapshot();
+
+        let mut receiver = EditorState::new();
+        receiver.play.active = true;
+        receiver.objects.push(marker(marker_id, start));
+        receiver.apply_play_snapshot(&snapshot);
+        assert!(receiver.play.hidden.contains(&0));
+
+        // A later snapshot that reveals the marker clears the flag again.
+        source.play.hidden.clear();
+        receiver.apply_play_snapshot(&source.play_snapshot());
+        assert!(receiver.play.hidden.is_empty());
     }
 }
