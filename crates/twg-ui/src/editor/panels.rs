@@ -2611,14 +2611,12 @@ fn draw_scenario_inspector(
     if map_changed {
         editor.touch();
     }
-    ui.horizontal(|ui| {
-        ui.label("Grid m");
-        ui.add(
-            egui::DragValue::new(&mut editor.grid_spacing)
-                .speed(0.1)
-                .range(0.1..=50.0),
-        );
-    });
+    let mut grid_spacing = f64::from(editor.grid_spacing);
+    let grid = drag_row_range(ui, "Grid m", &mut grid_spacing, 0.1..=50.0, 0.1, 1, " m");
+    if grid.changed() {
+        editor.grid_spacing = grid_spacing as f32;
+        editor.touch();
+    }
     ui.horizontal(|ui| {
         ui.label("Langit");
         let mut sky = editor.sky;
@@ -3418,10 +3416,18 @@ fn draw_route_marker_selector(
             ui.horizontal(|ui| {
                 ui.label("Kolom grid");
                 let mut columns = animation.columns.clamp(1, 64);
-                if ui
+                let mut columns_changed = ui
                     .add(egui::DragValue::new(&mut columns).range(1..=64))
-                    .changed()
-                {
+                    .changed();
+                if spinner_button(ui, true, "+1").clicked() {
+                    columns = (columns + 1).min(64);
+                    columns_changed = true;
+                }
+                if spinner_button(ui, false, "-1").clicked() {
+                    columns = columns.saturating_sub(1).max(1);
+                    columns_changed = true;
+                }
+                if columns_changed {
                     animation.columns = columns;
                     changed = true;
                 }
@@ -3432,25 +3438,23 @@ fn draw_route_marker_selector(
                 )));
             });
         }
-        ui.horizontal(|ui| {
-            ui.label("Jarak antar marker");
-            let mut spacing = animation
-                .spacing
-                .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING);
-            if ui
-                .add(
-                    egui::DragValue::new(&mut spacing)
-                        .range(MIN_ROUTE_SPACING..=MAX_ROUTE_SPACING)
-                        .speed(0.1)
-                        .suffix(" m"),
-                )
-                .on_hover_text("Jarak antar slot formasi saat rute berjalan.")
-                .changed()
-            {
-                animation.spacing = spacing;
-                changed = true;
-            }
-        });
+        let mut spacing = animation
+            .spacing
+            .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING);
+        let response = drag_row_range(
+            ui,
+            "Jarak antar marker",
+            &mut spacing,
+            MIN_ROUTE_SPACING..=MAX_ROUTE_SPACING,
+            0.1,
+            1,
+            " m",
+        )
+        .on_hover_text("Jarak antar slot formasi saat rute berjalan.");
+        if response.changed() {
+            animation.spacing = spacing;
+            changed = true;
+        }
         ui.label(theme::muted(
             "Jarak antar marker menentukan lebar dan panjang formasi.",
         ));
@@ -3822,23 +3826,23 @@ fn draw_group_inspector(
             *undo = true;
         }
         if group.advance == SequenceAdvance::Delay {
-            ui.horizontal(|ui| {
-                ui.label("Jeda");
-                let mut delay = group.delay_seconds.clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY);
-                let response = ui.add(
-                    egui::DragValue::new(&mut delay)
-                        .range(MIN_GROUP_DELAY..=MAX_GROUP_DELAY)
-                        .speed(0.1)
-                        .suffix(" s"),
-                );
-                if response.gained_focus() || response.drag_started() {
-                    *undo = true;
-                }
-                if response.changed() {
-                    group.delay_seconds = delay;
-                    changed = true;
-                }
-            });
+            let mut delay = group.delay_seconds.clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY);
+            let response = drag_row_range(
+                ui,
+                "Jeda",
+                &mut delay,
+                MIN_GROUP_DELAY..=MAX_GROUP_DELAY,
+                0.1,
+                1,
+                " s",
+            );
+            if response.gained_focus() || response.drag_started() {
+                *undo = true;
+            }
+            if response.changed() {
+                group.delay_seconds = delay;
+                changed = true;
+            }
             ui.label(theme::muted(
                 "Contoh: jeda 2 detik → anggota 1 jalan, 2 detik kemudian anggota 2 jalan \
                  meski anggota 1 belum selesai.",
@@ -3992,6 +3996,46 @@ fn drag_row(
         }
         if spinner_button(ui, false, format!("-{step}{suffix}")).clicked() {
             *value -= step;
+            changed = true;
+        }
+        if changed {
+            response.mark_changed();
+        }
+        response
+    })
+    .inner
+}
+
+/// Numeric row with direct input plus up/down spinner buttons. Spinner clicks
+/// stay inside `range`, matching the DragValue bounds.
+fn drag_row_range(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    step: f64,
+    decimals: usize,
+    suffix: &str,
+) -> egui::Response {
+    let min = *range.start();
+    let max = *range.end();
+    ui.horizontal(|ui| {
+        ui.label(label);
+        *value = (*value).clamp(min, max);
+        let mut response = ui.add(
+            egui::DragValue::new(value)
+                .speed(step)
+                .range(range)
+                .max_decimals(decimals)
+                .suffix(suffix),
+        );
+        let mut changed = response.changed();
+        if spinner_button(ui, true, format!("+{step}{suffix}")).clicked() {
+            *value = (*value + step).clamp(min, max);
+            changed = true;
+        }
+        if spinner_button(ui, false, format!("-{step}{suffix}")).clicked() {
+            *value = (*value - step).clamp(min, max);
             changed = true;
         }
         if changed {
