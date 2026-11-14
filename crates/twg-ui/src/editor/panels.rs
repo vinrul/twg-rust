@@ -4011,13 +4011,19 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
     let selected_stroke = egui::Stroke::new(2.4, theme::color(DARK.warning));
     let hover_stroke = egui::Stroke::new(1.4, theme::color(DARK.foreground));
     // A selected route animation rings the marker it drives, so the target is
-    // easy to spot on a map with many markers.
+    // easy to spot on a map with many markers. Spawn/hide targets use a red
+    // dashed ring so the two kinds of animation stay distinguishable.
     let route_markers = editor.selected_route_markers();
+    let visibility_targets = editor.selected_visibility_targets();
     let route_stroke = egui::Stroke::new(2.0, theme::color(DARK.success));
+    let visibility_stroke = egui::Stroke::new(2.0, theme::color(DARK.destructive));
     for (key, _kind, points, selected) in &editor.projected {
         let is_route_marker = route_markers.contains(key);
+        let is_visibility_target = visibility_targets.contains(key);
         let stroke = if *selected {
             selected_stroke
+        } else if is_visibility_target {
+            visibility_stroke
         } else if is_route_marker {
             route_stroke
         } else if editor.hover_key == Some(*key) {
@@ -4028,7 +4034,7 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
         match _kind {
             ObjectType::Marker | ObjectType::Text => {
                 if let Some(center) = points.first() {
-                    if is_route_marker && !*selected {
+                    if (is_visibility_target || is_route_marker) && !*selected {
                         dashed_ring(painter, *center, 19.0, stroke);
                     } else {
                         painter.circle_stroke(*center, 15.0, stroke);
@@ -4037,8 +4043,13 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
             }
             // Particle effects are their own visual; a crosshair keeps the
             // selection feedback without drawing another circle over them.
+            // Spawn/hide particle targets get the same dashed ring as markers.
             ObjectType::Particle => {
                 if let Some(center) = points.first() {
+                    if is_visibility_target && !*selected {
+                        dashed_ring(painter, *center, 19.0, stroke);
+                        continue;
+                    }
                     let gap = 4.0;
                     let tick = 7.0;
                     for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {

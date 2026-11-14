@@ -1891,6 +1891,44 @@ impl EditorState {
         markers
     }
 
+    /// Markers and particles targeted by the selected spawn/hide animations.
+    /// The editor overlay rings them in red dashed strokes while the animation
+    /// is selected, including while new targets are being picked on the map.
+    pub fn selected_visibility_targets(&self) -> BTreeSet<ObjectKey> {
+        let mut targets = BTreeSet::new();
+        for key in &self.selected {
+            let Some(object) = self.object(*key) else {
+                continue;
+            };
+            if !object.visible {
+                continue;
+            }
+            let EditorKind::Line(line) = &object.kind else {
+                continue;
+            };
+            let Some(visibility) = &line.visibility else {
+                continue;
+            };
+            for candidate in &self.objects {
+                let Some(id) = candidate.server_id else {
+                    continue;
+                };
+                if !candidate.visible {
+                    continue;
+                }
+                let targeted = match &candidate.kind {
+                    EditorKind::Marker(_) => visibility.marker_ids.contains(&id),
+                    EditorKind::Particle(_) => visibility.particle_ids.contains(&id),
+                    _ => false,
+                };
+                if targeted {
+                    targets.insert(candidate.key);
+                }
+            }
+        }
+        targets
+    }
+
     pub fn select_only(&mut self, key: ObjectKey) {
         if !self.selected.contains(&key) {
             self.pick_route_marker = None;
@@ -5184,6 +5222,46 @@ mod tests {
         // itself does not highlight routes in return.
         editor.select_only(marker_key);
         assert!(editor.selected_route_markers().is_empty());
+    }
+
+    #[test]
+    fn selecting_a_spawn_animation_highlights_its_markers_and_particles() {
+        let mut editor = editor();
+        let point = GeoPoint::new(115.225, -8.648);
+        let marker_key = add_static_marker(
+            &mut editor,
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            point,
+            AssetMoveMode::Free,
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+
+        editor.add_particle(GeoPoint::from_local_offset(point, 5.0, 0.0).unwrap());
+        let particle_key = *editor.selected.iter().next().expect("particle selected");
+        let particle_id = Uuid::new_v4();
+        editor.object_mut(particle_key).expect("particle").server_id = Some(particle_id);
+
+        // The selected particle becomes the first target. Add the marker from
+        // an explicit assignment, like the map picker does.
+        editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+        let animation_key = *editor.selected.iter().next().expect("spawn selected");
+        editor.assign_visibility_target(animation_key, marker_key);
+
+        assert_eq!(
+            editor
+                .selected_visibility_targets()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![marker_key, particle_key]
+        );
+
+        // Selecting the animation is what enables the highlight; selecting a
+        // marker alone clears it.
+        editor.select_only(marker_key);
+        assert!(editor.selected_visibility_targets().is_empty());
+        editor.select_only(animation_key);
+        assert_eq!(editor.selected_visibility_targets().len(), 2);
     }
 
     #[test]
