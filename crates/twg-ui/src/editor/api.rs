@@ -1569,6 +1569,11 @@ fn line_keterangan(line: &LineObject) -> String {
                 "spacing": animation
                     .spacing
                     .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
+                "patwal_gaps": animation
+                    .patwal_gaps
+                    .iter()
+                    .map(|gap| gap.clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING))
+                    .collect::<Vec<_>>(),
                 "repeat": animation.repeat,
                 "order": animation.order,
             }
@@ -1754,6 +1759,21 @@ fn parse_route_animation(raw: &str) -> Option<RouteAnimation> {
             .and_then(Value::as_f64)
             .unwrap_or(PLAY_FORMATION_SPACING)
             .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
+        patwal_gaps: animation
+            .get("patwal_gaps")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_f64()
+                            .unwrap_or(super::model::DEFAULT_PATWAL_GAP)
+                            .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         repeat: animation
             .get("repeat")
             .and_then(Value::as_bool)
@@ -1763,6 +1783,12 @@ fn parse_route_animation(raw: &str) -> Option<RouteAnimation> {
             .and_then(Value::as_i64)
             .unwrap_or(0)
             .clamp(0, i32::MAX as i64) as i32,
+    })
+    .map(|mut route| {
+        if route.kind == RouteAnimationKind::Patwal {
+            route.normalize_patwal_gaps();
+        }
+        route
     })
 }
 
@@ -2238,6 +2264,38 @@ mod tests {
         assert_eq!(legacy.kind, RouteAnimationKind::Single);
         assert!(legacy.marker_ids.is_empty());
         assert!((legacy.spacing - PLAY_FORMATION_SPACING).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn patwal_metadata_round_trips_ordered_gaps() {
+        let ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        let mut line = LineObject::new(vec![[115.2, -8.6], [115.21, -8.61]]);
+        line.animation = Some(RouteAnimation {
+            kind: RouteAnimationKind::Patwal,
+            marker_ids: ids.to_vec(),
+            patwal_gaps: vec![1.0, 2.5],
+            order: 2,
+            ..RouteAnimation::default()
+        });
+
+        let parsed = parse_route_animation(&line_keterangan(&line)).expect("patwal metadata");
+        assert_eq!(parsed.kind, RouteAnimationKind::Patwal);
+        assert_eq!(parsed.marker_ids, ids);
+        assert_eq!(parsed.patwal_gaps.len(), 2);
+        assert!((parsed.patwal_gaps[0] - 1.0).abs() < 1.0e-9);
+        assert!((parsed.patwal_gaps[1] - 2.5).abs() < 1.0e-9);
+
+        // Missing gaps are padded so the runtime always has one per pair.
+        let padded = parse_route_animation(
+            r#"{"animation":{"type":"route","kind":"patwal","marker_ids":[
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
+                "33333333-3333-4333-8333-333333333333"
+            ],"patwal_gaps":[1.5]}}"#,
+        )
+        .expect("padded patwal metadata");
+        assert_eq!(padded.patwal_gaps.len(), 2);
+        assert!((padded.patwal_gaps[1] - super::super::model::DEFAULT_PATWAL_GAP).abs() < 1.0e-9);
     }
 
     #[test]

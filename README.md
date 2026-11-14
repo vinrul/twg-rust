@@ -517,10 +517,10 @@ marker dari katalog lokal tetap memakai warna kategori.
 
 **Animasi rute**
 
-Tab **Buat** punya dua tombol rute: **+ Single marker rute** dan **+ Multiple
-marker rute**. Keduanya menggambar polyline di peta (Enter atau klik ganda
-untuk selesai), lalu Inspector mengatur kecepatan, urutan tampil di tab
-**Animasi**, dan opsi ulang otomatis.
+Tab **Buat** punya tiga tombol rute: **+ Single marker rute**, **+ Multiple
+marker rute**, dan **+ Patwal**. Ketiganya menggambar polyline di peta (Enter
+atau klik ganda untuk selesai), lalu Inspector mengatur kecepatan, urutan
+tampil di tab **Animasi**, dan opsi ulang otomatis.
 
 - **Single marker rute** menggerakkan satu marker sepanjang jalur dengan
   kecepatan tetap. Marker dipilih dari daftar di Inspector atau dengan tombol
@@ -538,9 +538,17 @@ untuk selesai), lalu Inspector mengatur kecepatan, urutan tampil di tab
   saat rute berjalan. Formasi berputar mengikuti arah jalur sehingga bentuknya
   tidak berubah di tikungan; jenis formasi lain (lingkaran, segitiga) bisa
   ditambahkan lewat `RouteFormation`.
+- **Patwal** menggerakkan marker dalam satu barisan mengikuti garis: marker
+  pertama paling depan, lalu marker kedua, ketiga, dan seterusnya di belakang
+  sesuai urutan daftar. Selain **Kecepatan**, setiap pasangan marker punya
+  **Jarak M1 ke M2**, **Jarak M2 ke M3**, dan seterusnya (masing-masing 0,5–50
+  m, default 5 m), jadi jaraknya boleh berbeda-beda — misalnya M1→M2 1 m dan
+  M2→M3 2 m. Marker mengikuti tikungan jalur satu per satu dan memakai arah
+  hadap titik jalurnya masing-masing. Rute baru dianggap selesai setelah marker
+  terakhir juga sampai di ujung jalur.
 - Marker yang sudah terkunci ke rute tidak ikut formasi klik kanan. Memberi
-  perintah gerak ke salah satu marker mem-pause seluruh rute multiple, dan
-  **Resume** mengembalikan semua marker ke formasinya.
+  perintah gerak ke salah satu marker mem-pause seluruh rute multiple/patwal,
+  dan **Resume** mengembalikan semua marker ke formasinya.
 
 **Animasi spawn & hide (visibilitas)**
 

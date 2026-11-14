@@ -123,7 +123,8 @@ impl EditorState {
                     _ => PlaybackState::Stopped,
                 };
                 if let Some(animation) = self.play.animations.get_mut(index) {
-                    animation.progress_m = progress.clamp(0.0, animation.length_m.max(0.0));
+                    animation.progress_m =
+                        progress.clamp(0.0, animation.finish_distance().max(0.0));
                     animation.state = state;
                 }
                 self.apply_route_animation(index);
@@ -295,7 +296,7 @@ mod tests {
     use super::super::model::{
         EditorKind, EditorObject, EditorState, GroupAnimationKind, LineObject, MarkerObject,
         PLAY_FORMATION_SPACING, PlayGroupAnimation, PlayGroupMember, PlayRouteAnimation, PlayUnit,
-        PlaybackState, SequenceAdvance,
+        PlaybackState, RouteAnimationKind, SequenceAdvance,
     };
 
     fn marker(id: Uuid, point: GeoPoint) -> EditorObject {
@@ -355,10 +356,12 @@ mod tests {
         PlayRouteAnimation {
             route_key,
             name: "Rute".to_owned(),
+            kind: RouteAnimationKind::Single,
             marker_keys: Vec::new(),
             formation: super::super::model::RouteFormation::Grid,
             columns: 4,
             spacing: PLAY_FORMATION_SPACING,
+            patwal_gaps: Vec::new(),
             points: vec![
                 GeoPoint::new(115.225, -8.648),
                 GeoPoint::new(115.226, -8.648),

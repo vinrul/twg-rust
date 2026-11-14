@@ -303,11 +303,20 @@ fn draw_animation_play_panel(
                             ui.separator();
                             continue;
                         }
-                        ui.label(theme::muted(&format!(
-                            "{} marker · formasi {}",
-                            animation.marker_keys.len(),
-                            animation.formation.label()
-                        )));
+                        let route_info = if animation.kind == RouteAnimationKind::Patwal {
+                            format!(
+                                "{} marker · patwal · total jarak {:.1} m",
+                                animation.marker_keys.len(),
+                                animation.patwal_gaps.iter().sum::<f64>()
+                            )
+                        } else {
+                            format!(
+                                "{} marker · formasi {}",
+                                animation.marker_keys.len(),
+                                animation.formation.label()
+                            )
+                        };
+                        ui.label(theme::muted(&route_info));
                         let running =
                             animation.state == PlaybackState::Playing && !animation.is_finished();
                         let resume = animation.state == PlaybackState::Paused;
@@ -1322,7 +1331,8 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         .show(ui, |ui| {
             ui.label(theme::muted(
                 "Single marker: satu marker mengikuti garis. Multiple marker: banyak marker \
-                 bergerak bersama dalam formasi (grid).",
+                 bergerak bersama dalam formasi (grid). Patwal: marker berbaris satu per satu \
+                 dengan jarak yang bisa diatur per pasangan.",
             ));
             ui.add_space(4.0);
             if ui
@@ -1346,6 +1356,16 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                 .clicked()
             {
                 editor.begin_route_draw(RouteAnimationKind::Multiple);
+            }
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Patwal").min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Marker berbaris mengikuti rute seperti patroli pengawalan")
+                .clicked()
+            {
+                editor.begin_route_draw(RouteAnimationKind::Patwal);
             }
         });
 
@@ -2907,7 +2927,11 @@ fn draw_object_inspector(
                 ));
             } else {
                 if let Some(animation) = &mut line.animation {
-                    ui.label(theme::title("Animasi rute"));
+                    ui.label(theme::title(match animation.kind {
+                        RouteAnimationKind::Single => "Animasi rute",
+                        RouteAnimationKind::Multiple => "Rute multiple",
+                        RouteAnimationKind::Patwal => "Rute patwal",
+                    }));
                     let speed =
                         drag_row(ui, "Kecepatan", &mut animation.speed, 0.1, 0.5, 1, " m/s");
                     undo |= speed.gained_focus() || speed.drag_started();
@@ -3393,9 +3417,13 @@ fn draw_route_marker_selector(
     animation: &mut RouteAnimation,
 ) -> bool {
     let mut changed = false;
-    let multiple = animation.kind == RouteAnimationKind::Multiple;
+    let multiple = matches!(
+        animation.kind,
+        RouteAnimationKind::Multiple | RouteAnimationKind::Patwal
+    );
+    let patwal = animation.kind == RouteAnimationKind::Patwal;
 
-    if multiple {
+    if animation.kind == RouteAnimationKind::Multiple {
         ui.label(theme::title("Formasi"));
         let mut formation = animation.formation;
         let options = RouteFormation::ALL
@@ -3458,18 +3486,32 @@ fn draw_route_marker_selector(
         ui.label(theme::muted(
             "Jarak antar marker menentukan lebar dan panjang formasi.",
         ));
-        ui.label("Marker yang bergerak");
+    }
+    if patwal {
+        ui.label(theme::title("Barisan patwal"));
+        ui.label(theme::muted(
+            "Marker pertama paling depan; marker berikutnya mengikuti di belakang \
+             sesuai jarak masing-masing.",
+        ));
+    }
+    if multiple {
+        ui.label(if patwal {
+            "Urutan marker (depan ke belakang)"
+        } else {
+            "Marker yang bergerak"
+        });
         if animation.marker_ids.is_empty() {
             ui.label(theme::muted(
                 "Belum ada marker. Tambahkan dari daftar atau klik marker di peta.",
             ));
         }
         let mut remove = None;
-        for (index, id) in animation.marker_ids.iter().enumerate() {
+        for index in 0..animation.marker_ids.len() {
+            let id = animation.marker_ids[index];
             let marker = editor
                 .objects
                 .iter()
-                .find(|object| object.server_id == Some(*id));
+                .find(|object| object.server_id == Some(id));
             let name = marker
                 .map(|object| object.name.clone())
                 .unwrap_or_else(|| "Marker tidak ditemukan".to_owned());
@@ -3488,9 +3530,26 @@ fn draw_route_marker_selector(
                     remove = Some(index);
                 }
             });
+            if patwal && index + 1 < animation.marker_ids.len() {
+                let mut gap = animation.patwal_gap(index);
+                let response = drag_row_range(
+                    ui,
+                    &format!("Jarak M{} ke M{}", index + 1, index + 2),
+                    &mut gap,
+                    MIN_ROUTE_SPACING..=MAX_ROUTE_SPACING,
+                    0.5,
+                    1,
+                    " m",
+                );
+                if response.changed() {
+                    animation.normalize_patwal_gaps();
+                    animation.patwal_gaps[index] = gap;
+                    changed = true;
+                }
+            }
         }
         if let Some(index) = remove {
-            animation.marker_ids.remove(index);
+            animation.remove_marker(index);
             changed = true;
         }
         ui.add_space(4.0);
@@ -3528,6 +3587,9 @@ fn draw_route_marker_selector(
             && !animation.marker_ids.contains(&id)
         {
             animation.marker_ids.push(id);
+            if patwal {
+                animation.normalize_patwal_gaps();
+            }
             changed = true;
         }
     } else if animation.marker_id != picked {

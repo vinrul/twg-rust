@@ -204,6 +204,8 @@ pub(crate) const PLAY_FORMATION_SPACING: f64 = 2.6;
 /// Bounds for the authored formation spacing, in metres.
 pub(crate) const MIN_ROUTE_SPACING: f64 = 0.5;
 pub(crate) const MAX_ROUTE_SPACING: f64 = 50.0;
+/// Default distance between consecutive markers in a patwal column.
+pub(crate) const DEFAULT_PATWAL_GAP: f64 = 5.0;
 /// Default gap between members of a delayed sequence, in seconds.
 pub(crate) const DEFAULT_GROUP_DELAY: f64 = 2.0;
 /// Bounds for the authored sequence delay, in seconds.
@@ -258,6 +260,7 @@ pub struct PlayLimitedUnit {
 pub struct PlayRouteAnimation {
     pub route_key: ObjectKey,
     pub name: String,
+    pub kind: RouteAnimationKind,
     /// Marker objects that follow the route, in formation-slot order.
     pub marker_keys: Vec<ObjectKey>,
     pub formation: RouteFormation,
@@ -265,6 +268,9 @@ pub struct PlayRouteAnimation {
     pub columns: usize,
     /// Distance in metres between formation slots.
     pub spacing: f64,
+    /// Patwal only: gap between marker `i` and `i + 1`, aligned with
+    /// `marker_keys`.
+    pub patwal_gaps: Vec<f64>,
     pub points: Vec<GeoPoint>,
     pub altitudes: Vec<f64>,
     /// Metres per second along the polyline.
@@ -278,8 +284,20 @@ pub struct PlayRouteAnimation {
 }
 
 impl PlayRouteAnimation {
+    /// Distance the route leader must travel before every patwal member has
+    /// reached the end of the polyline. For other kinds this is the polyline
+    /// length.
+    pub fn finish_distance(&self) -> f64 {
+        if self.kind == RouteAnimationKind::Patwal {
+            self.length_m + self.patwal_gaps.iter().sum::<f64>()
+        } else {
+            self.length_m
+        }
+    }
+
     pub fn is_finished(&self) -> bool {
-        self.length_m > 0.0 && self.progress_m >= self.length_m - 1.0e-6
+        let finish = self.finish_distance();
+        finish > 0.0 && self.progress_m >= finish - 1.0e-6
     }
 }
 
@@ -578,13 +596,30 @@ pub enum RouteAnimationKind {
     Single,
     /// Multiple markers follow the route in a formation.
     Multiple,
+    /// Markers follow the route in a single-file column (patwal). Each gap
+    /// between consecutive markers can be different.
+    Patwal,
 }
 
 impl RouteAnimationKind {
+    pub const ALL: [Self; 3] = [Self::Single, Self::Multiple, Self::Patwal];
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Single => "Single marker rute",
             Self::Multiple => "Multiple marker rute",
+            Self::Patwal => "Patwal",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Single => "Satu marker mengikuti garis rute.",
+            Self::Multiple => "Banyak marker bergerak bersama dalam formasi grid.",
+            Self::Patwal => {
+                "Marker berbaris satu per satu mengikuti garis. Jarak antar marker bisa \
+                 diatur per pasangan."
+            }
         }
     }
 
@@ -592,12 +627,14 @@ impl RouteAnimationKind {
         match self {
             Self::Single => "single",
             Self::Multiple => "multiple",
+            Self::Patwal => "patwal",
         }
     }
 
     pub fn from_key(value: &str) -> Self {
         match value {
             "multiple" => Self::Multiple,
+            "patwal" => Self::Patwal,
             _ => Self::Single,
         }
     }
@@ -650,6 +687,9 @@ pub struct RouteAnimation {
     pub columns: usize,
     /// Distance in metres between formation slots while the route runs.
     pub spacing: f64,
+    /// Patwal only: distance between marker `i` and marker `i + 1`, in order.
+    /// The vector is kept at `marker_ids.len() - 1` entries.
+    pub patwal_gaps: Vec<f64>,
     /// Restart from the first point after reaching the end.
     pub repeat: bool,
     /// Position in the Play animation order, persisted in the route metadata.
@@ -671,6 +711,46 @@ impl RouteAnimation {
         }
         ids
     }
+
+    /// Patwal gap between marker `index` and `index + 1`.
+    pub fn patwal_gap(&self, index: usize) -> f64 {
+        self.patwal_gaps
+            .get(index)
+            .copied()
+            .unwrap_or(DEFAULT_PATWAL_GAP)
+            .clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING)
+    }
+
+    /// Sizes `patwal_gaps` to the current marker list, padding new gaps with
+    /// the default and dropping gaps for removed markers.
+    pub fn normalize_patwal_gaps(&mut self) {
+        let needed = self.marker_ids.len().saturating_sub(1);
+        self.patwal_gaps.truncate(needed);
+        while self.patwal_gaps.len() < needed {
+            self.patwal_gaps.push(DEFAULT_PATWAL_GAP);
+        }
+        for gap in &mut self.patwal_gaps {
+            *gap = gap.clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING);
+        }
+    }
+
+    /// Removes an ordered marker and keeps the gap list consistent. For a
+    /// middle marker the gap after it is dropped, so the remaining markers keep
+    /// the gap that led to the removed one.
+    pub fn remove_marker(&mut self, index: usize) {
+        if index >= self.marker_ids.len() {
+            return;
+        }
+        self.marker_ids.remove(index);
+        if self.kind == RouteAnimationKind::Patwal {
+            if self.marker_ids.is_empty() {
+                self.patwal_gaps.clear();
+            } else if index < self.patwal_gaps.len() {
+                self.patwal_gaps.remove(index);
+            }
+            self.normalize_patwal_gaps();
+        }
+    }
 }
 
 impl Default for RouteAnimation {
@@ -683,6 +763,7 @@ impl Default for RouteAnimation {
             formation: RouteFormation::Grid,
             columns: 4,
             spacing: PLAY_FORMATION_SPACING,
+            patwal_gaps: Vec::new(),
             repeat: false,
             order: 0,
         }
@@ -2478,26 +2559,61 @@ impl EditorState {
             if points.len() < 2 {
                 continue;
             }
-            let marker_keys = route
-                .all_marker_ids()
-                .into_iter()
-                .filter_map(|id| {
-                    self.objects.iter().find_map(|candidate| {
+            let (marker_keys, patwal_gaps) = if route.kind == RouteAnimationKind::Patwal {
+                // Resolve markers in authored order and keep one gap per
+                // consecutive pair. Gaps of missing markers are folded into the
+                // next resolved gap, so the column keeps its total length.
+                let mut keys = Vec::new();
+                let mut gaps = Vec::new();
+                let mut pending = 0.0;
+                for (index, id) in route.marker_ids.iter().enumerate() {
+                    if index > 0 {
+                        pending += route.patwal_gap(index - 1);
+                    }
+                    let resolved = self.objects.iter().find_map(|candidate| {
                         let EditorKind::Marker(marker) = &candidate.kind else {
                             return None;
                         };
-                        (candidate.server_id == Some(id) && self.marker_is_animatable(marker))
+                        (candidate.server_id == Some(*id) && self.marker_is_animatable(marker))
                             .then_some(candidate.key)
-                    })
-                })
-                .collect::<Vec<_>>();
+                    });
+                    if let Some(key) = resolved {
+                        if !keys.is_empty() {
+                            gaps.push(pending);
+                        }
+                        keys.push(key);
+                        pending = 0.0;
+                    }
+                }
+                (keys, gaps)
+            } else {
+                (
+                    route
+                        .all_marker_ids()
+                        .into_iter()
+                        .filter_map(|id| {
+                            self.objects.iter().find_map(|candidate| {
+                                let EditorKind::Marker(marker) = &candidate.kind else {
+                                    return None;
+                                };
+                                (candidate.server_id == Some(id)
+                                    && self.marker_is_animatable(marker))
+                                .then_some(candidate.key)
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    Vec::new(),
+                )
+            };
             animations.push(PlayRouteAnimation {
                 route_key: object.key,
                 name: object.name.clone(),
+                kind: route.kind,
                 marker_keys,
                 formation: route.formation,
                 columns: route.columns.max(1),
                 spacing: route.spacing.clamp(MIN_ROUTE_SPACING, MAX_ROUTE_SPACING),
+                patwal_gaps,
                 points: points.clone(),
                 altitudes: line.altitudes.clone(),
                 speed: route.speed.clamp(0.1, 100.0),
@@ -2624,11 +2740,12 @@ impl EditorState {
             if !animation.repeat && animation.is_finished() {
                 continue;
             }
+            let finish = animation.finish_distance();
             animation.progress_m += animation.speed * dt;
             if animation.repeat {
-                animation.progress_m %= animation.length_m;
+                animation.progress_m %= finish;
             } else {
-                animation.progress_m = animation.progress_m.min(animation.length_m);
+                animation.progress_m = animation.progress_m.min(finish);
                 released |= animation.is_finished();
             }
             updated.push(index);
@@ -2652,7 +2769,7 @@ impl EditorState {
         if animation.length_m <= 0.0 {
             return;
         }
-        if animation.progress_m >= animation.length_m {
+        if animation.progress_m >= animation.finish_distance() {
             animation.progress_m = 0.0;
         }
         animation.state = PlaybackState::Playing;
@@ -2897,6 +3014,43 @@ impl EditorState {
             return;
         };
         if animation.marker_keys.is_empty() {
+            return;
+        }
+        if animation.kind == RouteAnimationKind::Patwal {
+            // Single-file column: the leader sits at `progress_m`, and each
+            // following marker is its own gap further back along the polyline.
+            let mut behind = 0.0;
+            for (index, marker_key) in animation.marker_keys.iter().enumerate() {
+                if index > 0 {
+                    behind += animation
+                        .patwal_gaps
+                        .get(index - 1)
+                        .copied()
+                        .unwrap_or(DEFAULT_PATWAL_GAP);
+                }
+                let distance = (animation.progress_m - behind).max(0.0);
+                let Some((position, altitude, heading)) =
+                    route_sample(&animation.points, &animation.altitudes, distance)
+                else {
+                    continue;
+                };
+                if let Some(unit) = self.play.units.get_mut(marker_key) {
+                    unit.position = position;
+                    unit.altitude = altitude as f32;
+                    unit.heading_deg = heading;
+                    unit.target = None;
+                }
+                if let Some(unit) = self.play.limited.get_mut(marker_key) {
+                    unit.position = position;
+                    unit.altitude = altitude as f32;
+                    unit.heading_deg = heading;
+                }
+                for obstacle in &mut self.play.obstacles {
+                    if obstacle.key == Some(*marker_key) {
+                        obstacle.center = position;
+                    }
+                }
+            }
             return;
         }
         let Some((base, altitude, heading)) = route_sample(
@@ -3291,6 +3445,10 @@ impl EditorState {
             RouteAnimationKind::Multiple => {
                 "Rute multiple dibuat. Tambahkan marker dan atur formasi grid di Inspector."
             }
+            RouteAnimationKind::Patwal => {
+                "Patwal dibuat. Tambahkan marker berurutan dan atur jarak antar marker di \
+                 Inspector."
+            }
         });
     }
 
@@ -3627,6 +3785,7 @@ impl EditorState {
     pub fn assign_route_marker(&mut self, route_key: ObjectKey, marker_id: Uuid) {
         let mut assigned = false;
         let mut multiple = false;
+        let mut patwal = false;
         for object in &mut self.objects {
             if object.key != route_key {
                 continue;
@@ -3643,8 +3802,18 @@ impl EditorState {
                             animation.marker_ids.push(marker_id);
                         }
                     }
+                    RouteAnimationKind::Patwal => {
+                        if !animation.marker_ids.contains(&marker_id) {
+                            animation.marker_ids.push(marker_id);
+                        }
+                        animation.normalize_patwal_gaps();
+                    }
                 }
-                multiple = animation.kind == RouteAnimationKind::Multiple;
+                multiple = matches!(
+                    animation.kind,
+                    RouteAnimationKind::Multiple | RouteAnimationKind::Patwal
+                );
+                patwal = animation.kind == RouteAnimationKind::Patwal;
                 object.dirty = true;
                 assigned = true;
             }
@@ -3656,7 +3825,9 @@ impl EditorState {
             }
             self.dirty = true;
             self.touch();
-            self.log(if multiple {
+            self.log(if patwal {
+                "Marker patwal ditambahkan. Atur jarak antar marker di Inspector."
+            } else if multiple {
                 "Marker ditambahkan ke rute multiple. Klik marker lain atau Esc untuk selesai."
             } else {
                 "Marker rute dipilih dari peta."
@@ -4567,8 +4738,8 @@ fn group_member_done(
         PlaybackState::Playing => {
             route.is_finished()
                 || (route.repeat
-                    && route.length_m > 0.0
-                    && step_elapsed + 1.0e-9 >= route.length_m / route.speed.max(0.1))
+                    && route.finish_distance() > 0.0
+                    && step_elapsed + 1.0e-9 >= route.finish_distance() / route.speed.max(0.1))
         }
     }
 }
@@ -5443,6 +5614,102 @@ mod tests {
             });
         }
         keys
+    }
+
+    /// Builds a patwal route with one animated marker per gap entry plus a
+    /// leading marker, all starting at the same point.
+    fn add_patwal_route(
+        editor: &mut EditorState,
+        base: GeoPoint,
+        length: f64,
+        speed: f64,
+        gaps: &[f64],
+    ) -> (ObjectKey, Vec<ObjectKey>) {
+        let end = GeoPoint::from_local_offset(base, length, 0.0).expect("east");
+        let count = gaps.len() + 1;
+        let mut keys = Vec::new();
+        let mut ids = Vec::new();
+        for _ in 0..count {
+            let key = add_animated_marker(editor, &Uuid::new_v4().to_string(), base);
+            let id = Uuid::new_v4();
+            editor.object_mut(key).expect("marker").server_id = Some(id);
+            keys.push(key);
+            ids.push(id);
+        }
+        editor.add_route_kind(vec![base, end], RouteAnimationKind::Patwal);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        if let Some(object) = editor.object_mut(route_key)
+            && let EditorKind::Line(line) = &mut object.kind
+            && let Some(animation) = &mut line.animation
+        {
+            animation.speed = speed;
+            animation.marker_ids = ids;
+            animation.patwal_gaps = gaps.to_vec();
+        }
+        (route_key, keys)
+    }
+
+    #[test]
+    fn patwal_keeps_per_gap_distances_behind_the_leader() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let (_, keys) = add_patwal_route(&mut editor, base, 100.0, 50.0, &[1.0, 2.0]);
+
+        editor.start_play();
+        editor.play_route_animation(0);
+        editor.play_tick(0.1);
+
+        let distances = keys
+            .iter()
+            .map(|key| {
+                editor.play.units[key]
+                    .position
+                    .local_offset(base)
+                    .expect("offset")
+                    .east_meters
+            })
+            .collect::<Vec<_>>();
+        // Leader at 5 m, then 1 m and 2 m behind.
+        assert!((distances[0] - 5.0).abs() < 0.2, "{distances:?}");
+        assert!((distances[1] - 4.0).abs() < 0.2, "{distances:?}");
+        assert!((distances[2] - 2.0).abs() < 0.2, "{distances:?}");
+    }
+
+    #[test]
+    fn patwal_finishes_after_the_last_marker_reaches_the_end() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let (_, keys) = add_patwal_route(&mut editor, base, 10.0, 10.0, &[1.0, 2.0]);
+
+        editor.start_play();
+        editor.play_route_animation(0);
+        for _ in 0..12 {
+            editor.play_tick(0.1);
+        }
+        assert!(!editor.play.animations[0].is_finished());
+
+        editor.play_tick(0.1);
+        assert!(editor.play.animations[0].is_finished());
+        let last = editor.play.units[&keys[2]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!((last.east_meters - 10.0).abs() < 0.3);
+    }
+
+    #[test]
+    fn patwal_gaps_follow_marker_removal() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let (route_key, _) = add_patwal_route(&mut editor, base, 100.0, 5.0, &[1.0, 2.0]);
+
+        let EditorKind::Line(line) = &mut editor.object_mut(route_key).expect("route").kind else {
+            panic!("expected line");
+        };
+        let animation = line.animation.as_mut().expect("route animation");
+        animation.remove_marker(1);
+        assert_eq!(animation.marker_ids.len(), 2);
+        assert_eq!(animation.patwal_gaps, vec![1.0]);
     }
 
     #[test]
