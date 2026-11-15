@@ -417,7 +417,73 @@ fn asset_sections(assets: &[Asset], groups: &[AssetGroup]) -> Vec<AssetTreeSecti
             assets: uncategorized,
         });
     }
+    // The reference list is alphabetical, with the uncategorized bucket last.
+    sections.sort_by(|left, right| {
+        left.id
+            .is_none()
+            .cmp(&right.id.is_none())
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    for section in &mut sections {
+        section
+            .assets
+            .sort_by_key(|asset| asset.name.to_lowercase());
+    }
     sections
+}
+
+fn category_letter(category: AssetCategory) -> &'static str {
+    match category {
+        AssetCategory::Model => "M",
+        AssetCategory::Texture => "T",
+        AssetCategory::Icon => "I",
+    }
+}
+
+/// Compact type prefix shown before the category name, e.g. `M` for models or
+/// `M/T` when a category contains several asset kinds.
+fn section_type_prefix(section: &AssetTreeSection) -> String {
+    let mut letters = Vec::new();
+    for asset in &section.assets {
+        let letter = category_letter(asset.category);
+        if !letters.contains(&letter) {
+            letters.push(letter);
+        }
+    }
+    letters.join("/")
+}
+
+fn section_header(section: &AssetTreeSection) -> egui::text::LayoutJob {
+    let font = egui::FontId::proportional(FONT_SM);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &format!("{} ", section_type_prefix(section)),
+        0.0,
+        egui::TextFormat {
+            font_id: font.clone(),
+            color: color(DARK.muted_foreground),
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!("{} ", section.name),
+        0.0,
+        egui::TextFormat {
+            font_id: font.clone(),
+            color: color(DARK.foreground),
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!("({})", section.assets.len()),
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            color: color(DARK.muted_foreground),
+            ..Default::default()
+        },
+    );
+    job
 }
 
 fn draw_list(ui: &mut egui::Ui, client: &mut ClientUi, assets: &[Asset]) {
@@ -432,64 +498,89 @@ fn draw_list(ui: &mut egui::Ui, client: &mut ClientUi, assets: &[Asset]) {
         ui.label(theme::muted("Tidak ada aset yang cocok dengan filter."));
         return;
     }
+    let mut use_asset = None;
     egui::ScrollArea::vertical()
         .id_salt("asset-list")
         .max_height(ui.available_height().max(0.0))
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for section in &sections {
-                egui::CollapsingHeader::new(
-                    egui::RichText::new(format!("{} ({})", section.name, section.assets.len()))
-                        .size(FONT_SM)
-                        .strong(),
-                )
-                .id_salt(("asset-tree", section.id))
-                .default_open(true)
-                .show(ui, |ui| {
-                    for asset in &section.assets {
-                        draw_asset_card(ui, client, asset);
-                    }
-                });
+                egui::CollapsingHeader::new(section_header(section))
+                    .id_salt(("asset-tree", section.id))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let top = ui.cursor().top();
+                        let left = ui.cursor().left();
+                        for asset in &section.assets {
+                            draw_asset_row(ui, client, asset, &mut use_asset);
+                        }
+                        let bottom = ui.min_rect().bottom();
+                        ui.painter().vline(
+                            left + 3.0,
+                            egui::Rangef::new(top, bottom),
+                            egui::Stroke::new(1.0, color(DARK.border)),
+                        );
+                    });
                 ui.add_space(SPACE_2);
             }
         });
+    if let Some(asset_id) = use_asset {
+        client.select_asset(asset_id);
+        let prefer = client.asset_prefer_variants;
+        client.use_asset(asset_id, prefer);
+    }
 }
 
-fn draw_asset_card(ui: &mut egui::Ui, client: &mut ClientUi, asset: &Asset) {
+fn draw_asset_row(
+    ui: &mut egui::Ui,
+    client: &mut ClientUi,
+    asset: &Asset,
+    use_asset: &mut Option<Uuid>,
+) {
     let selected = client.selected_asset == Some(asset.id);
-    let cached = client.asset_is_cached(asset);
-    // The category is already the tree root, so the card only repeats the
-    // asset type (Model/Texture/Icon) and its offline state.
-    let subtitle = format!(
-        "{}{}",
-        category_label(asset.category),
-        if cached { " · offline" } else { "" }
+    let plus_width = 26.0;
+    let gap = ui.spacing().item_spacing.x;
+    let name_width = (ui.available_width() - plus_width - gap).max(40.0);
+    let row = ui.horizontal(|ui| {
+        let label = asset_name_row(ui, &asset.name, selected, name_width);
+        if label.clicked() {
+            client.select_asset(asset.id);
+        }
+        let plus = ui.add_sized(
+            [plus_width, 20.0],
+            egui::Button::new(egui::RichText::new("+").size(FONT_SM)).frame(false),
+        );
+        if plus.on_hover_text("Gunakan aset ini").clicked() {
+            *use_asset = Some(asset.id);
+        }
+    });
+    let rect = row.response.rect;
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom(),
+        egui::Stroke::new(1.0, color(DARK.border)),
     );
-    let text = egui::RichText::new(format!("{}\n{}", asset.name, subtitle))
-        .size(FONT_SM)
-        .color(if selected {
-            color(DARK.foreground)
-        } else {
-            color(DARK.muted_foreground)
-        });
-    let response = ui.add_sized(
-        [ui.available_width(), 50.0],
-        egui::Button::new(text)
-            .fill(if selected {
-                color(DARK.secondary)
-            } else {
-                color(DARK.card)
-            })
-            .stroke(egui::Stroke::new(
-                1.0,
-                color(if selected { DARK.ring } else { DARK.border }),
-            ))
-            .corner_radius(egui::CornerRadius::same(RADIUS_SM as u8)),
-    );
-    if response.clicked() {
-        client.select_asset(asset.id);
+}
+
+/// Plain tree-row label with a subtle hover/selection background. The bundled
+/// fonts have no icon glyphs, so the row is painted directly.
+fn asset_name_row(ui: &mut egui::Ui, name: &str, selected: bool, width: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 22.0), egui::Sense::click());
+    if selected {
+        ui.painter()
+            .rect_filled(rect, 2.0, color_alpha(DARK.ring, 70));
+    } else if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 2.0, color_alpha(DARK.secondary, 150));
     }
-    ui.add_space(SPACE_2);
+    ui.painter().text(
+        rect.left_center() + egui::vec2(12.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(FONT_SM),
+        color(DARK.foreground),
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
