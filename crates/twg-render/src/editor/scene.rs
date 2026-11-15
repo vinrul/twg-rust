@@ -1694,14 +1694,14 @@ fn spawn_water_cannon(
     }
 
     let gravity = PARTICLE_GRAVITY;
-    // A flat launch angle cannot reach any distance under gravity, so keep a
-    // small elevation floor and derive the launch speed from the wanted reach.
-    let theta = elevation_deg.clamp(0.0, 70.0).to_radians().max(0.05);
+    let theta = elevation_deg.clamp(0.0, 70.0).to_radians();
     let reach = length.max(1.0);
-    let speed = ((reach * gravity) / (2.0 * theta.sin() * theta.cos())).sqrt();
+    let ground = ground_height.clamp(0.0, 50.0);
+    // Solve the launch speed so the fastest droplets land exactly at the
+    // authored reach, which keeps the editor preview and Play identical.
+    let speed = launch_speed(reach, theta, ground);
     let vertical = speed * theta.sin();
     let horizontal = speed * theta.cos();
-    let ground = ground_height.clamp(0.0, 50.0);
     let half_spread = spread_deg.clamp(0.0, 40.0).to_radians() * 0.5;
     let dir_length = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
     let base_dir = if dir_length > 1.0e-4 {
@@ -1759,6 +1759,25 @@ fn spawn_water_cannon(
             ));
         }
     });
+}
+
+/// Launch speed that makes a droplet land exactly `reach` metres away when it
+/// leaves a nozzle `ground` metres above the impact plane at `elevation`
+/// radians. Derived from the ballistic trajectory, so `Panjang semprotan` is
+/// the actual distance the water travels on the map.
+fn launch_speed(reach: f32, elevation: f32, ground: f32) -> f32 {
+    let gravity = PARTICLE_GRAVITY;
+    let cos = elevation.cos();
+    let sin = elevation.sin();
+    if ground > 0.01 {
+        let denominator = 2.0 * gravity * cos * (reach * sin + ground * cos);
+        (reach * gravity) / denominator.sqrt()
+    } else {
+        // A nozzle at ground level can only reach the target when it launches
+        // at an angle; keep a small floor so a flat setting still sprays.
+        let sin_2theta = (2.0 * elevation).sin().max(1.0e-3);
+        ((reach * gravity) / sin_2theta).sqrt()
+    }
 }
 
 fn water_drop_material(
@@ -2535,13 +2554,87 @@ mod particle_system_tests {
         app.update();
         assert_eq!(visibility(&mut app), Visibility::Hidden);
     }
+
+    #[test]
+    fn water_cannon_geometry_does_not_follow_the_camera_zoom() {
+        fn jet(zoom: f32) -> (Vec3, f32) {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_plugins(AssetPlugin::default())
+                .init_asset::<Mesh>()
+                .init_asset::<StandardMaterial>()
+                .init_asset::<Image>()
+                .init_resource::<EditorRenderCache>()
+                .insert_resource(MapCameraResource(twg_map::MapCameraState {
+                    zoom,
+                    ..Default::default()
+                }))
+                .insert_resource(EditorMode {
+                    active: true,
+                    preview: true,
+                    particles_animate: true,
+                    camera_input: true,
+                })
+                .insert_resource(EditorScene {
+                    revision: 1,
+                    objects: vec![EditorSceneObject {
+                        key: 9,
+                        label: "Water cannon".to_owned(),
+                        lon: 115.225,
+                        lat: -8.648,
+                        selected: false,
+                        kind: EditorSceneKind::WaterCannon {
+                            color: [0.5, 0.8, 1.0, 1.0],
+                            opacity: 0.8,
+                            length: 20.0,
+                            amount: 1.0,
+                            elevation_deg: 20.0,
+                            spread_deg: 8.0,
+                            droplet_size: 1.0,
+                            dir: [1.0, 0.0],
+                            target: 1,
+                            local: [0.0, 1.5],
+                            ground_height: 2.0,
+                            altitude: 2.0,
+                        },
+                    }],
+                    ..Default::default()
+                })
+                .add_systems(Update, (sync_editor_scene, animate_water_jets).chain());
+            app.world_mut()
+                .spawn((MapCamera, Transform::default(), GlobalTransform::default()));
+            app.update();
+            app.update();
+
+            let world = app.world_mut();
+            let mut roots = world.query_filtered::<&Transform, With<WaterJetRoot>>();
+            let scale = roots.single(world).expect("jet root").scale;
+            let mut drops = world.query_filtered::<&Transform, With<JetDrop>>();
+            let span = drops
+                .iter(world)
+                .map(|transform| transform.translation.length())
+                .fold(0.0_f32, f32::max);
+            (scale, span)
+        }
+
+        let (near_scale, near_span) = jet(16.0);
+        let (far_scale, far_span) = jet(19.0);
+        assert_eq!(near_scale, Vec3::ONE);
+        assert_eq!(far_scale, Vec3::ONE);
+        assert!(near_span > 1.0);
+        // The jet is authored in metres: zooming out must not stretch it.
+        assert!(
+            (near_span - far_span).abs() < 0.5,
+            "near {near_span} far {far_span}"
+        );
+    }
 }
 
 #[cfg(test)]
 mod particle_tests {
     use super::{
-        EditorParticleKind, JetDrop, PARTICLE_GRAVITY, ParticleElement, particle_pose,
-        water_drop_pose,
+        EditorParticleKind, JetDrop, PARTICLE_GRAVITY, ParticleElement, launch_speed,
+        particle_pose, water_drop_pose,
     };
 
     fn element(kind: EditorParticleKind, height: f32, lifetime: f32) -> ParticleElement {
@@ -2589,6 +2682,26 @@ mod particle_tests {
         let (middle, middle_size) = particle_pose(&smoke, 0.5);
         assert!(middle.y > start.y);
         assert!(middle_size > start_size);
+    }
+
+    #[test]
+    fn water_cannon_reaches_the_authored_length() {
+        for (reach, elevation_deg, ground) in
+            [(14.0, 12.0, 1.6), (30.0, 35.0, 3.0), (8.0, 0.0, 2.0)]
+        {
+            let elevation = (elevation_deg as f32).to_radians();
+            let speed = launch_speed(reach as f32, elevation, ground as f32);
+            let vertical = speed * elevation.sin();
+            let horizontal = speed * elevation.cos();
+            let lifetime = (vertical
+                + (vertical * vertical + 2.0 * PARTICLE_GRAVITY * ground as f32).sqrt())
+                / PARTICLE_GRAVITY;
+            let travelled = horizontal * lifetime;
+            assert!(
+                (travelled - reach as f32).abs() < 0.05,
+                "reach {reach} travelled {travelled}"
+            );
+        }
     }
 
     #[test]
