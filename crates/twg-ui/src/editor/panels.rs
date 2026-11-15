@@ -280,10 +280,11 @@ fn draw_animation_play_panel(
                     if editor.play.animations.is_empty()
                         && editor.play.visibility_animations.is_empty()
                         && editor.play.groups.is_empty()
+                        && editor.play.pointers.is_empty()
                     {
                         ui.label(theme::muted(
-                            "Belum ada animasi. Buat rute atau spawn/hide di tab Animasi saat \
-                             mengedit skenario.",
+                            "Belum ada animasi. Buat rute, spawn/hide, atau pointer di tab \
+                             Animasi saat mengedit skenario.",
                         ));
                         return;
                     }
@@ -400,7 +401,7 @@ fn draw_animation_play_panel(
                             .button("Reset visibilitas")
                             .on_hover_text(
                                 "Kembali ke kondisi awal: target spawn tersembunyi, target hide \
-                                 tampil.",
+                                 tampil, panah pointer disembunyikan.",
                             )
                             .clicked()
                         {
@@ -471,6 +472,36 @@ fn draw_animation_play_panel(
                         }
                         if let Some(index) = stop_group {
                             editor.stop_group_animation(index);
+                        }
+                    }
+                    if !editor.play.pointers.is_empty() {
+                        ui.separator();
+                        ui.label(theme::title("Pointer"));
+                        ui.label(theme::muted(
+                            "Panah penunjuk marker. Tersembunyi saat Play dimulai; tampilkan \
+                             saat skenario membutuhkannya.",
+                        ));
+                        let mut toggle = None;
+                        for pointer in &editor.play.pointers {
+                            let shown = editor.play.shown_pointers.contains(&pointer.pointer_key);
+                            ui.label(egui::RichText::new(&pointer.name).strong());
+                            let status = if shown { "Tampil" } else { "Tersembunyi" };
+                            let info = if pointer.label.is_empty() {
+                                format!("Pointer · {status}")
+                            } else {
+                                format!("Pointer · {status} · label \"{}\"", pointer.label)
+                            };
+                            ui.label(theme::muted(&info));
+                            if ui
+                                .button(if shown { "Sembunyikan" } else { "Tampilkan" })
+                                .clicked()
+                            {
+                                toggle = Some((pointer.pointer_key, !shown));
+                            }
+                            ui.separator();
+                        }
+                        if let Some((key, shown)) = toggle {
+                            editor.set_play_pointer_shown(key, shown);
                         }
                     }
                 });
@@ -4583,19 +4614,27 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
     let hover_stroke = egui::Stroke::new(1.4, theme::color(DARK.foreground));
     // A selected route animation (or the route whose marker picker is armed)
     // rings every marker it already drives, so targets are easy to spot on a
-    // map with many markers. Spawn/hide targets use a red dashed ring so the
-    // two kinds of animation stay distinguishable.
+    // map with many markers. Spawn/hide targets use a red dashed ring and
+    // pointer targets a blue one, so the kinds stay distinguishable.
     let route_markers = editor.selected_route_markers();
     let visibility_targets = editor.selected_visibility_targets();
+    let pointer_targets = editor.selected_pointer_targets();
     let route_stroke = egui::Stroke::new(2.0, theme::color(DARK.success));
     let visibility_stroke = egui::Stroke::new(2.0, theme::color(DARK.destructive));
+    let pointer_stroke = egui::Stroke::new(2.0, theme::color(DARK.ring));
     for (key, _kind, points, selected) in &editor.projected {
         let is_route_marker = route_markers.contains(key);
         let is_visibility_target = visibility_targets.contains(key);
+        let is_pointer_target = pointer_targets.contains(key);
+        let is_pointer_arrow = editor
+            .object(*key)
+            .is_some_and(|object| object.is_pointer_animation());
         let stroke = if *selected {
             selected_stroke
         } else if is_visibility_target {
             visibility_stroke
+        } else if is_pointer_target {
+            pointer_stroke
         } else if is_route_marker {
             route_stroke
         } else if editor.hover_key == Some(*key) {
@@ -4606,7 +4645,8 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
         match _kind {
             ObjectType::Marker | ObjectType::Text => {
                 if let Some(center) = points.first() {
-                    if (is_visibility_target || is_route_marker) && !*selected {
+                    if (is_visibility_target || is_pointer_target || is_route_marker) && !*selected
+                    {
                         dashed_ring(painter, *center, 19.0, stroke);
                     } else {
                         painter.circle_stroke(*center, 15.0, stroke);
@@ -4635,7 +4675,15 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
                     }
                 }
             }
-            ObjectType::Line | ObjectType::Building => {
+            ObjectType::Line => {
+                painter.add(egui::Shape::line(points.clone(), stroke));
+                // Pointer arrows are thin on screen; a ring at the top makes the
+                // selection obvious while the line runs along the arrow axis.
+                if is_pointer_arrow && let Some(top) = points.first() {
+                    painter.circle_stroke(*top, 11.0, stroke);
+                }
+            }
+            ObjectType::Building => {
                 painter.add(egui::Shape::line(points.clone(), stroke));
             }
         }

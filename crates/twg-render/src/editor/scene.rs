@@ -23,6 +23,9 @@ use crate::map::{GeoAnchor, MapCamera, MapCameraResource};
 pub struct EditorPlayFrame {
     pub active: bool,
     pub units: Vec<EditorPlayUnit>,
+    /// Up/down offset applied to pointer arrows so they bob while Play runs.
+    /// The UI computes it so the arrow and its label move together.
+    pub pointer_bob: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -962,7 +965,7 @@ pub(crate) fn apply_editor_pointer_frame(
         {
             anchor.mercator = mercator;
         }
-        transform.translation.y = unit.altitude + pointer.lift;
+        transform.translation.y = unit.altitude + pointer.lift + frame.pointer_bob;
     }
 }
 

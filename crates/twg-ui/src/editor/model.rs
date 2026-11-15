@@ -216,6 +216,9 @@ pub(crate) const DEFAULT_POINTER_SIZE: f64 = 1.0;
 pub(crate) const DEFAULT_POINTER_ALTITUDE: f64 = 4.0;
 pub(crate) const MIN_POINTER_ALTITUDE: f64 = 0.0;
 pub(crate) const MAX_POINTER_ALTITUDE: f64 = 1000.0;
+/// Pointer arrows bob up and down this far while Play runs.
+pub(crate) const POINTER_BOB_METERS: f64 = 0.9;
+pub(crate) const POINTER_BOB_SECONDS: f64 = 2.0;
 /// Default gap between members of a delayed sequence, in seconds.
 pub(crate) const DEFAULT_GROUP_DELAY: f64 = 2.0;
 /// Bounds for the authored sequence delay, in seconds.
@@ -321,6 +324,18 @@ pub struct PlayVisibilityAnimation {
     pub order: i32,
 }
 
+/// One authored pointer arrow resolved for Play mode. Arrows are hidden until
+/// the Play panel reveals them.
+#[derive(Debug, Clone)]
+pub struct PlayPointerAnimation {
+    pub pointer_key: ObjectKey,
+    pub name: String,
+    /// Label text shown above the arrow, empty when the arrow has no label.
+    pub label: String,
+    /// Persisted play order shared with the scenario editor.
+    pub order: i32,
+}
+
 /// Resolved member of a combine/sequence group. Indices point into
 /// [`PlayState::animations`] and [`PlayState::visibility_animations`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -379,6 +394,8 @@ impl PlayGroupAnimation {
 #[derive(Debug, Clone, Default)]
 pub struct PlayState {
     pub active: bool,
+    /// Seconds Play has been running. Drives the pointer arrow bob.
+    pub clock: f64,
     /// Units moved with an order (animated assets and `Free` static assets).
     pub units: BTreeMap<ObjectKey, PlayUnit>,
     /// Static assets with `Limited` move mode: selected and moved with a gizmo.
@@ -390,6 +407,11 @@ pub struct PlayState {
     pub visibility_animations: Vec<PlayVisibilityAnimation>,
     /// Authored combine/sequence groups available in the Play panel.
     pub groups: Vec<PlayGroupAnimation>,
+    /// Authored pointer arrows available in the Play panel.
+    pub pointers: Vec<PlayPointerAnimation>,
+    /// Pointer arrows revealed from the Play panel. Arrows start hidden so the
+    /// exported map stays clean until the presenter shows them.
+    pub shown_pointers: BTreeSet<ObjectKey>,
     /// Objects hidden at runtime by spawn/hide animations. Runtime-only state:
     /// it never touches the authored scenario or the editor visibility flags.
     pub hidden: BTreeSet<ObjectKey>,
@@ -1571,6 +1593,14 @@ impl EditorObject {
         matches!(&self.kind, EditorKind::Line(line) if line.pointer.is_some())
     }
 
+    /// Pointer metadata of a pointer animation line.
+    pub fn pointer_animation(&self) -> Option<&PointerAnimation> {
+        match &self.kind {
+            EditorKind::Line(line) => line.pointer.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Any animation object (route, spawn/hide, group, or pointer).
     pub fn is_animation(&self) -> bool {
         self.is_animation_route()
@@ -2492,7 +2522,30 @@ impl EditorState {
         }
         self.init_play_animations();
         self.init_play_groups();
+        self.init_play_pointers();
         self.play_sync_pending = true;
+    }
+
+    /// Snapshots pointer arrows for the Play panel. Arrows start hidden so the
+    /// map stays clean until the presenter shows them.
+    fn init_play_pointers(&mut self) {
+        let mut pointers = Vec::new();
+        for object in &self.objects {
+            if !object.visible || !self.visible.allows(ObjectType::Line) {
+                continue;
+            }
+            let Some(pointer) = object.pointer_animation() else {
+                continue;
+            };
+            pointers.push(PlayPointerAnimation {
+                pointer_key: object.key,
+                name: object.name.clone(),
+                label: pointer.text.trim().to_owned(),
+                order: pointer.order,
+            });
+        }
+        pointers.sort_by_key(|pointer| pointer.order);
+        self.play.pointers = pointers;
     }
 
     /// Resolves combine/sequence groups after routes and spawn/hide animations
@@ -2730,6 +2783,8 @@ impl EditorState {
         if dt <= 0.0 {
             return;
         }
+        // Drives the pointer arrow bob; kept here so Play has a single clock.
+        self.play.clock += dt;
         // Units are obstacles too, so columns do not walk through each other.
         // Snapshotting once per tick keeps the borrow simple and avoids
         // allocating a list per unit. Objects hidden by a spawn/hide animation
@@ -3133,7 +3188,7 @@ impl EditorState {
     }
 
     /// Restores the starting visibility: spawn targets hidden, hide targets
-    /// visible.
+    /// visible, and pointer arrows hidden again.
     pub fn reset_play_visibility(&mut self) {
         let hidden = self
             .play
@@ -3142,13 +3197,66 @@ impl EditorState {
             .filter(|animation| animation.kind == VisibilityAnimationKind::Spawn)
             .flat_map(|animation| animation.targets.iter().copied())
             .collect::<BTreeSet<_>>();
-        if hidden == self.play.hidden {
+        let pointers_shown = !self.play.shown_pointers.is_empty();
+        if hidden == self.play.hidden && !pointers_shown {
             return;
         }
         self.play.hidden = hidden;
+        self.play.shown_pointers.clear();
         self.selected.retain(|key| !self.play.hidden.contains(key));
         self.touch();
         self.play_sync_pending = true;
+    }
+
+    /// True when the Play panel has revealed a pointer arrow.
+    pub fn play_pointer_shown(&self, key: ObjectKey) -> bool {
+        self.play.shown_pointers.contains(&key)
+    }
+
+    /// Shows or hides a pointer arrow during Play. Arrows are hidden when Play
+    /// starts, so the presenter reveals them only when the scenario needs them.
+    pub fn set_play_pointer_shown(&mut self, key: ObjectKey, shown: bool) {
+        let changed = if shown {
+            self.play.shown_pointers.insert(key)
+        } else {
+            self.play.shown_pointers.remove(&key)
+        };
+        if !changed {
+            return;
+        }
+        // Pointer visibility is part of the render scene.
+        self.touch();
+    }
+
+    /// Up/down offset of pointer arrows while Play runs, in metres. The renderer
+    /// applies the same value so the arrow and its label stay together.
+    pub fn pointer_bob(&self) -> f64 {
+        if !self.play.active {
+            return 0.0;
+        }
+        (self.play.clock * std::f64::consts::TAU / POINTER_BOB_SECONDS).sin() * POINTER_BOB_METERS
+    }
+
+    /// Markers pointed at by the selected pointer arrows (including pointers
+    /// inside a selected group). The editor overlay rings them like the other
+    /// animation targets.
+    pub fn selected_pointer_targets(&self) -> BTreeSet<ObjectKey> {
+        let mut targets = BTreeSet::new();
+        for key in self.selected_animation_keys() {
+            let Some(object) = self.object(key) else {
+                continue;
+            };
+            if !object.visible {
+                continue;
+            }
+            let Some(pointer) = object.pointer_animation() else {
+                continue;
+            };
+            if let Some((marker_key, _, _)) = self.pointer_target(pointer) {
+                targets.insert(marker_key);
+            }
+        }
+        targets
     }
 
     pub(super) fn apply_route_animation(&mut self, index: usize) {
@@ -4776,9 +4884,12 @@ impl EditorState {
             if !object.visible || !self.visible.allows(object.object_type()) {
                 continue;
             }
-            // Pointer arrows are real 3D content in both authoring and Play; the
-            // other animation kinds are authoring guides and are hidden in Play.
+            // Pointer arrows are real 3D content. In Play they stay hidden until
+            // the Play panel reveals them; during authoring they are always shown.
             if object.is_pointer_animation() {
+                if self.preview && !self.play.shown_pointers.contains(&object.key) {
+                    continue;
+                }
                 if let Some(scene_object) = self.pointer_scene_object(object) {
                     objects.push(scene_object);
                 }
@@ -6504,9 +6615,13 @@ mod tests {
         let pointer_key = *editor.selected.iter().next().expect("pointer selected");
         editor.assign_pointer_target(pointer_key, marker_id);
 
-        // Pointers are 3D content, so they appear in authoring and in Play.
+        // Pointers are 3D content, so they appear in authoring and, once
+        // revealed, in Play too.
         for preview in [false, true] {
             editor.preview = preview;
+            if preview {
+                editor.set_play_pointer_shown(pointer_key, true);
+            }
             let scene = editor.build_scene();
             let object = scene
                 .objects
@@ -6554,7 +6669,10 @@ mod tests {
         assert!(editor.build_scene().objects.is_empty());
 
         editor.play_visibility_animation(0);
-        // The marker comes back and the pointer arrow reappears with it.
+        // The marker comes back on its own; the arrow stays hidden until the
+        // Play panel reveals it.
+        assert_eq!(editor.build_scene().objects.len(), 1);
+        editor.set_play_pointer_shown(pointer_key, true);
         let scene = editor.build_scene();
         assert_eq!(scene.objects.len(), 2);
         assert!(scene.objects.iter().any(|object| object.key == pointer_key));
@@ -6590,6 +6708,95 @@ mod tests {
             line.pointer.as_ref().expect("pointer").marker_id,
             Some(marker_id)
         );
+    }
+
+    #[test]
+    fn pointer_is_hidden_in_play_until_shown() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "66666666-6666-4666-8666-666666666666",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_pointer_animation();
+        let pointer_key = *editor.selected.iter().next().expect("pointer selected");
+        editor.assign_pointer_target(pointer_key, marker_id);
+
+        editor.preview = true;
+        editor.start_play();
+        assert_eq!(editor.play.pointers.len(), 1);
+        // Arrows start hidden so the Play map stays clean until asked for.
+        assert!(
+            !editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == pointer_key)
+        );
+
+        editor.set_play_pointer_shown(pointer_key, true);
+        assert!(editor.play_pointer_shown(pointer_key));
+        assert!(
+            editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == pointer_key)
+        );
+
+        editor.set_play_pointer_shown(pointer_key, false);
+        assert!(
+            !editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == pointer_key)
+        );
+
+        // Reset visibility also hides arrows again.
+        editor.set_play_pointer_shown(pointer_key, true);
+        editor.reset_play_visibility();
+        assert!(!editor.play_pointer_shown(pointer_key));
+    }
+
+    #[test]
+    fn selected_pointer_highlights_its_marker() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "77777777-7777-4777-8777-777777777777",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_pointer_animation();
+        let pointer_key = *editor.selected.iter().next().expect("pointer selected");
+        editor.assign_pointer_target(pointer_key, marker_id);
+        editor.select_only(pointer_key);
+
+        assert_eq!(
+            editor.selected_pointer_targets(),
+            BTreeSet::from([marker_key])
+        );
+
+        editor.selected.clear();
+        assert!(editor.selected_pointer_targets().is_empty());
+    }
+
+    #[test]
+    fn pointer_bobs_only_while_play_runs() {
+        let mut editor = editor();
+        assert!((editor.pointer_bob() - 0.0).abs() < 1.0e-9);
+
+        editor.preview = true;
+        editor.start_play();
+        editor.play_tick(0.2);
+        let first = editor.pointer_bob();
+        editor.play_tick(0.3);
+        assert!((first - editor.pointer_bob()).abs() > 1.0e-6);
+        assert!(editor.pointer_bob().abs() <= POINTER_BOB_METERS + 1.0e-9);
     }
 
     #[test]

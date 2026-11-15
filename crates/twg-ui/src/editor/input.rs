@@ -260,6 +260,7 @@ pub fn editor_input(
     }
 
     play_frame.active = editor.play.active;
+    play_frame.pointer_bob = editor.pointer_bob() as f32;
     play_frame.units.clear();
     if editor.play.active {
         let animation_running = editor
@@ -504,25 +505,51 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
         if editor.preview && !editor.play.is_visible(object.key) {
             continue;
         }
-        // Pointer arrows float above their target marker, so their label is
-        // projected from the arrow tip instead of the line's own points.
+        // Pointer arrows float above their target marker. Their axis is
+        // projected so the arrow can be picked and highlighted on the map, and
+        // the optional label is anchored at the arrow top.
         if let super::model::EditorKind::Line(line) = &object.kind
             && let Some(pointer) = &line.pointer
         {
+            // In Play the arrow only exists once the panel reveals it.
+            if editor.preview && !editor.play.shown_pointers.contains(&object.key) {
+                continue;
+            }
+            let Some((_, point, marker_altitude)) = editor.pointer_target(pointer) else {
+                continue;
+            };
+            let bob = editor.pointer_bob();
+            let top_altitude = pointer.base_altitude(marker_altitude) + bob;
+            let tip_altitude = top_altitude - pointer.arrow_height();
+            let mut axis = Vec::new();
+            for altitude in [top_altitude, tip_altitude] {
+                let Some(world) = world_of_at(editor, point, altitude as f32) else {
+                    continue;
+                };
+                let Ok(screen) = camera.world_to_viewport(transform, world) else {
+                    continue;
+                };
+                axis.push(egui::pos2(screen.x, screen.y));
+            }
+            let Some(top) = axis.first().copied() else {
+                continue;
+            };
+            editor.projected.push((
+                object.key,
+                object.object_type(),
+                axis,
+                editor.selected.contains(&object.key),
+            ));
             let text = pointer.text.trim();
-            if !text.is_empty()
-                && let Some((_, point, marker_altitude)) = editor.pointer_target(pointer)
-                && let Some(world) =
-                    world_of_at(editor, point, pointer.base_altitude(marker_altitude) as f32)
-                && let Ok(screen) = camera.world_to_viewport(transform, world)
-            {
+            if !text.is_empty() {
                 editor.text_overlays.push((
-                    egui::pos2(screen.x, screen.y - 16.0),
+                    egui::pos2(top.x, top.y - 16.0),
                     text.to_owned(),
                     super::model::parse_hex_color(&pointer.color),
                     15.0,
                 ));
             }
+            continue;
         }
         let points = match editor.play.units.get(&object.key) {
             Some(unit) => vec![unit.position],
@@ -746,9 +773,23 @@ fn pick_object_inner(
                     .unwrap_or(f32::MAX);
                 (distance <= 40.0).then_some(distance * 0.15)
             }
-            ObjectType::Line => polyline_distance(points, pointer)
-                .filter(|distance| *distance <= 10.0)
-                .map(|distance| distance + 8.0),
+            ObjectType::Line => {
+                // Pointer arrows are thin on screen, so they get a wider click
+                // target and a small score bonus to win over the marker below
+                // them when the click lands on the arrow itself.
+                let is_pointer = editor
+                    .object(*key)
+                    .is_some_and(|object| object.is_pointer_animation());
+                if is_pointer {
+                    polyline_distance(points, pointer)
+                        .filter(|distance| *distance <= 24.0)
+                        .map(|distance| distance * 0.4)
+                } else {
+                    polyline_distance(points, pointer)
+                        .filter(|distance| *distance <= 10.0)
+                        .map(|distance| distance + 8.0)
+                }
+            }
             ObjectType::Building => {
                 if point_in_polygon(points, pointer) {
                     Some(7.0)
