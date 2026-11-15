@@ -636,16 +636,48 @@ untuk menandai lokasi penting (misalnya "Lomba"). Tab **Buat** punya tombol
 - Pointer disimpan di metadata `plot_lines.keterangan` dengan `type` `pointer`,
   berisi `marker_id`, `text`, `color`, `altitude`, `size`, dan `order`.
 
+**Animasi shoot (water cannon)**
+
+Kategori **Shoot** memasang satu **water cannon** pada satu marker. Tab **Buat**
+punya tombol **+ Water cannon**.
+
+- Satu cannon hanya menempel di **satu** marker. Target dipilih dari daftar
+  marker di Inspector atau lewat **Pilih marker dari peta** (klik marker, Esc
+  batal). Memilih marker lain langsung mengganti target lama.
+- Pengaturan **nozzle**: **Posisi** (Depan/Belakang/Kanan/Kiri mengikuti arah
+  hadap marker), **Jarak dari marker** (0–20 m), dan **Tinggi nozzle** (0–50 m).
+- Pengaturan **semprotan**: **Panjang semprotan** (1–100 m), **Banyak air**
+  (0,25–3×), **Sudut elevasi** (0–70°), **Sebaran** (0–40°), **Ukuran butiran**
+  (0,3–3×), **Warna air**, dan **Opasitas**.
+- **Semprot otomatis saat Play** membuat air langsung menyemprot begitu Play
+  dimulai. Bila dimatikan, tekan **Semprotkan** di bagian **Shoot** panel
+  Animasi saat Play; tombolnya berubah menjadi **Stop**. Status tiap cannon
+  ditampilkan sebagai **Menyemprot** atau **Berhenti**.
+- Air dirender sebagai butiran partikel balistik: memancar dari nozzle lalu
+  melengkung jatuh ke tanah. Nozzle dan arah semprotan ikut bergerak dan
+  berputar bersama marker selama Play, dan semprotan ikut hilang bila marker
+  disembunyikan animasi spawn/hide.
+- Contoh penyetelan: **Panjang** 14 m dengan elevasi 12° menghasilkan jet
+  pemadam yang datar; naikkan elevasi dan sebaran untuk semprotan hujan yang
+  lebih melengkung, atau turunkan panjangnya untuk siraman jarak dekat.
+  **Banyak air** mengatur kerapatan butiran (8–200 butir).
+- Reset visibilitas di panel Play juga menghentikan semua semprotan (kecuali
+  yang otomatis).
+- Water cannon disimpan di metadata `plot_lines.keterangan` dengan `type`
+  `shoot` dan `kind` `water_cannon`, berisi semua setelan nozzle, semprotan,
+  warna, `auto`, dan `order`.
+
 **Mode Play (RTS)**
 
 Tombol **▶ Play** menjalankan skenario sebagai simulasi RTS sederhana di
 viewport editor:
 
 - Panel **Animasi** di kiri berisi semua kontrol animasi saat Play (rute,
-  spawn/hide, gabungan, pointer). Kotak **Cari** di atas panel menyaring daftar
-  berdasarkan nama animasi atau jenisnya (misalnya ketik `patwal`, `spawn`,
-  `combine`, atau `pointer`); bagian yang tidak punya hasil ikut disembunyikan.
-  Kosongkan kotak atau tekan **Reset pencarian** untuk menampilkan semuanya.
+  spawn/hide, gabungan, pointer, dan shoot). Kotak **Cari** di atas panel
+  menyaring daftar berdasarkan nama animasi atau jenisnya (misalnya ketik
+  `patwal`, `spawn`, `combine`, `pointer`, atau `shoot`); bagian yang tidak
+  punya hasil ikut disembunyikan. Kosongkan kotak atau tekan **Reset pencarian**
+  untuk menampilkan semuanya.
 - Label objek disembunyikan. Kamera tetap bisa di-orbit (klik kanan tahan) dan
   di-pan (tombol tengah) seperti biasa.
 - Marker dengan aset model **Animasi** menjadi unit yang bisa dipilih dan

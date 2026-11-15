@@ -12,12 +12,17 @@ use crate::widgets;
 
 use super::input::distance_meters;
 use super::model::{
-    AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    GroupAnimation, GroupAnimationKind, MAX_GROUP_DELAY, MAX_POINTER_ALTITUDE, MAX_POINTER_SIZE,
-    MAX_ROUTE_SPACING, MIN_GROUP_DELAY, MIN_MARKER_SCALE, MIN_POINTER_ALTITUDE, MIN_POINTER_SIZE,
+    AssetMarkerDraft, CannonSide, EditorAssetRow, EditorKind, EditorState, EditorTextureRow,
+    EditorTool, GroupAnimation, GroupAnimationKind, MAX_CANNON_AMOUNT, MAX_CANNON_DISTANCE,
+    MAX_CANNON_DROPLET, MAX_CANNON_ELEVATION, MAX_CANNON_HEIGHT, MAX_CANNON_LENGTH,
+    MAX_CANNON_OPACITY, MAX_CANNON_SPREAD, MAX_GROUP_DELAY, MAX_POINTER_ALTITUDE, MAX_POINTER_SIZE,
+    MAX_ROUTE_SPACING, MIN_CANNON_AMOUNT, MIN_CANNON_DISTANCE, MIN_CANNON_DROPLET,
+    MIN_CANNON_ELEVATION, MIN_CANNON_HEIGHT, MIN_CANNON_LENGTH, MIN_CANNON_OPACITY,
+    MIN_CANNON_SPREAD, MIN_GROUP_DELAY, MIN_MARKER_SCALE, MIN_POINTER_ALTITUDE, MIN_POINTER_SIZE,
     MIN_ROUTE_SPACING, ObjectKey, ObjectType, ParticleSettings, PlaybackState, PointerAnimation,
-    RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance, VisibilityAnimation,
-    VisibilityAnimationKind, marker_color, parse_hex_color, particle_kind_label,
+    RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance, ShootAnimation,
+    VisibilityAnimation, VisibilityAnimationKind, marker_color, parse_hex_color,
+    particle_kind_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,7 +281,8 @@ fn draw_animation_play_panel(
             let total_animations = editor.play.animations.len()
                 + editor.play.visibility_animations.len()
                 + editor.play.groups.len()
-                + editor.play.pointers.len();
+                + editor.play.pointers.len()
+                + editor.play.shoots.len();
             if total_animations > 0 {
                 ui.horizontal(|ui| {
                     ui.label(theme::muted("Cari"));
@@ -337,13 +343,23 @@ fn draw_animation_play_panel(
                 })
                 .map(|(index, _)| index)
                 .collect::<Vec<_>>();
+            let shoots = editor
+                .play
+                .shoots
+                .iter()
+                .enumerate()
+                .filter(|(_, shoot)| {
+                    matches(&shoot.name, "Shoot") || matches(&shoot.name, "Water cannon")
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
             egui::ScrollArea::vertical()
                 .id_salt("editor_play_animations")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     if total_animations == 0 {
                         ui.label(theme::muted(
-                            "Belum ada animasi. Buat rute, spawn/hide, atau pointer di tab \
+                            "Belum ada animasi. Buat rute, spawn/hide, pointer, atau shoot di tab \
                              Animasi saat mengedit skenario.",
                         ));
                         return;
@@ -352,6 +368,7 @@ fn draw_animation_play_panel(
                         && visibility.is_empty()
                         && groups.is_empty()
                         && pointers.is_empty()
+                        && shoots.is_empty()
                     {
                         ui.label(theme::muted(
                             "Tidak ada animasi yang cocok dengan pencarian.",
@@ -476,7 +493,7 @@ fn draw_animation_play_panel(
                             .button("Reset visibilitas")
                             .on_hover_text(
                                 "Kembali ke kondisi awal: target spawn tersembunyi, target hide \
-                                 tampil, panah pointer disembunyikan.",
+                                 tampil, panah pointer disembunyikan, semprotan air dihentikan.",
                             )
                             .clicked()
                         {
@@ -580,6 +597,39 @@ fn draw_animation_play_panel(
                         }
                         if let Some((key, shown)) = toggle {
                             editor.set_play_pointer_shown(key, shown);
+                        }
+                    }
+                    if !shoots.is_empty() {
+                        ui.separator();
+                        ui.label(theme::title("Shoot"));
+                        ui.label(theme::muted(
+                            "Water cannon yang menempel di marker. Semprotkan air saat Play.",
+                        ));
+                        let mut toggle = None;
+                        for index in &shoots {
+                            let shoot = &editor.play.shoots[*index];
+                            let spraying = editor.play.sprays.contains(&shoot.animation_key);
+                            ui.label(egui::RichText::new(&shoot.name).strong());
+                            let status = if shoot.missing {
+                                "Marker target tidak ditemukan"
+                            } else if spraying {
+                                "Menyemprot"
+                            } else {
+                                "Berhenti"
+                            };
+                            let auto = if shoot.auto { " · otomatis" } else { "" };
+                            ui.label(theme::muted(&format!("Water cannon · {status}{auto}")));
+                            if !shoot.missing
+                                && ui
+                                    .button(if spraying { "Stop" } else { "Semprotkan" })
+                                    .clicked()
+                            {
+                                toggle = Some((shoot.animation_key, !spraying));
+                            }
+                            ui.separator();
+                        }
+                        if let Some((key, spraying)) = toggle {
+                            editor.set_cannon_spraying(key, spraying);
                         }
                     }
                 });
@@ -1503,6 +1553,29 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         });
 
     ui.add_space(4.0);
+    egui::CollapsingHeader::new("Shoot")
+        .id_salt("editor_animation_create_shoot")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(theme::muted(
+                "Shoot memasang water cannon di satu marker. Saat Play, air disemprotkan dari \
+                 nozzle dan bisa diarahkan, diatur panjang serta banyaknya di Inspector.",
+            ));
+            ui.add_space(4.0);
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Water cannon")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Buat semprotan water cannon pada satu marker")
+                .clicked()
+            {
+                editor.add_shoot_animation();
+            }
+        });
+
+    ui.add_space(4.0);
     egui::CollapsingHeader::new("Spawn & Hide")
         .id_salt("editor_animation_create_visibility")
         .default_open(true)
@@ -1576,6 +1649,7 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
 enum AnimationListGroup {
     Route,
     Pointer,
+    Shoot,
     Spawn,
     Hide,
     Combine,
@@ -1583,9 +1657,10 @@ enum AnimationListGroup {
 }
 
 impl AnimationListGroup {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Route,
         Self::Pointer,
+        Self::Shoot,
         Self::Spawn,
         Self::Hide,
         Self::Combine,
@@ -1596,6 +1671,7 @@ impl AnimationListGroup {
         match self {
             Self::Route => "Rute",
             Self::Pointer => "Pointer (penunjuk)",
+            Self::Shoot => "Shoot (water cannon)",
             Self::Spawn => "Spawn (munculkan)",
             Self::Hide => "Hide (sembunyikan)",
             Self::Combine => "Combine (bersamaan)",
@@ -1607,6 +1683,7 @@ impl AnimationListGroup {
         match self {
             Self::Route => "editor_animation_list_route",
             Self::Pointer => "editor_animation_list_pointer",
+            Self::Shoot => "editor_animation_list_shoot",
             Self::Spawn => "editor_animation_list_spawn",
             Self::Hide => "editor_animation_list_hide",
             Self::Combine => "editor_animation_list_combine",
@@ -1630,6 +1707,8 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                         }
                     } else if line.pointer.is_some() {
                         AnimationListGroup::Pointer
+                    } else if line.shoot.is_some() {
+                        AnimationListGroup::Shoot
                     } else {
                         match line.group.as_ref()?.kind {
                             GroupAnimationKind::Combine => AnimationListGroup::Combine,
@@ -3095,6 +3174,131 @@ fn draw_object_inspector(
                 ui.label(theme::muted(
                     "Kosongkan teks bila label tidak diperlukan. Label tampil di atas panah.",
                 ));
+            } else if let Some(shoot) = &mut line.shoot {
+                ui.label(theme::title("Animasi shoot · Water cannon"));
+                ui.label(theme::muted(
+                    "Water cannon menempel di satu marker dan menyemprotkan air saat Play. \
+                     Atur letak nozzle, arah, panjang, dan banyaknya air di sini.",
+                ));
+                ui.separator();
+                changed |= draw_shoot_selector(ui, editor, key, shoot);
+                ui.separator();
+                ui.label(theme::title("Nozzle"));
+                let side = shoot.side;
+                let mut picked_side = side;
+                let options = CannonSide::ALL
+                    .iter()
+                    .map(|side| (*side, side.label().to_owned()))
+                    .collect::<Vec<_>>();
+                widgets::combo(
+                    ui,
+                    egui::Id::new(("cannon_side", key)),
+                    &mut picked_side,
+                    &options,
+                );
+                if picked_side != side {
+                    shoot.side = picked_side;
+                    changed = true;
+                    undo = true;
+                }
+                let distance = drag_row_range(
+                    ui,
+                    "Jarak dari marker",
+                    &mut shoot.distance,
+                    MIN_CANNON_DISTANCE..=MAX_CANNON_DISTANCE,
+                    0.1,
+                    2,
+                    " m",
+                );
+                undo |= distance.drag_started();
+                changed |= distance.changed();
+                let height = drag_row_range(
+                    ui,
+                    "Tinggi nozzle",
+                    &mut shoot.height,
+                    MIN_CANNON_HEIGHT..=MAX_CANNON_HEIGHT,
+                    0.1,
+                    2,
+                    " m",
+                );
+                undo |= height.drag_started();
+                changed |= height.changed();
+                ui.separator();
+                ui.label(theme::title("Semprotan"));
+                let length = drag_row_range(
+                    ui,
+                    "Panjang semprotan",
+                    &mut shoot.length,
+                    MIN_CANNON_LENGTH..=MAX_CANNON_LENGTH,
+                    0.5,
+                    1,
+                    " m",
+                );
+                undo |= length.drag_started();
+                changed |= length.changed();
+                let amount = drag_row_range(
+                    ui,
+                    "Banyak air",
+                    &mut shoot.amount,
+                    MIN_CANNON_AMOUNT..=MAX_CANNON_AMOUNT,
+                    0.05,
+                    2,
+                    " x",
+                );
+                undo |= amount.drag_started();
+                changed |= amount.changed();
+                let elevation = drag_row_range(
+                    ui,
+                    "Sudut elevasi",
+                    &mut shoot.elevation,
+                    MIN_CANNON_ELEVATION..=MAX_CANNON_ELEVATION,
+                    1.0,
+                    0,
+                    "°",
+                );
+                undo |= elevation.drag_started();
+                changed |= elevation.changed();
+                let spread = drag_row_range(
+                    ui,
+                    "Sebaran",
+                    &mut shoot.spread,
+                    MIN_CANNON_SPREAD..=MAX_CANNON_SPREAD,
+                    1.0,
+                    0,
+                    "°",
+                );
+                undo |= spread.drag_started();
+                changed |= spread.changed();
+                let droplet = drag_row_range(
+                    ui,
+                    "Ukuran butiran",
+                    &mut shoot.droplet_size,
+                    MIN_CANNON_DROPLET..=MAX_CANNON_DROPLET,
+                    0.05,
+                    2,
+                    " x",
+                );
+                undo |= droplet.drag_started();
+                changed |= droplet.changed();
+                color_row(ui, "Warna air", &mut shoot.color, &mut changed);
+                let opacity = drag_row_range(
+                    ui,
+                    "Opasitas",
+                    &mut shoot.opacity,
+                    MIN_CANNON_OPACITY..=MAX_CANNON_OPACITY,
+                    0.05,
+                    2,
+                    "",
+                );
+                undo |= opacity.drag_started();
+                changed |= opacity.changed();
+                changed |= ui
+                    .checkbox(&mut shoot.auto, "Semprot otomatis saat Play")
+                    .on_hover_text(
+                        "Mulai menyemprot begitu Play dimulai. Bila dimatikan, tekan \
+                         Semprotkan di panel Animasi saat Play.",
+                    )
+                    .changed();
             } else if let Some(visibility) = &mut line.visibility {
                 ui.label(theme::title(match visibility.kind {
                     VisibilityAnimationKind::Spawn => "Animasi spawn",
@@ -4137,8 +4341,120 @@ fn draw_pointer_selector(
             editor.end_point_edit();
             editor.pick_route_marker = None;
             editor.pick_visibility_target = None;
+            editor.pick_shoot_target = None;
             editor.pick_pointer_target = Some(key);
             editor.log("Klik satu marker di peta untuk dijadikan target pointer. Esc selesai.");
+        }
+    }
+
+    changed
+}
+
+/// Inspector for a water cannon: picks the single marker it is mounted on,
+/// either from a list or by clicking the map.
+fn draw_shoot_selector(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    key: ObjectKey,
+    shoot: &mut ShootAnimation,
+) -> bool {
+    let mut changed = false;
+    ui.label(theme::title("Marker target"));
+
+    let target = shoot.marker_id.and_then(|id| {
+        editor
+            .objects
+            .iter()
+            .find(|object| object.server_id == Some(id))
+            .map(|object| (object.name.clone(), object.visible))
+    });
+    match &target {
+        Some((name, visible)) => {
+            ui.horizontal(|ui| {
+                ui.label(format!("1. Marker · {name}"));
+                if !*visible {
+                    ui.label(theme::danger("· disembunyikan"));
+                }
+            })
+            .response
+            .on_hover_text("Water cannon hanya menempel di satu marker.");
+            if ui.small_button("Hapus target").clicked() {
+                shoot.marker_id = None;
+                changed = true;
+            }
+        }
+        None if shoot.marker_id.is_some() => {
+            ui.label(theme::danger("Marker target tidak ditemukan."));
+            if ui.small_button("Hapus target").clicked() {
+                shoot.marker_id = None;
+                changed = true;
+            }
+        }
+        None => {
+            ui.label(theme::muted(
+                "Belum ada target. Pilih satu marker dari daftar atau dari peta.",
+            ));
+        }
+    }
+
+    ui.horizontal(|ui| {
+        ui.label(theme::muted("Cari"));
+        ui.add(
+            egui::TextEdit::singleline(&mut editor.shoot_marker_search)
+                .hint_text("Nama marker...")
+                .desired_width(170.0),
+        );
+    });
+
+    let options = editor.shoot_marker_options(key);
+    let option_count = options.len();
+    let mut picked: Option<Uuid> = None;
+    widgets::combo(
+        ui,
+        egui::Id::new(("shoot_target", key)),
+        &mut picked,
+        &options,
+    );
+    if let Some(id) = picked {
+        editor.assign_shoot_target(key, id);
+        shoot.marker_id = Some(id);
+        changed = true;
+    }
+
+    if option_count <= 1 {
+        let searching = !editor.shoot_marker_search.trim().is_empty();
+        let unsaved = editor.objects.iter().any(|object| {
+            object.server_id.is_none() && matches!(object.kind, EditorKind::Marker(_))
+        });
+        let hint = if searching {
+            "Tidak ada marker yang cocok dengan pencarian."
+        } else if unsaved {
+            "Marker di peta belum tersimpan. Klik \"Pilih marker dari peta\" — skenario \
+             disimpan otomatis saat marker dipilih."
+        } else {
+            "Belum ada marker tersimpan di skenario ini."
+        };
+        ui.label(theme::muted(hint));
+    }
+
+    let picking = editor.pick_shoot_target == Some(key);
+    if ui
+        .button(if picking {
+            "Selesai pilih marker di peta"
+        } else {
+            "Pilih marker dari peta"
+        })
+        .clicked()
+    {
+        if picking {
+            editor.pick_shoot_target = None;
+        } else {
+            editor.end_point_edit();
+            editor.pick_route_marker = None;
+            editor.pick_visibility_target = None;
+            editor.pick_pointer_target = None;
+            editor.pick_shoot_target = Some(key);
+            editor.log("Klik satu marker di peta untuk water cannon. Esc selesai.");
         }
     }
 
@@ -4546,6 +4862,8 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                 Some("Klik marker/particle di peta untuk target · Esc selesai")
             } else if editor.pick_pointer_target.is_some() {
                 Some("Klik satu marker di peta untuk target pointer · Esc batal")
+            } else if editor.pick_shoot_target.is_some() {
+                Some("Klik satu marker di peta untuk water cannon · Esc batal")
             } else {
                 None
             };
@@ -4692,18 +5010,21 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
     let hover_stroke = egui::Stroke::new(1.4, theme::color(DARK.foreground));
     // A selected route animation (or the route whose marker picker is armed)
     // rings every marker it already drives, so targets are easy to spot on a
-    // map with many markers. Spawn/hide targets use a red dashed ring and
-    // pointer targets a blue one, so the kinds stay distinguishable.
+    // map with many markers. Spawn/hide targets use a red dashed ring, pointer
+    // targets a grey one, and water cannon targets a white one.
     let route_markers = editor.selected_route_markers();
     let visibility_targets = editor.selected_visibility_targets();
     let pointer_targets = editor.selected_pointer_targets();
+    let shoot_targets = editor.selected_shoot_targets();
     let route_stroke = egui::Stroke::new(2.0, theme::color(DARK.success));
     let visibility_stroke = egui::Stroke::new(2.0, theme::color(DARK.destructive));
     let pointer_stroke = egui::Stroke::new(2.0, theme::color(DARK.ring));
+    let shoot_stroke = egui::Stroke::new(2.0, theme::color(DARK.primary));
     for (key, _kind, points, selected) in &editor.projected {
         let is_route_marker = route_markers.contains(key);
         let is_visibility_target = visibility_targets.contains(key);
         let is_pointer_target = pointer_targets.contains(key);
+        let is_shoot_target = shoot_targets.contains(key);
         let is_pointer_arrow = editor
             .object(*key)
             .is_some_and(|object| object.is_pointer_animation());
@@ -4711,6 +5032,8 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
             selected_stroke
         } else if is_visibility_target {
             visibility_stroke
+        } else if is_shoot_target {
+            shoot_stroke
         } else if is_pointer_target {
             pointer_stroke
         } else if is_route_marker {
@@ -4723,7 +5046,11 @@ fn draw_selection_overlay(painter: &egui::Painter, editor: &EditorState) {
         match _kind {
             ObjectType::Marker | ObjectType::Text => {
                 if let Some(center) = points.first() {
-                    if (is_visibility_target || is_pointer_target || is_route_marker) && !*selected
+                    if (is_visibility_target
+                        || is_pointer_target
+                        || is_shoot_target
+                        || is_route_marker)
+                        && !*selected
                     {
                         dashed_ring(painter, *center, 19.0, stroke);
                     } else {

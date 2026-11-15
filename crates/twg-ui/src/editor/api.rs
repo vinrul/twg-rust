@@ -29,12 +29,19 @@ use crate::state::{ClientUi, JobKind, ToastKind};
 #[cfg(not(target_arch = "wasm32"))]
 use super::model::MarkerAssetModel;
 use super::model::{
-    BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, GroupAnimation,
-    GroupAnimationKind, LineObject, MAX_GROUP_DELAY, MAX_POINTER_ALTITUDE, MAX_POINTER_SIZE,
-    MAX_ROUTE_SPACING, MIN_GROUP_DELAY, MIN_POINTER_ALTITUDE, MIN_POINTER_SIZE, MIN_ROUTE_SPACING,
-    MarkerObject, ObjectKey, ObjectType, PLAY_FORMATION_SPACING, ParticleObject, ParticleSettings,
-    PointerAnimation, RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance,
-    TextObject, VisibilityAnimation, VisibilityAnimationKind, unit_for_uuid,
+    BuildingObject, CannonSide, DEFAULT_CANNON_AMOUNT, DEFAULT_CANNON_DISTANCE,
+    DEFAULT_CANNON_DROPLET, DEFAULT_CANNON_ELEVATION, DEFAULT_CANNON_HEIGHT, DEFAULT_CANNON_LENGTH,
+    DEFAULT_CANNON_OPACITY, DEFAULT_CANNON_SPREAD, EditorAssetRow, EditorKind, EditorObject,
+    EditorTextureRow, GroupAnimation, GroupAnimationKind, LineObject, MAX_CANNON_AMOUNT,
+    MAX_CANNON_DISTANCE, MAX_CANNON_DROPLET, MAX_CANNON_ELEVATION, MAX_CANNON_HEIGHT,
+    MAX_CANNON_LENGTH, MAX_CANNON_OPACITY, MAX_CANNON_SPREAD, MAX_GROUP_DELAY,
+    MAX_POINTER_ALTITUDE, MAX_POINTER_SIZE, MAX_ROUTE_SPACING, MIN_CANNON_AMOUNT,
+    MIN_CANNON_DISTANCE, MIN_CANNON_DROPLET, MIN_CANNON_ELEVATION, MIN_CANNON_HEIGHT,
+    MIN_CANNON_LENGTH, MIN_CANNON_OPACITY, MIN_CANNON_SPREAD, MIN_GROUP_DELAY,
+    MIN_POINTER_ALTITUDE, MIN_POINTER_SIZE, MIN_ROUTE_SPACING, MarkerObject, ObjectKey, ObjectType,
+    PLAY_FORMATION_SPACING, ParticleObject, ParticleSettings, PointerAnimation, RouteAnimation,
+    RouteAnimationKind, RouteFormation, SequenceAdvance, ShootAnimation, TextObject,
+    VisibilityAnimation, VisibilityAnimationKind, unit_for_uuid,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1296,6 +1303,7 @@ fn line_object(line: Line) -> EditorObject {
             visibility: parse_visibility_animation(&line.keterangan),
             group: parse_group_animation(&line.keterangan),
             pointer: parse_pointer_animation(&line.keterangan),
+            shoot: parse_shoot_animation(&line.keterangan).map(Box::new),
         }),
     }
 }
@@ -1620,6 +1628,9 @@ fn line_keterangan(line: &LineObject) -> String {
         .to_string();
     }
     let Some(pointer) = &line.pointer else {
+        if let Some(shoot) = &line.shoot {
+            return shoot_keterangan(shoot);
+        }
         return String::new();
     };
     serde_json::json!({
@@ -1636,6 +1647,126 @@ fn line_keterangan(line: &LineObject) -> String {
         }
     })
     .to_string()
+}
+
+/// `keterangan` JSON for a water cannon. Kept next to the parser so the saved
+/// shape stays in sync.
+fn shoot_keterangan(shoot: &ShootAnimation) -> String {
+    serde_json::json!({
+        "animation": {
+            "type": "shoot",
+            "kind": "water_cannon",
+            "marker_id": shoot.marker_id.map(|id| id.to_string()),
+            "side": shoot.side.key(),
+            "distance": shoot
+                .distance
+                .clamp(MIN_CANNON_DISTANCE, MAX_CANNON_DISTANCE),
+            "height": shoot.height.clamp(MIN_CANNON_HEIGHT, MAX_CANNON_HEIGHT),
+            "length": shoot.length.clamp(MIN_CANNON_LENGTH, MAX_CANNON_LENGTH),
+            "amount": shoot.amount.clamp(MIN_CANNON_AMOUNT, MAX_CANNON_AMOUNT),
+            "elevation": shoot
+                .elevation
+                .clamp(MIN_CANNON_ELEVATION, MAX_CANNON_ELEVATION),
+            "spread": shoot.spread.clamp(MIN_CANNON_SPREAD, MAX_CANNON_SPREAD),
+            "droplet": shoot
+                .droplet_size
+                .clamp(MIN_CANNON_DROPLET, MAX_CANNON_DROPLET),
+            "color": shoot.color,
+            "opacity": shoot.opacity.clamp(MIN_CANNON_OPACITY, MAX_CANNON_OPACITY),
+            "auto": shoot.auto,
+            "order": shoot.order,
+        }
+    })
+    .to_string()
+}
+
+/// Parses water cannon metadata stored in `plot_lines.keterangan`.
+fn parse_shoot_animation(raw: &str) -> Option<ShootAnimation> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let animation = value.get("animation")?;
+    if animation.get("type")?.as_str()? != "shoot" {
+        return None;
+    }
+    let number = |key: &str, default: f64, min: f64, max: f64| {
+        animation
+            .get(key)
+            .and_then(Value::as_f64)
+            .unwrap_or(default)
+            .clamp(min, max)
+    };
+    Some(ShootAnimation {
+        marker_id: animation
+            .get("marker_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok()),
+        side: animation
+            .get("side")
+            .and_then(Value::as_str)
+            .and_then(CannonSide::from_key)
+            .unwrap_or_default(),
+        distance: number(
+            "distance",
+            DEFAULT_CANNON_DISTANCE,
+            MIN_CANNON_DISTANCE,
+            MAX_CANNON_DISTANCE,
+        ),
+        height: number(
+            "height",
+            DEFAULT_CANNON_HEIGHT,
+            MIN_CANNON_HEIGHT,
+            MAX_CANNON_HEIGHT,
+        ),
+        length: number(
+            "length",
+            DEFAULT_CANNON_LENGTH,
+            MIN_CANNON_LENGTH,
+            MAX_CANNON_LENGTH,
+        ),
+        amount: number(
+            "amount",
+            DEFAULT_CANNON_AMOUNT,
+            MIN_CANNON_AMOUNT,
+            MAX_CANNON_AMOUNT,
+        ),
+        elevation: number(
+            "elevation",
+            DEFAULT_CANNON_ELEVATION,
+            MIN_CANNON_ELEVATION,
+            MAX_CANNON_ELEVATION,
+        ),
+        spread: number(
+            "spread",
+            DEFAULT_CANNON_SPREAD,
+            MIN_CANNON_SPREAD,
+            MAX_CANNON_SPREAD,
+        ),
+        droplet_size: number(
+            "droplet",
+            DEFAULT_CANNON_DROPLET,
+            MIN_CANNON_DROPLET,
+            MAX_CANNON_DROPLET,
+        ),
+        color: animation
+            .get("color")
+            .and_then(Value::as_str)
+            .unwrap_or("#7fd4ff")
+            .to_owned(),
+        opacity: number(
+            "opacity",
+            DEFAULT_CANNON_OPACITY,
+            MIN_CANNON_OPACITY,
+            MAX_CANNON_OPACITY,
+        ),
+        auto: animation
+            .get("auto")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        order: animation
+            .get("order")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(0, i32::MAX as i64) as i32,
+    })
 }
 
 /// Parses the spawn/hide metadata stored in `plot_lines.keterangan`. Route
@@ -2410,6 +2541,49 @@ mod tests {
         assert!(
             parse_pointer_animation(r#"{"animation":{"type":"route","kind":"single"}}"#).is_none()
         );
+    }
+
+    #[test]
+    fn shoot_metadata_round_trips_through_line_keterangan() {
+        let marker_id = Uuid::new_v4();
+        let mut line = LineObject::new(Vec::new());
+        line.shoot = Some(Box::new(ShootAnimation {
+            marker_id: Some(marker_id),
+            side: CannonSide::Left,
+            distance: 3.0,
+            height: 2.5,
+            length: 25.0,
+            amount: 1.75,
+            elevation: 30.0,
+            spread: 12.0,
+            droplet_size: 1.5,
+            color: "#3366ff".to_owned(),
+            opacity: 0.6,
+            auto: true,
+            order: 5,
+        }));
+
+        let raw = line_keterangan(&line);
+        let parsed = parse_shoot_animation(&raw).expect("shoot metadata");
+        assert_eq!(parsed.marker_id, Some(marker_id));
+        assert_eq!(parsed.side, CannonSide::Left);
+        assert!((parsed.distance - 3.0).abs() < 1.0e-9);
+        assert!((parsed.height - 2.5).abs() < 1.0e-9);
+        assert!((parsed.length - 25.0).abs() < 1.0e-9);
+        assert!((parsed.amount - 1.75).abs() < 1.0e-9);
+        assert!((parsed.elevation - 30.0).abs() < 1.0e-9);
+        assert!((parsed.spread - 12.0).abs() < 1.0e-9);
+        assert!((parsed.droplet_size - 1.5).abs() < 1.0e-9);
+        assert_eq!(parsed.color, "#3366ff");
+        assert!((parsed.opacity - 0.6).abs() < 1.0e-9);
+        assert!(parsed.auto);
+        assert_eq!(parsed.order, 5);
+        // Every other animation parser must ignore water cannon metadata.
+        assert!(parse_route_animation(&raw).is_none());
+        assert!(parse_visibility_animation(&raw).is_none());
+        assert!(parse_group_animation(&raw).is_none());
+        assert!(parse_pointer_animation(&raw).is_none());
+        assert!(parse_shoot_animation(r#"{"animation":{"type":"pointer"}}"#).is_none());
     }
 
     #[test]

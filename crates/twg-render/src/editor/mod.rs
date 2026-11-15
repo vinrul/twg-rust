@@ -30,6 +30,7 @@ impl Plugin for EditorRenderPlugin {
                     scene::sync_editor_play_scenes,
                     scene::apply_editor_play_frame,
                     scene::apply_editor_pointer_frame,
+                    scene::apply_editor_water_jet_frame,
                     scene::follow_play_gizmo,
                     scene::sync_editor_play_animations,
                     scene::update_gizmo_scale,
@@ -40,11 +41,12 @@ impl Plugin for EditorRenderPlugin {
                     .chain()
                     .before(crate::map::MapUpdateSet),
             )
-            // Particle billboards need the camera pose updated by the map set
-            // in the same frame, so they run after it.
+            // Particle and water jet billboards need the camera pose updated by
+            // the map set in the same frame, so they run after it.
             .add_systems(
                 Update,
-                scene::animate_particle_effects.after(crate::map::MapUpdateSet),
+                (scene::animate_particle_effects, scene::animate_water_jets)
+                    .after(crate::map::MapUpdateSet),
             );
     }
 }

@@ -1119,6 +1119,8 @@ fn keyboard_shortcuts(
                 editor.pick_visibility_target = None;
             } else if editor.pick_pointer_target.is_some() {
                 editor.pick_pointer_target = None;
+            } else if editor.pick_shoot_target.is_some() {
+                editor.pick_shoot_target = None;
             } else if editor.context_menu.is_some() {
                 editor.context_menu = None;
             } else if editor.point_edit.is_some() {
@@ -1178,6 +1180,27 @@ fn mouse_input(
                 },
                 None if pick_object(editor, pointer).is_some() => {
                     editor.log("Itu bukan marker. Pointer hanya bisa menunjuk marker 3D.");
+                }
+                None => editor.log("Klik tepat pada marker di peta."),
+            }
+            return;
+        }
+
+        // Picking the single water cannon target works like the pointer pick.
+        if let Some(shoot_key) = editor.pick_shoot_target {
+            match pick_route_marker_object(editor, pointer) {
+                Some(key) => match editor.object(key).and_then(|object| object.server_id) {
+                    Some(marker_id) => editor.assign_shoot_target(shoot_key, marker_id),
+                    None => {
+                        editor.pending_shoot_picks.push((shoot_key, key));
+                        editor.requested_save = true;
+                        editor.log(
+                            "Menyimpan skenario dulu agar marker baru bisa dipakai water cannon...",
+                        );
+                    }
+                },
+                None if pick_object(editor, pointer).is_some() => {
+                    editor.log("Itu bukan marker. Water cannon hanya menempel di marker 3D.");
                 }
                 None => editor.log("Klik tepat pada marker di peta."),
             }

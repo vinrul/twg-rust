@@ -219,6 +219,31 @@ pub(crate) const MAX_POINTER_ALTITUDE: f64 = 1000.0;
 /// Pointer arrows bob up and down this far while Play runs.
 pub(crate) const POINTER_BOB_METERS: f64 = 0.9;
 pub(crate) const POINTER_BOB_SECONDS: f64 = 2.0;
+/// Water cannon (Shoot) defaults and bounds.
+pub(crate) const DEFAULT_CANNON_DISTANCE: f64 = 1.6;
+pub(crate) const MIN_CANNON_DISTANCE: f64 = 0.0;
+pub(crate) const MAX_CANNON_DISTANCE: f64 = 20.0;
+pub(crate) const DEFAULT_CANNON_HEIGHT: f64 = 1.6;
+pub(crate) const MIN_CANNON_HEIGHT: f64 = 0.0;
+pub(crate) const MAX_CANNON_HEIGHT: f64 = 50.0;
+pub(crate) const DEFAULT_CANNON_LENGTH: f64 = 14.0;
+pub(crate) const MIN_CANNON_LENGTH: f64 = 1.0;
+pub(crate) const MAX_CANNON_LENGTH: f64 = 100.0;
+pub(crate) const DEFAULT_CANNON_AMOUNT: f64 = 1.0;
+pub(crate) const MIN_CANNON_AMOUNT: f64 = 0.25;
+pub(crate) const MAX_CANNON_AMOUNT: f64 = 3.0;
+pub(crate) const DEFAULT_CANNON_ELEVATION: f64 = 12.0;
+pub(crate) const MIN_CANNON_ELEVATION: f64 = 0.0;
+pub(crate) const MAX_CANNON_ELEVATION: f64 = 70.0;
+pub(crate) const DEFAULT_CANNON_SPREAD: f64 = 8.0;
+pub(crate) const MIN_CANNON_SPREAD: f64 = 0.0;
+pub(crate) const MAX_CANNON_SPREAD: f64 = 40.0;
+pub(crate) const DEFAULT_CANNON_DROPLET: f64 = 1.0;
+pub(crate) const MIN_CANNON_DROPLET: f64 = 0.3;
+pub(crate) const MAX_CANNON_DROPLET: f64 = 3.0;
+pub(crate) const DEFAULT_CANNON_OPACITY: f64 = 0.75;
+pub(crate) const MIN_CANNON_OPACITY: f64 = 0.1;
+pub(crate) const MAX_CANNON_OPACITY: f64 = 1.0;
 /// Default gap between members of a delayed sequence, in seconds.
 pub(crate) const DEFAULT_GROUP_DELAY: f64 = 2.0;
 /// Bounds for the authored sequence delay, in seconds.
@@ -336,6 +361,19 @@ pub struct PlayPointerAnimation {
     pub order: i32,
 }
 
+/// One authored water cannon resolved for Play mode.
+#[derive(Debug, Clone)]
+pub struct PlayShootAnimation {
+    pub animation_key: ObjectKey,
+    pub name: String,
+    /// The target marker is missing or cannot be resolved.
+    pub missing: bool,
+    /// The cannon starts spraying as soon as Play begins.
+    pub auto: bool,
+    /// Persisted play order shared with the scenario editor.
+    pub order: i32,
+}
+
 /// Resolved member of a combine/sequence group. Indices point into
 /// [`PlayState::animations`] and [`PlayState::visibility_animations`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,6 +450,10 @@ pub struct PlayState {
     /// Pointer arrows revealed from the Play panel. Arrows start hidden so the
     /// exported map stays clean until the presenter shows them.
     pub shown_pointers: BTreeSet<ObjectKey>,
+    /// Authored water cannons available in the Play panel.
+    pub shoots: Vec<PlayShootAnimation>,
+    /// Cannons currently spraying. Runtime-only state.
+    pub sprays: BTreeSet<ObjectKey>,
     /// Objects hidden at runtime by spawn/hide animations. Runtime-only state:
     /// it never touches the authored scenario or the editor visibility flags.
     pub hidden: BTreeSet<ObjectKey>,
@@ -1020,6 +1062,106 @@ impl Default for PointerAnimation {
     }
 }
 
+/// Side of the target marker a water cannon nozzle is mounted on. The sides
+/// follow the marker's own facing direction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CannonSide {
+    #[default]
+    Front,
+    Back,
+    Right,
+    Left,
+}
+
+impl CannonSide {
+    pub const ALL: [Self; 4] = [Self::Front, Self::Back, Self::Right, Self::Left];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Front => "Depan",
+            Self::Back => "Belakang",
+            Self::Right => "Kanan",
+            Self::Left => "Kiri",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Front => "front",
+            Self::Back => "back",
+            Self::Right => "right",
+            Self::Left => "left",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|side| side.key() == key)
+    }
+
+    /// Nozzle offset in marker-local space as `(x, z)`, where `z` is the
+    /// marker's forward axis. A model facing forward has its right hand on
+    /// negative X.
+    pub const fn local(self) -> (f64, f64) {
+        match self {
+            Self::Front => (0.0, 1.0),
+            Self::Back => (0.0, -1.0),
+            Self::Right => (-1.0, 0.0),
+            Self::Left => (1.0, 0.0),
+        }
+    }
+}
+
+/// A water cannon mounted on one marker. Play turns the spray on and off from
+/// the animation panel; the jet itself is a ballistic particle stream.
+#[derive(Clone, Debug)]
+pub struct ShootAnimation {
+    /// The single marker the cannon is mounted on.
+    pub marker_id: Option<Uuid>,
+    /// Side of the marker the nozzle sits on.
+    pub side: CannonSide,
+    /// Nozzle distance from the marker centre, in metres.
+    pub distance: f64,
+    /// Nozzle height above the marker's ground point, in metres.
+    pub height: f64,
+    /// Spray reach in metres.
+    pub length: f64,
+    /// Droplet count multiplier.
+    pub amount: f64,
+    /// Launch angle above the horizon, in degrees.
+    pub elevation: f64,
+    /// Cone spread of the jet, in degrees.
+    pub spread: f64,
+    /// Droplet size multiplier.
+    pub droplet_size: f64,
+    pub color: String,
+    /// Droplet opacity multiplier.
+    pub opacity: f64,
+    /// Starts spraying as soon as Play begins.
+    pub auto: bool,
+    /// Position in the shared Play animation order.
+    pub order: i32,
+}
+
+impl Default for ShootAnimation {
+    fn default() -> Self {
+        Self {
+            marker_id: None,
+            side: CannonSide::Front,
+            distance: DEFAULT_CANNON_DISTANCE,
+            height: DEFAULT_CANNON_HEIGHT,
+            length: DEFAULT_CANNON_LENGTH,
+            amount: DEFAULT_CANNON_AMOUNT,
+            elevation: DEFAULT_CANNON_ELEVATION,
+            spread: DEFAULT_CANNON_SPREAD,
+            droplet_size: DEFAULT_CANNON_DROPLET,
+            color: "#7fd4ff".to_owned(),
+            opacity: DEFAULT_CANNON_OPACITY,
+            auto: false,
+            order: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LineObject {
     pub points: Vec<[f64; 2]>,
@@ -1036,6 +1178,10 @@ pub struct LineObject {
     pub group: Option<GroupAnimation>,
     /// Set for a 3D pointer arrow. These lines carry no geometry either.
     pub pointer: Option<PointerAnimation>,
+    /// Set for a water cannon (Shoot). These lines carry no geometry either.
+    /// Boxed because the cannon settings are much larger than the other
+    /// animation payloads.
+    pub shoot: Option<Box<ShootAnimation>>,
 }
 
 impl LineObject {
@@ -1051,6 +1197,7 @@ impl LineObject {
             visibility: None,
             group: None,
             pointer: None,
+            shoot: None,
         }
     }
 
@@ -1601,12 +1748,26 @@ impl EditorObject {
         }
     }
 
-    /// Any animation object (route, spawn/hide, group, or pointer).
+    /// Water cannon rows are stored on a line row without geometry.
+    pub fn is_shoot_animation(&self) -> bool {
+        matches!(&self.kind, EditorKind::Line(line) if line.shoot.is_some())
+    }
+
+    /// Water cannon metadata of a Shoot animation line.
+    pub fn shoot_animation(&self) -> Option<&ShootAnimation> {
+        match &self.kind {
+            EditorKind::Line(line) => line.shoot.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Any animation object (route, spawn/hide, group, pointer, or shoot).
     pub fn is_animation(&self) -> bool {
         self.is_animation_route()
             || self.is_visibility_animation()
             || self.is_group_animation()
             || self.is_pointer_animation()
+            || self.is_shoot_animation()
     }
 
     /// Position of this animation in the persisted Play order.
@@ -1619,6 +1780,7 @@ impl EditorObject {
                 .or_else(|| line.visibility.as_ref().map(|visibility| visibility.order))
                 .or_else(|| line.group.as_ref().map(|group| group.order))
                 .or_else(|| line.pointer.as_ref().map(|pointer| pointer.order))
+                .or_else(|| line.shoot.as_ref().map(|shoot| shoot.order))
                 .unwrap_or(0),
             _ => 0,
         }
@@ -1637,7 +1799,8 @@ impl EditorObject {
                         .map(|visibility| visibility.kind.label())
                 })
                 .or_else(|| line.group.as_ref().map(|group| group.kind.label()))
-                .or_else(|| line.pointer.as_ref().map(|_| "Pointer")),
+                .or_else(|| line.pointer.as_ref().map(|_| "Pointer"))
+                .or_else(|| line.shoot.as_ref().map(|_| "Water cannon")),
             _ => None,
         }
     }
@@ -1943,6 +2106,8 @@ pub struct EditorState {
     pub visibility_target_search: String,
     /// Marker search text for the pointer inspector.
     pub pointer_marker_search: String,
+    /// Marker search text for the water cannon inspector.
+    pub shoot_marker_search: String,
     /// Search text for the Play animation panel.
     pub play_anim_search: String,
     /// Route waiting for a marker picked directly on the map.
@@ -1951,6 +2116,8 @@ pub struct EditorState {
     pub pick_visibility_target: Option<ObjectKey>,
     /// Pointer animation waiting for its single marker picked on the map.
     pub pick_pointer_target: Option<ObjectKey>,
+    /// Water cannon waiting for its single marker picked on the map.
+    pub pick_shoot_target: Option<ObjectKey>,
     /// Marker picks that wait for the save which gives those markers a server
     /// id. New markers cannot join a route until the server assigns them a
     /// UUID, so a map pick saves first and binds afterwards.
@@ -1960,6 +2127,8 @@ pub struct EditorState {
     pub pending_visibility_picks: Vec<(ObjectKey, ObjectKey)>,
     /// Same queue for pointer targets.
     pub pending_pointer_picks: Vec<(ObjectKey, ObjectKey)>,
+    /// Same queue for water cannon targets.
+    pub pending_shoot_picks: Vec<(ObjectKey, ObjectKey)>,
     /// Asks the shell to run the editor save before the next frame.
     pub requested_save: bool,
     /// Animation type created when the current route draft is finished.
@@ -2095,13 +2264,16 @@ impl EditorState {
             route_marker_search: String::new(),
             visibility_target_search: String::new(),
             pointer_marker_search: String::new(),
+            shoot_marker_search: String::new(),
             play_anim_search: String::new(),
             pick_route_marker: None,
             pick_visibility_target: None,
             pick_pointer_target: None,
+            pick_shoot_target: None,
             pending_route_picks: Vec::new(),
             pending_visibility_picks: Vec::new(),
             pending_pointer_picks: Vec::new(),
+            pending_shoot_picks: Vec::new(),
             requested_save: false,
             pending_route_kind: RouteAnimationKind::Single,
             anim_filter_hidden: false,
@@ -2139,9 +2311,11 @@ impl EditorState {
         self.pick_route_marker = None;
         self.pick_visibility_target = None;
         self.pick_pointer_target = None;
+        self.pick_shoot_target = None;
         self.pending_route_picks.clear();
         self.pending_visibility_picks.clear();
         self.pending_pointer_picks.clear();
+        self.pending_shoot_picks.clear();
         self.play_anim_search.clear();
         self.next_key = 1;
         self.dirty = false;
@@ -2161,6 +2335,7 @@ impl EditorState {
         self.pick_route_marker = None;
         self.pick_visibility_target = None;
         self.pick_pointer_target = None;
+        self.pick_shoot_target = None;
         if self.tool == tool {
             return;
         }
@@ -2345,9 +2520,11 @@ impl EditorState {
             self.pick_route_marker = None;
             self.pick_visibility_target = None;
             self.pick_pointer_target = None;
+            self.pick_shoot_target = None;
             self.route_marker_search.clear();
             self.visibility_target_search.clear();
             self.pointer_marker_search.clear();
+            self.shoot_marker_search.clear();
         }
         if self.point_edit.is_some_and(|edit| edit.key != key) {
             self.point_edit = None;
@@ -2427,6 +2604,7 @@ impl EditorState {
         self.pick_route_marker = None;
         self.pick_visibility_target = None;
         self.pick_pointer_target = None;
+        self.pick_shoot_target = None;
         self.play = PlayState {
             active: true,
             ..PlayState::default()
@@ -2527,6 +2705,7 @@ impl EditorState {
         self.init_play_animations();
         self.init_play_groups();
         self.init_play_pointers();
+        self.init_play_shoots();
         self.play_sync_pending = true;
     }
 
@@ -2550,6 +2729,35 @@ impl EditorState {
         }
         pointers.sort_by_key(|pointer| pointer.order);
         self.play.pointers = pointers;
+    }
+
+    /// Snapshots water cannons for the Play panel. Cannons marked automatic
+    /// start spraying right away; the rest wait for the panel button.
+    fn init_play_shoots(&mut self) {
+        let mut shoots = Vec::new();
+        let mut sprays = BTreeSet::new();
+        for object in &self.objects {
+            if !object.visible || !self.visible.allows(ObjectType::Line) {
+                continue;
+            }
+            let Some(shoot) = object.shoot_animation() else {
+                continue;
+            };
+            let missing = !self.shoot_target_exists(shoot);
+            if shoot.auto && !missing {
+                sprays.insert(object.key);
+            }
+            shoots.push(PlayShootAnimation {
+                animation_key: object.key,
+                name: object.name.clone(),
+                missing,
+                auto: shoot.auto,
+                order: shoot.order,
+            });
+        }
+        shoots.sort_by_key(|shoot| shoot.order);
+        self.play.shoots = shoots;
+        self.play.sprays = sprays;
     }
 
     /// Resolves combine/sequence groups after routes and spawn/hide animations
@@ -3202,11 +3410,20 @@ impl EditorState {
             .flat_map(|animation| animation.targets.iter().copied())
             .collect::<BTreeSet<_>>();
         let pointers_shown = !self.play.shown_pointers.is_empty();
-        if hidden == self.play.hidden && !pointers_shown {
+        let auto_sprays = self
+            .play
+            .shoots
+            .iter()
+            .filter(|shoot| shoot.auto && !shoot.missing)
+            .map(|shoot| shoot.animation_key)
+            .collect::<BTreeSet<_>>();
+        let sprays_changed = self.play.sprays != auto_sprays;
+        if hidden == self.play.hidden && !pointers_shown && !sprays_changed {
             return;
         }
         self.play.hidden = hidden;
         self.play.shown_pointers.clear();
+        self.play.sprays = auto_sprays;
         self.selected.retain(|key| !self.play.hidden.contains(key));
         self.touch();
         self.play_sync_pending = true;
@@ -3239,6 +3456,47 @@ impl EditorState {
             return 0.0;
         }
         (self.play.clock * std::f64::consts::TAU / POINTER_BOB_SECONDS).sin() * POINTER_BOB_METERS
+    }
+
+    /// True while a water cannon is spraying during Play.
+    pub fn cannon_spraying(&self, key: ObjectKey) -> bool {
+        self.play.sprays.contains(&key)
+    }
+
+    /// Starts or stops a water cannon in Play. The jet is part of the render
+    /// scene, so the switch rebuilds it once.
+    pub fn set_cannon_spraying(&mut self, key: ObjectKey, spraying: bool) {
+        let changed = if spraying {
+            self.play.sprays.insert(key)
+        } else {
+            self.play.sprays.remove(&key)
+        };
+        if !changed {
+            return;
+        }
+        self.touch();
+    }
+
+    /// Markers that host the selected water cannons (including cannons inside a
+    /// selected group). The editor overlay rings them like the other animation
+    /// targets.
+    pub fn selected_shoot_targets(&self) -> BTreeSet<ObjectKey> {
+        let mut targets = BTreeSet::new();
+        for key in self.selected_animation_keys() {
+            let Some(object) = self.object(key) else {
+                continue;
+            };
+            if !object.visible {
+                continue;
+            }
+            let Some(shoot) = object.shoot_animation() else {
+                continue;
+            };
+            if let Some((marker_key, _, _, _)) = self.shoot_target(shoot) {
+                targets.insert(marker_key);
+            }
+        }
+        targets
     }
 
     /// Markers pointed at by the selected pointer arrows (including pointers
@@ -4089,6 +4347,230 @@ impl EditorState {
         })
     }
 
+    /// Creates a water cannon. The single target marker is chosen in the
+    /// Inspector or by clicking it on the map. A single selected marker becomes
+    /// the target right away.
+    pub fn add_shoot_animation(&mut self) {
+        if !self.loaded {
+            return;
+        }
+        let mut target = None;
+        let mut unsaved = None;
+        for selected in self.selected.iter() {
+            if let Some(object) = self.object(*selected)
+                && matches!(object.kind, EditorKind::Marker(_))
+            {
+                match object.server_id {
+                    Some(id) => target = Some(id),
+                    None => unsaved = Some(*selected),
+                }
+                break;
+            }
+        }
+        self.push_undo();
+        let key = self.alloc_key();
+        let name = format!("Water cannon {}", self.shoot_count() + 1);
+        let mut line = LineObject::new(Vec::new());
+        line.shoot = Some(Box::new(ShootAnimation {
+            marker_id: target,
+            order: self.next_animation_order(),
+            ..ShootAnimation::default()
+        }));
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name,
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Line(line),
+        });
+        if let Some(marker_key) = unsaved {
+            // The marker only gets its server UUID from the next save; the pick
+            // is bound once those ids arrive.
+            self.pending_shoot_picks.push((key, marker_key));
+            self.requested_save = true;
+        }
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+        self.log(if target.is_some() {
+            "Water cannon dibuat untuk marker yang dipilih. Atur posisi, panjang, dan \
+             banyaknya air di Inspector."
+        } else {
+            "Water cannon dibuat. Pilih satu marker target dan atur semprotannya di Inspector."
+        });
+    }
+
+    fn shoot_count(&self) -> usize {
+        self.objects
+            .iter()
+            .filter(|object| object.is_shoot_animation())
+            .count()
+    }
+
+    /// Saved markers that can host a water cannon, filtered by the inspector
+    /// search.
+    pub fn shoot_marker_options(&self, shoot_key: ObjectKey) -> Vec<(Option<Uuid>, String)> {
+        let needle = self.shoot_marker_search.trim().to_lowercase();
+        let mut options = self
+            .objects
+            .iter()
+            .filter_map(|object| {
+                if object.key == shoot_key || !matches!(object.kind, EditorKind::Marker(_)) {
+                    return None;
+                }
+                let id = object.server_id?;
+                if !needle.is_empty() && !object.name.to_lowercase().contains(&needle) {
+                    return None;
+                }
+                Some((Some(id), object.name.clone()))
+            })
+            .collect::<Vec<_>>();
+        options.sort_by_key(|left| left.1.to_lowercase());
+        let mut result = vec![(None, "— Pilih marker —".to_owned())];
+        result.extend(options);
+        result
+    }
+
+    /// Binds a marker to the water cannon. A cannon only ever targets one
+    /// marker.
+    pub fn assign_shoot_target(&mut self, shoot_key: ObjectKey, marker_id: Uuid) {
+        let Some(object) = self.object_mut(shoot_key) else {
+            return;
+        };
+        let EditorKind::Line(line) = &mut object.kind else {
+            return;
+        };
+        let Some(shoot) = &mut line.shoot else {
+            return;
+        };
+        shoot.marker_id = Some(marker_id);
+        object.dirty = true;
+        self.pick_shoot_target = None;
+        self.dirty = true;
+        self.touch();
+        self.log("Marker target water cannon dipilih.");
+    }
+
+    /// True when a cannon's target marker still exists in the scenario. Runtime
+    /// visibility (spawn/hide) does not count as missing, because the marker can
+    /// come back during Play.
+    fn shoot_target_exists(&self, shoot: &ShootAnimation) -> bool {
+        let Some(marker_id) = shoot.marker_id else {
+            return false;
+        };
+        self.objects.iter().any(|object| {
+            object.server_id == Some(marker_id) && matches!(object.kind, EditorKind::Marker(_))
+        })
+    }
+
+    /// Position, bearing, and altitude of a cannon's target marker, using the
+    /// current Play pose while the scenario runs. Returns `None` when the marker
+    /// is missing or hidden by a spawn/hide animation.
+    fn shoot_target(&self, shoot: &ShootAnimation) -> Option<(ObjectKey, GeoPoint, f64, f64)> {
+        let marker_id = shoot.marker_id?;
+        let marker = self.objects.iter().find(|object| {
+            object.server_id == Some(marker_id) && matches!(object.kind, EditorKind::Marker(_))
+        })?;
+        if !marker.visible {
+            return None;
+        }
+        if self.preview && !self.play.is_visible(marker.key) {
+            return None;
+        }
+        let (rot_y, marker_altitude) = match &marker.kind {
+            EditorKind::Marker(marker) => (marker.rot_y, marker.altitude),
+            _ => (0.0, 0.0),
+        };
+        // Authored markers face `rot_y`; Play reports heading clockwise from
+        // north. Both are converted into one bearing so a moving marker keeps
+        // its cannon pointing the right way.
+        let authored_bearing = 180.0 - rot_y;
+        let (point, altitude, bearing) = if self.preview {
+            if let Some(unit) = self.play.units.get(&marker.key) {
+                (
+                    unit.position,
+                    unit.altitude as f64,
+                    f64::from(unit.heading_deg),
+                )
+            } else if let Some(unit) = self.play.limited.get(&marker.key) {
+                (
+                    unit.position,
+                    unit.altitude as f64,
+                    f64::from(unit.heading_deg),
+                )
+            } else {
+                (marker.point()?, marker_altitude, authored_bearing)
+            }
+        } else {
+            (marker.point()?, marker_altitude, authored_bearing)
+        };
+        Some((marker.key, point, altitude, bearing))
+    }
+
+    /// Nozzle position, nozzle altitude, and outward spray direction of a water
+    /// cannon. The jet shoots away from the marker on the chosen side.
+    pub fn cannon_spray(&self, shoot: &ShootAnimation) -> Option<(GeoPoint, f32, [f32; 2])> {
+        let (_, point, marker_altitude, bearing) = self.shoot_target(shoot)?;
+        let (local_x, local_z) = shoot.side.local();
+        let angle = bearing.to_radians();
+        let (sin, cos) = angle.sin_cos();
+        // Rotate the marker-local side vector into world axes (x = east,
+        // z = south), then offset the nozzle out of the marker body.
+        let dir_x = local_z * sin - local_x * cos;
+        let dir_z = -local_x * sin - local_z * cos;
+        let distance = shoot
+            .distance
+            .clamp(MIN_CANNON_DISTANCE, MAX_CANNON_DISTANCE);
+        let nozzle =
+            GeoPoint::from_local_offset(point, dir_x * distance, -dir_z * distance).ok()?;
+        let height = shoot.height.clamp(MIN_CANNON_HEIGHT, MAX_CANNON_HEIGHT);
+        Some((
+            nozzle,
+            (marker_altitude + height) as f32,
+            [dir_x as f32, dir_z as f32],
+        ))
+    }
+
+    /// Scene visual for a water cannon: the particle jet rooted at its nozzle.
+    fn shoot_scene_object(&self, object: &EditorObject) -> Option<EditorSceneObject> {
+        let shoot = object.shoot_animation()?;
+        let (target, _, _, _) = self.shoot_target(shoot)?;
+        let (nozzle, altitude, dir) = self.cannon_spray(shoot)?;
+        let distance = shoot
+            .distance
+            .clamp(MIN_CANNON_DISTANCE, MAX_CANNON_DISTANCE) as f32;
+        let (local_x, local_z) = shoot.side.local();
+        Some(EditorSceneObject {
+            key: object.key,
+            label: object.name.clone(),
+            lon: nozzle.longitude,
+            lat: nozzle.latitude,
+            selected: self.selected.contains(&object.key),
+            kind: EditorSceneKind::WaterCannon {
+                color: parse_hex_color(&shoot.color),
+                opacity: shoot.opacity.clamp(MIN_CANNON_OPACITY, MAX_CANNON_OPACITY) as f32,
+                length: shoot.length.clamp(MIN_CANNON_LENGTH, MAX_CANNON_LENGTH) as f32,
+                amount: shoot.amount.clamp(MIN_CANNON_AMOUNT, MAX_CANNON_AMOUNT) as f32,
+                elevation_deg: shoot
+                    .elevation
+                    .clamp(MIN_CANNON_ELEVATION, MAX_CANNON_ELEVATION)
+                    as f32,
+                spread_deg: shoot.spread.clamp(MIN_CANNON_SPREAD, MAX_CANNON_SPREAD) as f32,
+                droplet_size: shoot
+                    .droplet_size
+                    .clamp(MIN_CANNON_DROPLET, MAX_CANNON_DROPLET)
+                    as f32,
+                dir,
+                target,
+                local: [local_x as f32 * distance, local_z as f32 * distance],
+                ground_height: shoot.height.clamp(MIN_CANNON_HEIGHT, MAX_CANNON_HEIGHT) as f32,
+                altitude,
+            },
+        })
+    }
+
     /// Marker assets that Play can move: animated models and static `Free` or
     /// `Limited` assets.
     pub fn marker_is_animatable(&self, marker: &MarkerObject) -> bool {
@@ -4322,6 +4804,23 @@ impl EditorState {
                 _ => {}
             }
         }
+        let shoot_picks = std::mem::take(&mut self.pending_shoot_picks);
+        for (shoot_key, marker_key) in shoot_picks {
+            let shoot_ready = self.object(shoot_key).is_some_and(
+                |object| matches!(&object.kind, EditorKind::Line(line) if line.shoot.is_some()),
+            );
+            let marker_state = self.object(marker_key).and_then(|object| {
+                matches!(&object.kind, EditorKind::Marker(_)).then_some(object.server_id)
+            });
+            match marker_state {
+                Some(Some(marker_id)) if shoot_ready => {
+                    self.assign_shoot_target(shoot_key, marker_id);
+                    bound = true;
+                }
+                Some(None) => self.pending_shoot_picks.push((shoot_key, marker_key)),
+                _ => {}
+            }
+        }
         bound
     }
 
@@ -4381,6 +4880,12 @@ impl EditorState {
                     && pointer.order != position
                 {
                     pointer.order = position;
+                    object.dirty = true;
+                }
+                if let Some(shoot) = &mut line.shoot
+                    && shoot.order != position
+                {
+                    shoot.order = position;
                     object.dirty = true;
                 }
             }
@@ -4537,6 +5042,11 @@ impl EditorState {
                     // A copy must not stack a second arrow on the same marker.
                     pointer.marker_id = None;
                     pointer.order = next_order;
+                    next_order = next_order.saturating_add(1);
+                } else if let Some(shoot) = &mut line.shoot {
+                    // A copy must not mount a second cannon on the same marker.
+                    shoot.marker_id = None;
+                    shoot.order = next_order;
                     next_order = next_order.saturating_add(1);
                 }
             }
@@ -4895,6 +5405,17 @@ impl EditorState {
                     continue;
                 }
                 if let Some(scene_object) = self.pointer_scene_object(object) {
+                    objects.push(scene_object);
+                }
+                continue;
+            }
+            // Water cannons are Play effects: the jet exists only while the
+            // cannon sprays. During authoring the particle preview shows it.
+            if object.is_shoot_animation() {
+                if self.preview && !self.play.sprays.contains(&object.key) {
+                    continue;
+                }
+                if let Some(scene_object) = self.shoot_scene_object(object) {
                     objects.push(scene_object);
                 }
                 continue;
@@ -6801,6 +7322,175 @@ mod tests {
         editor.play_tick(0.3);
         assert!((first - editor.pointer_bob()).abs() > 1.0e-6);
         assert!(editor.pointer_bob().abs() <= POINTER_BOB_METERS + 1.0e-9);
+    }
+
+    #[test]
+    fn water_cannon_nozzle_follows_the_chosen_side() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "88888888-8888-4888-8888-888888888888", base);
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_shoot_animation();
+        let shoot_key = *editor.selected.iter().next().expect("shoot selected");
+        editor.assign_shoot_target(shoot_key, marker_id);
+
+        // The marker faces +Z at rot_y 0, so the default front nozzle sits one
+        // distance south of it and the jet shoots south.
+        let mut shoot = editor
+            .object(shoot_key)
+            .expect("shoot")
+            .shoot_animation()
+            .expect("water cannon")
+            .clone();
+        let (nozzle, altitude, dir) = editor.cannon_spray(&shoot).expect("nozzle");
+        let expected =
+            GeoPoint::from_local_offset(base, 0.0, -DEFAULT_CANNON_DISTANCE).expect("offset");
+        assert!((nozzle.longitude - expected.longitude).abs() < 1.0e-9);
+        assert!((nozzle.latitude - expected.latitude).abs() < 1.0e-9);
+        assert!((altitude - DEFAULT_CANNON_HEIGHT as f32).abs() < 1.0e-4);
+        assert!(dir[0].abs() < 1.0e-5 && (dir[1] - 1.0).abs() < 1.0e-5);
+
+        // Facing south puts the marker's right hand to the west.
+        shoot.side = CannonSide::Right;
+        let (nozzle, _, dir) = editor.cannon_spray(&shoot).expect("nozzle");
+        let expected =
+            GeoPoint::from_local_offset(base, -DEFAULT_CANNON_DISTANCE, 0.0).expect("offset");
+        assert!((nozzle.longitude - expected.longitude).abs() < 1.0e-9);
+        assert!((nozzle.latitude - expected.latitude).abs() < 1.0e-9);
+        assert!((dir[0] + 1.0).abs() < 1.0e-5 && dir[1].abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn water_cannon_sprays_only_when_triggered_in_play() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "99999999-9999-4999-8999-999999999999",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_shoot_animation();
+        let shoot_key = *editor.selected.iter().next().expect("shoot selected");
+        editor.assign_shoot_target(shoot_key, marker_id);
+
+        editor.preview = true;
+        editor.start_play();
+        assert_eq!(editor.play.shoots.len(), 1);
+        assert!(!editor.cannon_spraying(shoot_key));
+        assert!(
+            !editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == shoot_key)
+        );
+
+        editor.set_cannon_spraying(shoot_key, true);
+        assert!(editor.cannon_spraying(shoot_key));
+        let scene = editor.build_scene();
+        let object = scene
+            .objects
+            .iter()
+            .find(|object| object.key == shoot_key)
+            .expect("cannon in scene");
+        assert!(matches!(object.kind, EditorSceneKind::WaterCannon { .. }));
+
+        editor.set_cannon_spraying(shoot_key, false);
+        assert!(
+            !editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == shoot_key)
+        );
+    }
+
+    #[test]
+    fn water_cannon_can_start_spraying_with_play() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_shoot_animation();
+        let shoot_key = *editor.selected.iter().next().expect("shoot selected");
+        editor.assign_shoot_target(shoot_key, marker_id);
+        let EditorKind::Line(line) = &mut editor.object_mut(shoot_key).expect("shoot").kind else {
+            panic!("expected line");
+        };
+        line.shoot.as_mut().expect("water cannon").auto = true;
+
+        editor.preview = true;
+        editor.start_play();
+        assert!(editor.cannon_spraying(shoot_key));
+        assert!(
+            editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == shoot_key)
+        );
+
+        // Reset restores the authored starting state, which includes the auto
+        // spray.
+        editor.reset_play_visibility();
+        assert!(editor.cannon_spraying(shoot_key));
+    }
+
+    #[test]
+    fn selected_water_cannon_highlights_its_marker() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_shoot_animation();
+        let shoot_key = *editor.selected.iter().next().expect("shoot selected");
+        editor.assign_shoot_target(shoot_key, marker_id);
+        editor.select_only(shoot_key);
+
+        assert_eq!(
+            editor.selected_shoot_targets(),
+            BTreeSet::from([marker_key])
+        );
+    }
+
+    #[test]
+    fn shoot_target_of_an_unsaved_marker_binds_after_save() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",
+            GeoPoint::new(115.225, -8.648),
+        );
+        editor.add_shoot_animation();
+        let shoot_key = *editor.selected.iter().next().expect("shoot selected");
+        assert_eq!(editor.pending_shoot_picks, vec![(shoot_key, marker_key)]);
+        assert!(editor.requested_save);
+        assert!(!editor.apply_pending_route_picks());
+
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        assert!(editor.apply_pending_route_picks());
+        assert!(editor.pending_shoot_picks.is_empty());
+        assert_eq!(
+            editor
+                .object(shoot_key)
+                .expect("shoot")
+                .shoot_animation()
+                .expect("water cannon")
+                .marker_id,
+            Some(marker_id)
+        );
     }
 
     #[test]

@@ -283,6 +283,27 @@ pub enum EditorSceneKind {
         /// altitude during Play.
         lift: f32,
     },
+    /// Water cannon jet (Shoot). The entity is anchored at the nozzle.
+    WaterCannon {
+        color: [f32; 4],
+        opacity: f32,
+        /// Spray reach in metres.
+        length: f32,
+        /// Droplet count multiplier.
+        amount: f32,
+        elevation_deg: f32,
+        spread_deg: f32,
+        droplet_size: f32,
+        /// Outward spray direction on the ground plane (x, z).
+        dir: [f32; 2],
+        /// Editor key of the marker the cannon is mounted on.
+        target: u64,
+        /// Nozzle offset in marker-local space (x = right, z = forward).
+        local: [f32; 2],
+        /// Nozzle height above the ground it falls back to.
+        ground_height: f32,
+        altitude: f32,
+    },
     Text {
         color: [f32; 4],
         font_size: f32,
@@ -381,6 +402,9 @@ pub(crate) struct EditorRenderCache {
     /// Particle materials keyed by effect kind, colour shade, and quantised
     /// opacity step.
     particle_materials: HashMap<(EditorParticleKind, usize, u8), Handle<StandardMaterial>>,
+    /// Water cannon droplet materials keyed by tint, colour shade, and
+    /// quantised opacity step.
+    water_materials: HashMap<([u8; 4], usize, u8), Handle<StandardMaterial>>,
 }
 
 struct GizmoMeshes {
@@ -450,6 +474,41 @@ pub(crate) struct EditorPlayAnimation {
 /// the authored altitude; the children are billboarded puffs.
 #[derive(Component)]
 pub(crate) struct ParticleEffectRoot;
+
+/// Root of one water cannon jet, anchored at the nozzle. `dir` is the world
+/// spray direction and is refreshed while the marker turns during Play.
+#[derive(Component)]
+pub(crate) struct WaterJetRoot {
+    dir: [f32; 2],
+}
+
+/// Keeps a water cannon jet on its marker during Play, including the nozzle
+/// offset rotation when the marker changes heading.
+#[derive(Component)]
+pub(crate) struct WaterJetTarget {
+    target: u64,
+    /// Nozzle offset in marker-local space (x = right, z = forward).
+    local: [f32; 2],
+    /// Nozzle height above the marker ground.
+    height: f32,
+}
+
+/// One droplet of a water cannon jet. Motion is derived from `elapsed` and the
+/// stored flight parameters, so the stream loops without per-frame state.
+#[derive(Component)]
+pub(crate) struct JetDrop {
+    /// Offset within the spray cycle, 0..1.
+    phase: f32,
+    /// Time until the droplet reaches the ground, seconds.
+    lifetime: f32,
+    /// Horizontal speed, m/s.
+    horizontal: f32,
+    /// Vertical launch speed, m/s.
+    vertical: f32,
+    /// Yaw offset inside the jet cone, relative to the spray direction.
+    yaw: f32,
+    size: f32,
+}
 
 /// One animated puff/droplet inside a [`ParticleEffectRoot`]. All motion is
 /// derived from `elapsed` and the stored phase, so no per-frame state has to be
@@ -1287,6 +1346,43 @@ fn spawn_object(
             });
             cache.entities.push(root);
         }
+        EditorSceneKind::WaterCannon {
+            color,
+            opacity,
+            length,
+            amount,
+            elevation_deg,
+            spread_deg,
+            droplet_size,
+            dir,
+            target,
+            local,
+            ground_height,
+            altitude,
+        } => {
+            spawn_water_cannon(
+                commands,
+                meshes,
+                materials,
+                images,
+                cache,
+                object.key,
+                *color,
+                *opacity,
+                *length,
+                *amount,
+                *elevation_deg,
+                *spread_deg,
+                *droplet_size,
+                *dir,
+                *target,
+                *local,
+                *ground_height,
+                *altitude,
+                anchor,
+                name,
+            );
+        }
         EditorSceneKind::Line {
             points,
             altitudes,
@@ -1546,6 +1642,156 @@ fn spawn_particle_effect(
     });
 }
 
+/// Ballistic water cannon jet: droplets launch from the nozzle along `dir`,
+/// spread inside a cone, and fall back to the ground below it.
+#[allow(clippy::too_many_arguments)]
+fn spawn_water_cannon(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    cache: &mut EditorRenderCache,
+    key: u64,
+    color: [f32; 4],
+    opacity: f32,
+    length: f32,
+    amount: f32,
+    elevation_deg: f32,
+    spread_deg: f32,
+    droplet_size: f32,
+    dir: [f32; 2],
+    target: u64,
+    local: [f32; 2],
+    ground_height: f32,
+    altitude: f32,
+    anchor: GeoAnchor,
+    name: Name,
+) {
+    let texture = cache
+        .particle_texture
+        .get_or_insert_with(|| images.add(particle_texture()))
+        .clone();
+    let quad = cache
+        .particle_mesh
+        .get_or_insert_with(|| meshes.add(mesh::billboard_quad_mesh()))
+        .clone();
+    let opacity_step = ((opacity.clamp(0.1, 1.0) * 10.0).round() as u8).max(1);
+    let mut shades = Vec::with_capacity(2);
+    for shade in 0..2 {
+        let handle = cache
+            .water_materials
+            .entry((color_key(color), shade, opacity_step))
+            .or_insert_with(|| {
+                materials.add(water_drop_material(
+                    &texture,
+                    color,
+                    shade,
+                    opacity_step as f32 / 10.0,
+                ))
+            })
+            .clone();
+        shades.push(handle);
+    }
+
+    let gravity = PARTICLE_GRAVITY;
+    // A flat launch angle cannot reach any distance under gravity, so keep a
+    // small elevation floor and derive the launch speed from the wanted reach.
+    let theta = elevation_deg.clamp(0.0, 70.0).to_radians().max(0.05);
+    let reach = length.max(1.0);
+    let speed = ((reach * gravity) / (2.0 * theta.sin() * theta.cos())).sqrt();
+    let vertical = speed * theta.sin();
+    let horizontal = speed * theta.cos();
+    let ground = ground_height.clamp(0.0, 50.0);
+    let half_spread = spread_deg.clamp(0.0, 40.0).to_radians() * 0.5;
+    let dir_length = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+    let base_dir = if dir_length > 1.0e-4 {
+        [dir[0] / dir_length, dir[1] / dir_length]
+    } else {
+        [0.0, 1.0]
+    };
+
+    let root = commands
+        .spawn((
+            Transform::from_xyz(0.0, altitude, 0.0),
+            anchor,
+            name,
+            Visibility::Visible,
+            WaterJetRoot { dir: base_dir },
+            WaterJetTarget {
+                target,
+                local,
+                height: ground,
+            },
+        ))
+        .id();
+    cache.entities.push(root);
+
+    let count = ((70.0 * amount.clamp(0.05, 4.0)).round() as usize).clamp(8, 200);
+    commands.entity(root).with_children(|parent| {
+        for index in 0..count {
+            let seed = (key as u32)
+                .wrapping_mul(0x9E37_79B9)
+                .wrapping_add(index as u32)
+                .wrapping_mul(0x85EB_CA6B);
+            let r1 = particle_noise(seed);
+            let r2 = particle_noise(seed ^ 0x1234_5678);
+            let r3 = particle_noise(seed ^ 0x9ABC_DEF0);
+            let r4 = particle_noise(seed ^ 0x0F0F_0F0F);
+            let yaw = (r1 - 0.5) * 2.0 * half_spread;
+            // Slower droplets fall short, which widens the stream.
+            let speed_scale = 0.9 + r2 * 0.1;
+            let vertical = vertical * speed_scale;
+            let horizontal = horizontal * speed_scale;
+            let lifetime =
+                (vertical + (vertical * vertical + 2.0 * gravity * ground).sqrt()) / gravity;
+            parent.spawn((
+                Mesh3d(quad.clone()),
+                MeshMaterial3d(shades[index % shades.len()].clone()),
+                Transform::default(),
+                JetDrop {
+                    phase: (index as f32 + r4) / count as f32,
+                    lifetime,
+                    horizontal,
+                    vertical,
+                    yaw,
+                    size: droplet_size.clamp(0.1, 4.0) * (0.6 + r3 * 0.6),
+                },
+            ));
+        }
+    });
+}
+
+fn water_drop_material(
+    texture: &Handle<Image>,
+    color: [f32; 4],
+    shade: usize,
+    opacity: f32,
+) -> StandardMaterial {
+    let base = Color::srgb(
+        color[0].clamp(0.0, 1.0),
+        color[1].clamp(0.0, 1.0),
+        color[2].clamp(0.0, 1.0),
+    );
+    let tint = if shade == 0 {
+        base
+    } else {
+        let srgba = base.to_srgba();
+        Color::srgb(
+            (srgba.red * 0.7 + 0.3).min(1.0),
+            (srgba.green * 0.7 + 0.3).min(1.0),
+            (srgba.blue * 0.7 + 0.3).min(1.0),
+        )
+    };
+    StandardMaterial {
+        base_color: tint.with_alpha(opacity.clamp(0.05, 1.0)),
+        base_color_texture: Some(texture.clone()),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    }
+}
+
 fn particle_texture() -> Image {
     let size = 64u32;
     let mut data = vec![0u8; (size * size * 4) as usize];
@@ -1698,6 +1944,115 @@ fn particle_pose(element: &ParticleElement, t: f32) -> (Vec3, f32) {
             );
             (translation, element.size * (1.0 - 0.25 * t) * fade)
         }
+    }
+}
+
+/// Advances every water cannon jet. Like the particle effects, droplet
+/// positions derive from the elapsed time and their phase, so a running stream
+/// needs no per-frame state. Billboards face the map camera and inherit the
+/// current spray direction of their root.
+#[allow(clippy::type_complexity)]
+pub(crate) fn animate_water_jets(
+    time: Res<Time>,
+    mode: Res<EditorMode>,
+    camera_state: Res<MapCameraResource>,
+    cameras: Query<&GlobalTransform, With<MapCamera>>,
+    mut roots: Query<(Entity, &WaterJetRoot, &mut Transform, &mut Visibility), Without<JetDrop>>,
+    children: Query<&Children>,
+    mut drops: Query<(&JetDrop, &mut Transform), Without<WaterJetRoot>>,
+) {
+    let animate = mode.preview || mode.particles_animate;
+    if !animate {
+        for (_, _, _, mut visibility) in &mut roots {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+    let Ok(camera) = cameras.single() else {
+        return;
+    };
+    let camera_rotation = camera.rotation();
+    let elapsed = time.elapsed_secs();
+    let zoom_scale =
+        (camera_state.0.meters_per_pixel() as f32 / PARTICLE_REFERENCE_MPP).clamp(1.0, 24.0);
+    for (entity, root, mut transform, mut visibility) in &mut roots {
+        *visibility = Visibility::Visible;
+        transform.scale = Vec3::splat(zoom_scale);
+        let Ok(list) = children.get(entity) else {
+            continue;
+        };
+        for child in list.iter() {
+            let Ok((drop, mut drop_transform)) = drops.get_mut(child) else {
+                continue;
+            };
+            let t = (elapsed / drop.lifetime + drop.phase).fract();
+            let (translation, size) = water_drop_pose(drop, root.dir, t);
+            drop_transform.translation = translation;
+            drop_transform.rotation = camera_rotation;
+            drop_transform.scale = Vec3::splat(size);
+        }
+    }
+}
+
+/// Ballistic droplet position relative to the nozzle and its current size.
+fn water_drop_pose(drop: &JetDrop, base_dir: [f32; 2], t: f32) -> (Vec3, f32) {
+    let time = t * drop.lifetime;
+    let gravity = PARTICLE_GRAVITY;
+    let fade = 1.0 - smoothstep(0.82, 1.0, t);
+    let (sin_yaw, cos_yaw) = drop.yaw.sin_cos();
+    let dir_x = base_dir[0] * cos_yaw - base_dir[1] * sin_yaw;
+    let dir_z = base_dir[0] * sin_yaw + base_dir[1] * cos_yaw;
+    let translation = Vec3::new(
+        dir_x * drop.horizontal * time,
+        drop.vertical * time - 0.5 * gravity * time * time,
+        dir_z * drop.horizontal * time,
+    );
+    // Droplets break up into a wider mist as they travel.
+    (translation, drop.size * (0.9 + 0.5 * t) * fade)
+}
+
+/// Moves water cannon jets with their marker during Play, including rotating
+/// the nozzle offset and the spray direction when the marker turns.
+#[allow(clippy::type_complexity)]
+pub(crate) fn apply_editor_water_jet_frame(
+    frame: Res<EditorPlayFrame>,
+    mut jets: Query<(
+        &WaterJetTarget,
+        &mut WaterJetRoot,
+        &mut GeoAnchor,
+        &mut Transform,
+    )>,
+) {
+    if !frame.active {
+        return;
+    }
+    let units = frame
+        .units
+        .iter()
+        .map(|unit| (unit.key, unit))
+        .collect::<HashMap<_, _>>();
+    for (jet, mut root, mut anchor, mut transform) in &mut jets {
+        let Some(unit) = units.get(&jet.target) else {
+            continue;
+        };
+        let rotation = std::f32::consts::PI - unit.heading_deg.to_radians();
+        let (sin_r, cos_r) = rotation.sin_cos();
+        let (local_x, local_z) = (jet.local[0], jet.local[1]);
+        let dir_x = local_x * cos_r + local_z * sin_r;
+        let dir_z = -local_x * sin_r + local_z * cos_r;
+        root.dir = [dir_x, dir_z];
+        // World x is east and world z is south; GeoPoint takes (east, north).
+        let marker = GeoPoint::new(unit.lon, unit.lat);
+        let Ok(nozzle) = GeoPoint::from_local_offset(marker, dir_x as f64, -dir_z as f64) else {
+            continue;
+        };
+        let Ok(mercator) = nozzle.mercator() else {
+            continue;
+        };
+        if anchor.mercator != mercator {
+            anchor.mercator = mercator;
+        }
+        transform.translation.y = unit.altitude + jet.height;
     }
 }
 
@@ -2184,7 +2539,10 @@ mod particle_system_tests {
 
 #[cfg(test)]
 mod particle_tests {
-    use super::{EditorParticleKind, PARTICLE_GRAVITY, ParticleElement, particle_pose};
+    use super::{
+        EditorParticleKind, JetDrop, PARTICLE_GRAVITY, ParticleElement, particle_pose,
+        water_drop_pose,
+    };
 
     fn element(kind: EditorParticleKind, height: f32, lifetime: f32) -> ParticleElement {
         ParticleElement {
@@ -2231,6 +2589,34 @@ mod particle_tests {
         let (middle, middle_size) = particle_pose(&smoke, 0.5);
         assert!(middle.y > start.y);
         assert!(middle_size > start_size);
+    }
+
+    #[test]
+    fn water_cannon_drops_fly_forward_and_land() {
+        // Nozzle 2 m above the ground, a droplet that lands 1.5 s later.
+        let ground = 2.0;
+        let lifetime = 1.5;
+        let vertical = (PARTICLE_GRAVITY * lifetime * lifetime - 2.0 * ground) / (2.0 * lifetime);
+        let drop = JetDrop {
+            phase: 0.0,
+            lifetime,
+            horizontal: 8.0,
+            vertical,
+            yaw: 0.0,
+            size: 1.0,
+        };
+        let base = [0.0, 1.0];
+        let (start, _) = water_drop_pose(&drop, base, 0.0);
+        assert!(start.length() < 1.0e-5);
+
+        let (middle, _) = water_drop_pose(&drop, base, 0.5);
+        assert!(middle.z > 0.0);
+        assert!(middle.y > 0.0);
+
+        let (end, end_size) = water_drop_pose(&drop, base, 1.0);
+        assert!((end.y + ground).abs() < 1.0e-3);
+        assert!((end.z - drop.horizontal * lifetime).abs() < 1.0e-3);
+        assert!(end_size < 1.0e-5);
     }
 }
 
