@@ -123,8 +123,7 @@ impl EditorState {
                     _ => PlaybackState::Stopped,
                 };
                 if let Some(animation) = self.play.animations.get_mut(index) {
-                    animation.progress_m =
-                        progress.clamp(0.0, animation.finish_distance().max(0.0));
+                    animation.progress_m = progress.clamp(0.0, animation.length_m.max(0.0));
                     animation.state = state;
                 }
                 self.apply_route_animation(index);

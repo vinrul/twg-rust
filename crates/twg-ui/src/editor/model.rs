@@ -284,20 +284,8 @@ pub struct PlayRouteAnimation {
 }
 
 impl PlayRouteAnimation {
-    /// Distance the route leader must travel before every patwal member has
-    /// reached the end of the polyline. For other kinds this is the polyline
-    /// length.
-    pub fn finish_distance(&self) -> f64 {
-        if self.kind == RouteAnimationKind::Patwal {
-            self.length_m + self.patwal_gaps.iter().sum::<f64>()
-        } else {
-            self.length_m
-        }
-    }
-
     pub fn is_finished(&self) -> bool {
-        let finish = self.finish_distance();
-        finish > 0.0 && self.progress_m >= finish - 1.0e-6
+        self.length_m > 0.0 && self.progress_m >= self.length_m - 1.0e-6
     }
 }
 
@@ -2732,6 +2720,7 @@ impl EditorState {
         }
 
         let mut updated = Vec::new();
+        let mut wrapped = Vec::new();
         let mut released = false;
         for (index, animation) in self.play.animations.iter_mut().enumerate() {
             if animation.state != PlaybackState::Playing || animation.length_m <= 0.0 {
@@ -2740,15 +2729,28 @@ impl EditorState {
             if !animation.repeat && animation.is_finished() {
                 continue;
             }
-            let finish = animation.finish_distance();
-            animation.progress_m += animation.speed * dt;
+            let step = animation.speed * dt;
             if animation.repeat {
-                animation.progress_m %= finish;
+                let previous = animation.progress_m;
+                animation.progress_m = (previous + step) % animation.length_m;
+                if animation.progress_m < previous {
+                    wrapped.push(index);
+                }
             } else {
-                animation.progress_m = animation.progress_m.min(finish);
+                animation.progress_m = (animation.progress_m + step).min(animation.length_m);
                 released |= animation.is_finished();
             }
             updated.push(index);
+        }
+        for index in wrapped {
+            if self
+                .play
+                .animations
+                .get(index)
+                .is_some_and(|animation| animation.kind == RouteAnimationKind::Patwal)
+            {
+                self.reset_patwal_markers(index);
+            }
         }
         for index in updated {
             self.apply_route_animation(index);
@@ -2763,16 +2765,23 @@ impl EditorState {
 
     /// Starts or resumes a route. A finished route restarts from the first point.
     pub fn play_route_animation(&mut self, index: usize) {
-        let Some(animation) = self.play.animations.get_mut(index) else {
-            return;
+        let (kind, restart) = {
+            let Some(animation) = self.play.animations.get_mut(index) else {
+                return;
+            };
+            if animation.length_m <= 0.0 {
+                return;
+            }
+            let restart = animation.progress_m >= animation.length_m;
+            if restart {
+                animation.progress_m = 0.0;
+            }
+            animation.state = PlaybackState::Playing;
+            (animation.kind, restart)
         };
-        if animation.length_m <= 0.0 {
-            return;
+        if restart && kind == RouteAnimationKind::Patwal {
+            self.reset_patwal_markers(index);
         }
-        if animation.progress_m >= animation.finish_distance() {
-            animation.progress_m = 0.0;
-        }
-        animation.state = PlaybackState::Playing;
         self.apply_route_animation(index);
         self.sync_play_controlled();
         self.play_sync_pending = true;
@@ -2788,15 +2797,63 @@ impl EditorState {
         self.sync_play_controlled();
     }
 
-    /// Stops a route and puts its marker back at the first point.
+    /// Stops a route and restores its markers. Patwal markers return to their
+    /// authored positions instead of piling up on the route start.
     pub fn stop_route_animation(&mut self, index: usize) {
-        if let Some(animation) = self.play.animations.get_mut(index) {
+        let kind = if let Some(animation) = self.play.animations.get_mut(index) {
             animation.progress_m = 0.0;
             animation.state = PlaybackState::Stopped;
+            animation.kind
+        } else {
+            return;
+        };
+        if kind == RouteAnimationKind::Patwal {
+            self.reset_patwal_markers(index);
+        } else {
+            self.apply_route_animation(index);
         }
-        self.apply_route_animation(index);
         self.sync_play_controlled();
         self.play_sync_pending = true;
+    }
+
+    /// Moves every patwal member back to the position authored in the editor.
+    /// Used when the route stops, restarts, or loops.
+    fn reset_patwal_markers(&mut self, index: usize) {
+        let Some(animation) = self.play.animations.get(index) else {
+            return;
+        };
+        if animation.kind != RouteAnimationKind::Patwal {
+            return;
+        }
+        let keys = animation.marker_keys.clone();
+        for key in keys {
+            let Some(object) = self.objects.iter().find(|object| object.key == key) else {
+                continue;
+            };
+            let Some(point) = object.point() else {
+                continue;
+            };
+            let (altitude, heading) = match &object.kind {
+                EditorKind::Marker(marker) => (marker.altitude as f32, 180.0 - marker.rot_y as f32),
+                _ => (0.0, 0.0),
+            };
+            if let Some(unit) = self.play.units.get_mut(&key) {
+                unit.position = point;
+                unit.altitude = altitude;
+                unit.heading_deg = heading;
+                unit.target = None;
+            }
+            if let Some(unit) = self.play.limited.get_mut(&key) {
+                unit.position = point;
+                unit.altitude = altitude;
+                unit.heading_deg = heading;
+            }
+            for obstacle in &mut self.play.obstacles {
+                if obstacle.key == Some(key) {
+                    obstacle.center = point;
+                }
+            }
+        }
     }
 
     /// Plays a spawn/hide animation: spawn targets appear, hide targets vanish.
@@ -3019,16 +3076,24 @@ impl EditorState {
         if animation.kind == RouteAnimationKind::Patwal {
             // Single-file column: the leader sits at `progress_m`, and each
             // following marker is its own gap further back along the polyline.
-            let mut behind = 0.0;
+            // A marker waits at its authored position until the leader has
+            // cleared its gap, so the column does not pile up at the start.
+            let mut offset = 0.0;
             for (index, marker_key) in animation.marker_keys.iter().enumerate() {
                 if index > 0 {
-                    behind += animation
+                    offset += animation
                         .patwal_gaps
                         .get(index - 1)
                         .copied()
                         .unwrap_or(DEFAULT_PATWAL_GAP);
                 }
-                let distance = (animation.progress_m - behind).max(0.0);
+                if animation.progress_m + 1.0e-9 < offset {
+                    continue;
+                }
+                // `progress_m` stops at the polyline length, so a follower
+                // stops `offset` metres behind the end instead of piling onto
+                // the final point.
+                let distance = animation.progress_m - offset;
                 let Some((position, altitude, heading)) =
                     route_sample(&animation.points, &animation.altitudes, distance)
                 else {
@@ -4738,8 +4803,8 @@ fn group_member_done(
         PlaybackState::Playing => {
             route.is_finished()
                 || (route.repeat
-                    && route.finish_distance() > 0.0
-                    && step_elapsed + 1.0e-9 >= route.finish_distance() / route.speed.max(0.1))
+                    && route.length_m > 0.0
+                    && step_elapsed + 1.0e-9 >= route.length_m / route.speed.max(0.1))
         }
     }
 }
@@ -5676,25 +5741,115 @@ mod tests {
     }
 
     #[test]
-    fn patwal_finishes_after_the_last_marker_reaches_the_end() {
+    fn patwal_launches_followers_one_by_one() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let authored = [
+            base,
+            GeoPoint::from_local_offset(base, 0.0, 20.0).expect("north 20"),
+            GeoPoint::from_local_offset(base, 0.0, 40.0).expect("north 40"),
+        ];
+        let mut keys = Vec::new();
+        let mut ids = Vec::new();
+        for point in authored {
+            let key = add_animated_marker(&mut editor, &Uuid::new_v4().to_string(), point);
+            let id = Uuid::new_v4();
+            editor.object_mut(key).expect("marker").server_id = Some(id);
+            keys.push(key);
+            ids.push(id);
+        }
+        let end = GeoPoint::from_local_offset(base, 100.0, 0.0).expect("east");
+        editor.add_route_kind(vec![base, end], RouteAnimationKind::Patwal);
+        let route_key = *editor.selected.iter().next().expect("route selected");
+        if let Some(object) = editor.object_mut(route_key)
+            && let EditorKind::Line(line) = &mut object.kind
+            && let Some(animation) = &mut line.animation
+        {
+            animation.speed = 50.0;
+            animation.marker_ids = ids;
+            animation.patwal_gaps = vec![10.0, 10.0];
+        }
+
+        editor.start_play();
+        editor.play_route_animation(0);
+
+        // The leader starts at the route start; the others wait where they were
+        // authored instead of stacking on the start point.
+        let leader = editor.play.units[&keys[0]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!(leader.east_meters.abs() < 0.1);
+        let second = editor.play.units[&keys[1]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!((second.north_meters - 20.0).abs() < 0.2);
+
+        // 5 m travelled: still before the first 10 m gap.
+        editor.play_tick(0.1);
+        let second = editor.play.units[&keys[1]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!((second.north_meters - 20.0).abs() < 0.2);
+
+        // 10 m travelled: marker 2 launches from the start, marker 3 still waits.
+        editor.play_tick(0.1);
+        let second = editor.play.units[&keys[1]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!(second.east_meters.abs() < 0.2 && second.north_meters.abs() < 0.2);
+        let third = editor.play.units[&keys[2]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!((third.north_meters - 40.0).abs() < 0.2);
+
+        // Stop restores the authored positions, again without stacking.
+        editor.stop_route_animation(0);
+        let second = editor.play.units[&keys[1]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!((second.north_meters - 20.0).abs() < 0.2);
+        let third = editor.play.units[&keys[2]]
+            .position
+            .local_offset(base)
+            .expect("offset");
+        assert!((third.north_meters - 40.0).abs() < 0.2);
+    }
+
+    #[test]
+    fn patwal_finishes_with_the_column_stopped_behind_the_end() {
         let mut editor = editor();
         let base = GeoPoint::new(115.225, -8.648);
         let (_, keys) = add_patwal_route(&mut editor, base, 10.0, 10.0, &[1.0, 2.0]);
 
         editor.start_play();
         editor.play_route_animation(0);
-        for _ in 0..12 {
+        for _ in 0..9 {
             editor.play_tick(0.1);
         }
         assert!(!editor.play.animations[0].is_finished());
 
         editor.play_tick(0.1);
         assert!(editor.play.animations[0].is_finished());
-        let last = editor.play.units[&keys[2]]
-            .position
-            .local_offset(base)
-            .expect("offset");
-        assert!((last.east_meters - 10.0).abs() < 0.3);
+        let distances = keys
+            .iter()
+            .map(|key| {
+                editor.play.units[key]
+                    .position
+                    .local_offset(base)
+                    .expect("offset")
+                    .east_meters
+            })
+            .collect::<Vec<_>>();
+        // Leader at 10 m, then 1 m and 2 m behind instead of all at the end.
+        assert!((distances[0] - 10.0).abs() < 0.3, "{distances:?}");
+        assert!((distances[1] - 9.0).abs() < 0.3, "{distances:?}");
+        assert!((distances[2] - 7.0).abs() < 0.3, "{distances:?}");
     }
 
     #[test]

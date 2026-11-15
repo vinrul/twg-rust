@@ -544,8 +544,16 @@ tampil di tab **Animasi**, dan opsi ulang otomatis.
   **Jarak M1 ke M2**, **Jarak M2 ke M3**, dan seterusnya (masing-masing 0,5–50
   m, default 5 m), jadi jaraknya boleh berbeda-beda — misalnya M1→M2 1 m dan
   M2→M3 2 m. Marker mengikuti tikungan jalur satu per satu dan memakai arah
-  hadap titik jalurnya masing-masing. Rute baru dianggap selesai setelah marker
-  terakhir juga sampai di ujung jalur.
+  hadap titik jalurnya masing-masing.
+  - Saat mulai, hanya marker pertama yang langsung ke titik awal dan berjalan.
+    Marker berikutnya menunggu di posisi authoring-nya sampai marker di depannya
+    sudah melewati jarak yang ditentukan, baru berangkat dari titik awal. Jadi
+    marker tidak menumpuk di titik start.
+  - Saat marker pertama mencapai ujung jalur, rute selesai dan marker pertama
+    berhenti. Marker kedua berhenti di belakangnya sesuai jarak M1→M2, marker
+    ketiga di belakang marker kedua sesuai jarak M2→M3, dan seterusnya — tidak
+    semuanya menumpuk di titik akhir. **Stop** mengembalikan semua marker ke
+    posisi authoring di editor.
 - Marker yang sudah terkunci ke rute tidak ikut formasi klik kanan. Memberi
   perintah gerak ke salah satu marker mem-pause seluruh rute multiple/patwal,
   dan **Resume** mengembalikan semua marker ke formasinya.
