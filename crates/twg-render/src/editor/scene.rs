@@ -1955,7 +1955,6 @@ fn particle_pose(element: &ParticleElement, t: f32) -> (Vec3, f32) {
 pub(crate) fn animate_water_jets(
     time: Res<Time>,
     mode: Res<EditorMode>,
-    camera_state: Res<MapCameraResource>,
     cameras: Query<&GlobalTransform, With<MapCamera>>,
     mut roots: Query<(Entity, &WaterJetRoot, &mut Transform, &mut Visibility), Without<JetDrop>>,
     children: Query<&Children>,
@@ -1973,11 +1972,12 @@ pub(crate) fn animate_water_jets(
     };
     let camera_rotation = camera.rotation();
     let elapsed = time.elapsed_secs();
-    let zoom_scale =
-        (camera_state.0.meters_per_pixel() as f32 / PARTICLE_REFERENCE_MPP).clamp(1.0, 24.0);
     for (entity, root, mut transform, mut visibility) in &mut roots {
         *visibility = Visibility::Visible;
-        transform.scale = Vec3::splat(zoom_scale);
+        // The jet is authored in metres, so its length, arc height, and droplet
+        // size must not follow the camera zoom. Scaling the root here made Play
+        // (usually more zoomed out) draw a longer spray than the editor.
+        transform.scale = Vec3::ONE;
         let Ok(list) = children.get(entity) else {
             continue;
         };

@@ -658,8 +658,10 @@ punya tombol **+ Water cannon**.
   Animasi saat Play; tombolnya berubah menjadi **Stop**. Status tiap cannon
   ditampilkan sebagai **Menyemprot** atau **Berhenti**.
 - Air dirender sebagai butiran partikel balistik: memancar dari nozzle lalu
-  melengkung jatuh ke tanah. Nozzle dan arah semprotan ikut bergerak dan
-  berputar bersama marker selama Play, dan semprotan ikut hilang bila marker
+  melengkung jatuh ke tanah. Panjang, sudut, dan ukuran butiran dihitung dalam
+  **meter**, jadi hasilnya sama di editor dan saat Play (tidak ikut berubah
+  mengikuti zoom kamera). Nozzle dan arah semprotan ikut bergerak dan berputar
+  bersama marker selama Play, dan semprotan ikut hilang bila marker
   disembunyikan animasi spawn/hide.
 - Contoh penyetelan: **Panjang** 14 m dengan elevasi 12° menghasilkan jet
   pemadam yang datar; naikkan elevasi dan sebaran untuk semprotan hujan yang
