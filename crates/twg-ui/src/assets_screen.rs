@@ -3,11 +3,12 @@
 use bevy_egui::egui;
 use twg_client::design::{CONTROL_HEIGHT, DARK, FONT_SM, FONT_XS, RADIUS_SM, SPACE_2, SPACE_3};
 use twg_contracts::assets::{
-    Asset, AssetCategory, AssetModelKind, AssetMoveMode, AssetSource, AssetSourceSlot,
+    Asset, AssetCategory, AssetGroup, AssetModelKind, AssetMoveMode, AssetSource, AssetSourceSlot,
     AssetVariantKind, ConvertTarget,
 };
 use twg_domain::Role;
 use twg_render::{PREVIEW_SIZE, PREVIEW_SLOTS, PreviewOrbitInput, PreviewPhase};
+use uuid::Uuid;
 
 use crate::state::{
     AssetSyncState, ClientUi, ConfirmAction, ConfirmDialog, Modal, PreviewPanelUi, PreviewUi,
@@ -365,50 +366,130 @@ fn filtered_assets(client: &ClientUi) -> Vec<Asset> {
         .collect()
 }
 
+/// One root of the asset tree: a semantic asset category and its assets.
+struct AssetTreeSection {
+    id: Option<Uuid>,
+    name: String,
+    assets: Vec<Asset>,
+}
+
+/// Groups filtered assets by their semantic category, preserving the category
+/// order returned by the server. Assets without a known category are collected
+/// under "Tanpa kategori".
+fn asset_sections(assets: &[Asset], groups: &[AssetGroup]) -> Vec<AssetTreeSection> {
+    let mut sections = groups
+        .iter()
+        .map(|group| AssetTreeSection {
+            id: Some(group.id),
+            name: group.name.clone(),
+            assets: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let mut uncategorized = Vec::new();
+    for asset in assets {
+        if let Some(group_id) = asset.group_id
+            && let Some(section) = sections
+                .iter_mut()
+                .find(|section| section.id == Some(group_id))
+        {
+            section.assets.push(asset.clone());
+        } else if asset.group_id.is_some() {
+            // The group list may still be loading; keep the asset under the
+            // name reported by the asset itself.
+            let name = asset
+                .group_name
+                .clone()
+                .unwrap_or_else(|| "Tanpa kategori".to_owned());
+            sections.push(AssetTreeSection {
+                id: asset.group_id,
+                name,
+                assets: vec![asset.clone()],
+            });
+        } else {
+            uncategorized.push(asset.clone());
+        }
+    }
+    sections.retain(|section| !section.assets.is_empty());
+    if !uncategorized.is_empty() {
+        sections.push(AssetTreeSection {
+            id: None,
+            name: "Tanpa kategori".to_owned(),
+            assets: uncategorized,
+        });
+    }
+    sections
+}
+
 fn draw_list(ui: &mut egui::Ui, client: &mut ClientUi, assets: &[Asset]) {
-    ui.label(theme::muted(&format!("{} aset", assets.len())));
+    let sections = asset_sections(assets, &client.data.asset_groups);
+    ui.label(theme::muted(&format!(
+        "{} aset · {} kategori",
+        assets.len(),
+        sections.len()
+    )));
     ui.add_space(SPACE_2);
+    if sections.is_empty() {
+        ui.label(theme::muted("Tidak ada aset yang cocok dengan filter."));
+        return;
+    }
     egui::ScrollArea::vertical()
         .id_salt("asset-list")
         .max_height(ui.available_height().max(0.0))
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for asset in assets {
-                let selected = client.selected_asset == Some(asset.id);
-                let cached = client.asset_is_cached(asset);
-                let subtitle = format!(
-                    "{} · {}{}",
-                    category_label(asset.category),
-                    asset.group_name.as_deref().unwrap_or("Tanpa kategori"),
-                    if cached { " · offline" } else { "" }
-                );
-                let text = egui::RichText::new(format!("{}\n{}", asset.name, subtitle))
-                    .size(FONT_SM)
-                    .color(if selected {
-                        color(DARK.foreground)
-                    } else {
-                        color(DARK.muted_foreground)
-                    });
-                let response = ui.add_sized(
-                    [ui.available_width(), 50.0],
-                    egui::Button::new(text)
-                        .fill(if selected {
-                            color(DARK.secondary)
-                        } else {
-                            color(DARK.card)
-                        })
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            color(if selected { DARK.ring } else { DARK.border }),
-                        ))
-                        .corner_radius(egui::CornerRadius::same(RADIUS_SM as u8)),
-                );
-                if response.clicked() {
-                    client.select_asset(asset.id);
-                }
+            for section in &sections {
+                egui::CollapsingHeader::new(
+                    egui::RichText::new(format!("{} ({})", section.name, section.assets.len()))
+                        .size(FONT_SM)
+                        .strong(),
+                )
+                .id_salt(("asset-tree", section.id))
+                .default_open(true)
+                .show(ui, |ui| {
+                    for asset in &section.assets {
+                        draw_asset_card(ui, client, asset);
+                    }
+                });
                 ui.add_space(SPACE_2);
             }
         });
+}
+
+fn draw_asset_card(ui: &mut egui::Ui, client: &mut ClientUi, asset: &Asset) {
+    let selected = client.selected_asset == Some(asset.id);
+    let cached = client.asset_is_cached(asset);
+    // The category is already the tree root, so the card only repeats the
+    // asset type (Model/Texture/Icon) and its offline state.
+    let subtitle = format!(
+        "{}{}",
+        category_label(asset.category),
+        if cached { " · offline" } else { "" }
+    );
+    let text = egui::RichText::new(format!("{}\n{}", asset.name, subtitle))
+        .size(FONT_SM)
+        .color(if selected {
+            color(DARK.foreground)
+        } else {
+            color(DARK.muted_foreground)
+        });
+    let response = ui.add_sized(
+        [ui.available_width(), 50.0],
+        egui::Button::new(text)
+            .fill(if selected {
+                color(DARK.secondary)
+            } else {
+                color(DARK.card)
+            })
+            .stroke(egui::Stroke::new(
+                1.0,
+                color(if selected { DARK.ring } else { DARK.border }),
+            ))
+            .corner_radius(egui::CornerRadius::same(RADIUS_SM as u8)),
+    );
+    if response.clicked() {
+        client.select_asset(asset.id);
+    }
+    ui.add_space(SPACE_2);
 }
 
 fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
