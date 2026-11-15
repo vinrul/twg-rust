@@ -608,6 +608,25 @@ spawn, atau hide) menjadi satu tombol Play. Tab **Buat** punya dua tombol:
   dan `order`. Memilih grup di Daftar Anim ikut menyorot target semua
   anggotanya di peta.
 
+**Animasi pointer (panah penunjuk)**
+
+Kategori **Pointer** menaruh satu panah 3D yang menunjuk ke satu marker, dipakai
+untuk menandai lokasi penting (misalnya "Lomba"). Tab **Buat** punya tombol
+**+ Pointer marker**.
+
+- Satu pointer hanya menunjuk **satu** marker. Target dipilih dari daftar
+  marker di Inspector atau lewat **Pilih marker dari peta** (klik marker, Esc
+  batal). Memilih marker lain langsung mengganti target lama.
+- Inspector mengatur **Warna panah**, **Tinggi panah** (jarak ujung panah di
+  atas marker, 0–1000 m), **Ukuran** (0,2–5×), dan **Teks label** yang tampil di
+  atas panah. Label kosong berarti tanpa teks.
+- Panah selalu menghadap ke bawah dan ikut bergerak bersama marker targetnya
+  saat Play, juga ikut hilang bila marker disembunyikan animasi spawn/hide.
+  Berbeda dari rute/spawn/hide yang hanya panduan authoring, panah pointer
+  adalah objek 3D sungguhan, jadi tetap tampil saat Play.
+- Pointer disimpan di metadata `plot_lines.keterangan` dengan `type` `pointer`,
+  berisi `marker_id`, `text`, `color`, `altitude`, `size`, dan `order`.
+
 **Mode Play (RTS)**
 
 Tombol **▶ Play** menjalankan skenario sebagai simulasi RTS sederhana di

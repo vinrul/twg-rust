@@ -504,6 +504,26 @@ fn project_objects(editor: &mut EditorState, camera: &Camera, transform: &Global
         if editor.preview && !editor.play.is_visible(object.key) {
             continue;
         }
+        // Pointer arrows float above their target marker, so their label is
+        // projected from the arrow tip instead of the line's own points.
+        if let super::model::EditorKind::Line(line) = &object.kind
+            && let Some(pointer) = &line.pointer
+        {
+            let text = pointer.text.trim();
+            if !text.is_empty()
+                && let Some((_, point, marker_altitude)) = editor.pointer_target(pointer)
+                && let Some(world) =
+                    world_of_at(editor, point, pointer.base_altitude(marker_altitude) as f32)
+                && let Ok(screen) = camera.world_to_viewport(transform, world)
+            {
+                editor.text_overlays.push((
+                    egui::pos2(screen.x, screen.y - 16.0),
+                    text.to_owned(),
+                    super::model::parse_hex_color(&pointer.color),
+                    15.0,
+                ));
+            }
+        }
         let points = match editor.play.units.get(&object.key) {
             Some(unit) => vec![unit.position],
             None => match editor.play.limited.get(&object.key) {
@@ -1056,6 +1076,8 @@ fn keyboard_shortcuts(
                 editor.pick_route_marker = None;
             } else if editor.pick_visibility_target.is_some() {
                 editor.pick_visibility_target = None;
+            } else if editor.pick_pointer_target.is_some() {
+                editor.pick_pointer_target = None;
             } else if editor.context_menu.is_some() {
                 editor.context_menu = None;
             } else if editor.point_edit.is_some() {
@@ -1098,6 +1120,28 @@ fn mouse_input(
             .map_state
             .world_to_geo(world.x, world.z)
             .map(|point| editor.snap_point(point));
+
+        // Picking the single pointer target from the map takes precedence over
+        // the normal selection and gizmo clicks.
+        if let Some(pointer_key) = editor.pick_pointer_target {
+            match pick_route_marker_object(editor, pointer) {
+                Some(key) => match editor.object(key).and_then(|object| object.server_id) {
+                    Some(marker_id) => editor.assign_pointer_target(pointer_key, marker_id),
+                    None => {
+                        editor.pending_pointer_picks.push((pointer_key, key));
+                        editor.requested_save = true;
+                        editor.log(
+                            "Menyimpan skenario dulu agar marker baru bisa dipakai pointer...",
+                        );
+                    }
+                },
+                None if pick_object(editor, pointer).is_some() => {
+                    editor.log("Itu bukan marker. Pointer hanya bisa menunjuk marker 3D.");
+                }
+                None => editor.log("Klik tepat pada marker di peta."),
+            }
+            return;
+        }
 
         // Picking a spawn/hide target from the map also takes precedence over
         // the normal selection and gizmo clicks.

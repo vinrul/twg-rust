@@ -206,6 +206,16 @@ pub(crate) const MIN_ROUTE_SPACING: f64 = 0.5;
 pub(crate) const MAX_ROUTE_SPACING: f64 = 50.0;
 /// Default distance between consecutive markers in a patwal column.
 pub(crate) const DEFAULT_PATWAL_GAP: f64 = 5.0;
+/// Pointer arrow tuning. `size` 1.0 draws an arrow this many metres tall
+/// with a head this many metres across.
+pub(crate) const POINTER_HEIGHT_METERS: f64 = 6.0;
+pub(crate) const POINTER_RADIUS_METERS: f64 = 1.4;
+pub(crate) const MIN_POINTER_SIZE: f64 = 0.2;
+pub(crate) const MAX_POINTER_SIZE: f64 = 5.0;
+pub(crate) const DEFAULT_POINTER_SIZE: f64 = 1.0;
+pub(crate) const DEFAULT_POINTER_ALTITUDE: f64 = 4.0;
+pub(crate) const MIN_POINTER_ALTITUDE: f64 = 0.0;
+pub(crate) const MAX_POINTER_ALTITUDE: f64 = 1000.0;
 /// Default gap between members of a delayed sequence, in seconds.
 pub(crate) const DEFAULT_GROUP_DELAY: f64 = 2.0;
 /// Bounds for the authored sequence delay, in seconds.
@@ -941,6 +951,53 @@ impl Default for GroupAnimation {
     }
 }
 
+/// A single 3D arrow pointing down at one marker, with an optional text label.
+#[derive(Clone, Debug)]
+pub struct PointerAnimation {
+    pub marker_id: Option<Uuid>,
+    pub text: String,
+    pub color: String,
+    /// Height of the arrow tip above the marker's ground point, in metres.
+    pub altitude: f64,
+    /// Arrow scale multiplier; 1.0 is `POINTER_HEIGHT_METERS` tall.
+    pub size: f64,
+    /// Position in the shared Play animation order.
+    pub order: i32,
+}
+
+impl PointerAnimation {
+    pub fn arrow_height(&self) -> f64 {
+        POINTER_HEIGHT_METERS * self.size.clamp(MIN_POINTER_SIZE, MAX_POINTER_SIZE)
+    }
+
+    pub fn arrow_radius(&self) -> f64 {
+        POINTER_RADIUS_METERS * self.size.clamp(MIN_POINTER_SIZE, MAX_POINTER_SIZE)
+    }
+
+    /// World height of the arrow's top. The cone tip is `altitude` above the
+    /// marker and the top sits one arrow height higher.
+    pub fn base_altitude(&self, marker_altitude: f64) -> f64 {
+        marker_altitude
+            + self
+                .altitude
+                .clamp(MIN_POINTER_ALTITUDE, MAX_POINTER_ALTITUDE)
+            + self.arrow_height()
+    }
+}
+
+impl Default for PointerAnimation {
+    fn default() -> Self {
+        Self {
+            marker_id: None,
+            text: String::new(),
+            color: "#39ff88".to_owned(),
+            altitude: DEFAULT_POINTER_ALTITUDE,
+            size: DEFAULT_POINTER_SIZE,
+            order: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LineObject {
     pub points: Vec<[f64; 2]>,
@@ -955,6 +1012,8 @@ pub struct LineObject {
     pub visibility: Option<VisibilityAnimation>,
     /// Set for combine/sequence groups. These lines also carry no geometry.
     pub group: Option<GroupAnimation>,
+    /// Set for a 3D pointer arrow. These lines carry no geometry either.
+    pub pointer: Option<PointerAnimation>,
 }
 
 impl LineObject {
@@ -969,6 +1028,7 @@ impl LineObject {
             animation: None,
             visibility: None,
             group: None,
+            pointer: None,
         }
     }
 
@@ -1506,9 +1566,17 @@ impl EditorObject {
         matches!(&self.kind, EditorKind::Line(line) if line.group.is_some())
     }
 
-    /// Any animation object (route, spawn/hide, or group).
+    /// Pointer arrows are stored on a line row without geometry.
+    pub fn is_pointer_animation(&self) -> bool {
+        matches!(&self.kind, EditorKind::Line(line) if line.pointer.is_some())
+    }
+
+    /// Any animation object (route, spawn/hide, group, or pointer).
     pub fn is_animation(&self) -> bool {
-        self.is_animation_route() || self.is_visibility_animation() || self.is_group_animation()
+        self.is_animation_route()
+            || self.is_visibility_animation()
+            || self.is_group_animation()
+            || self.is_pointer_animation()
     }
 
     /// Position of this animation in the persisted Play order.
@@ -1520,6 +1588,7 @@ impl EditorObject {
                 .map(|route| route.order)
                 .or_else(|| line.visibility.as_ref().map(|visibility| visibility.order))
                 .or_else(|| line.group.as_ref().map(|group| group.order))
+                .or_else(|| line.pointer.as_ref().map(|pointer| pointer.order))
                 .unwrap_or(0),
             _ => 0,
         }
@@ -1537,7 +1606,8 @@ impl EditorObject {
                         .as_ref()
                         .map(|visibility| visibility.kind.label())
                 })
-                .or_else(|| line.group.as_ref().map(|group| group.kind.label())),
+                .or_else(|| line.group.as_ref().map(|group| group.kind.label()))
+                .or_else(|| line.pointer.as_ref().map(|_| "Pointer")),
             _ => None,
         }
     }
@@ -1841,10 +1911,14 @@ pub struct EditorState {
     pub route_marker_search: String,
     /// Target search text for the spawn/hide inspector.
     pub visibility_target_search: String,
+    /// Marker search text for the pointer inspector.
+    pub pointer_marker_search: String,
     /// Route waiting for a marker picked directly on the map.
     pub pick_route_marker: Option<ObjectKey>,
     /// Spawn/hide animation waiting for a marker or particle picked on the map.
     pub pick_visibility_target: Option<ObjectKey>,
+    /// Pointer animation waiting for its single marker picked on the map.
+    pub pick_pointer_target: Option<ObjectKey>,
     /// Marker picks that wait for the save which gives those markers a server
     /// id. New markers cannot join a route until the server assigns them a
     /// UUID, so a map pick saves first and binds afterwards.
@@ -1852,6 +1926,8 @@ pub struct EditorState {
     /// Same queue for spawn/hide targets. New markers and particles only get a
     /// server UUID after the first save.
     pub pending_visibility_picks: Vec<(ObjectKey, ObjectKey)>,
+    /// Same queue for pointer targets.
+    pub pending_pointer_picks: Vec<(ObjectKey, ObjectKey)>,
     /// Asks the shell to run the editor save before the next frame.
     pub requested_save: bool,
     /// Animation type created when the current route draft is finished.
@@ -1986,10 +2062,13 @@ impl EditorState {
             sky: SkyMode::Black,
             route_marker_search: String::new(),
             visibility_target_search: String::new(),
+            pointer_marker_search: String::new(),
             pick_route_marker: None,
             pick_visibility_target: None,
+            pick_pointer_target: None,
             pending_route_picks: Vec::new(),
             pending_visibility_picks: Vec::new(),
+            pending_pointer_picks: Vec::new(),
             requested_save: false,
             pending_route_kind: RouteAnimationKind::Single,
             anim_filter_hidden: false,
@@ -2026,8 +2105,10 @@ impl EditorState {
         self.redo.clear();
         self.pick_route_marker = None;
         self.pick_visibility_target = None;
+        self.pick_pointer_target = None;
         self.pending_route_picks.clear();
         self.pending_visibility_picks.clear();
+        self.pending_pointer_picks.clear();
         self.next_key = 1;
         self.dirty = false;
         self.touch();
@@ -2045,6 +2126,7 @@ impl EditorState {
     pub fn set_tool(&mut self, tool: EditorTool) {
         self.pick_route_marker = None;
         self.pick_visibility_target = None;
+        self.pick_pointer_target = None;
         if self.tool == tool {
             return;
         }
@@ -2228,8 +2310,10 @@ impl EditorState {
         if !self.selected.contains(&key) {
             self.pick_route_marker = None;
             self.pick_visibility_target = None;
+            self.pick_pointer_target = None;
             self.route_marker_search.clear();
             self.visibility_target_search.clear();
+            self.pointer_marker_search.clear();
         }
         if self.point_edit.is_some_and(|edit| edit.key != key) {
             self.point_edit = None;
@@ -2308,6 +2392,7 @@ impl EditorState {
     pub fn start_play(&mut self) {
         self.pick_route_marker = None;
         self.pick_visibility_target = None;
+        self.pick_pointer_target = None;
         self.play = PlayState {
             active: true,
             ..PlayState::default()
@@ -3729,6 +3814,169 @@ impl EditorState {
         self.log("Anggota animasi gabungan ditambahkan.");
     }
 
+    /// Creates a pointer arrow. The single target marker is chosen in the
+    /// Inspector or by clicking it on the map. A single selected marker becomes
+    /// the target right away.
+    pub fn add_pointer_animation(&mut self) {
+        if !self.loaded {
+            return;
+        }
+        let mut target = None;
+        let mut unsaved = None;
+        for selected in self.selected.iter() {
+            if let Some(object) = self.object(*selected)
+                && matches!(object.kind, EditorKind::Marker(_))
+            {
+                match object.server_id {
+                    Some(id) => target = Some(id),
+                    None => unsaved = Some(*selected),
+                }
+                break;
+            }
+        }
+        self.push_undo();
+        let key = self.alloc_key();
+        let name = format!("Pointer {}", self.pointer_count() + 1);
+        let mut line = LineObject::new(Vec::new());
+        line.pointer = Some(PointerAnimation {
+            marker_id: target,
+            order: self.next_animation_order(),
+            ..PointerAnimation::default()
+        });
+        self.objects.push(EditorObject {
+            key,
+            server_id: None,
+            name,
+            visible: true,
+            dirty: true,
+            kind: EditorKind::Line(line),
+        });
+        if let Some(marker_key) = unsaved {
+            // The marker only gets its server UUID from the next save; the pick
+            // is bound once those ids arrive.
+            self.pending_pointer_picks.push((key, marker_key));
+            self.requested_save = true;
+        }
+        self.selected.clear();
+        self.selected.insert(key);
+        self.dirty = true;
+        self.touch();
+        self.log(if target.is_some() {
+            "Pointer dibuat untuk marker yang dipilih. Atur warna, altitude, ukuran, serta \
+             teks di Inspector."
+        } else {
+            "Pointer dibuat. Pilih satu marker target dan atur warna, altitude, ukuran, \
+             serta teks di Inspector."
+        });
+    }
+
+    fn pointer_count(&self) -> usize {
+        self.objects
+            .iter()
+            .filter(|object| object.is_pointer_animation())
+            .count()
+    }
+
+    /// Saved markers that can be pointed at, filtered by the inspector search.
+    pub fn pointer_marker_options(&self, pointer_key: ObjectKey) -> Vec<(Option<Uuid>, String)> {
+        let needle = self.pointer_marker_search.trim().to_lowercase();
+        let mut options = self
+            .objects
+            .iter()
+            .filter_map(|object| {
+                if object.key == pointer_key || !matches!(object.kind, EditorKind::Marker(_)) {
+                    return None;
+                }
+                let id = object.server_id?;
+                if !needle.is_empty() && !object.name.to_lowercase().contains(&needle) {
+                    return None;
+                }
+                Some((Some(id), object.name.clone()))
+            })
+            .collect::<Vec<_>>();
+        options.sort_by_key(|left| left.1.to_lowercase());
+        let mut result = vec![(None, "— Pilih marker —".to_owned())];
+        result.extend(options);
+        result
+    }
+
+    /// Binds a marker to the pointer. A pointer only ever targets one marker.
+    pub fn assign_pointer_target(&mut self, pointer_key: ObjectKey, marker_id: Uuid) {
+        let Some(object) = self.object_mut(pointer_key) else {
+            return;
+        };
+        let EditorKind::Line(line) = &mut object.kind else {
+            return;
+        };
+        let Some(pointer) = &mut line.pointer else {
+            return;
+        };
+        pointer.marker_id = Some(marker_id);
+        object.dirty = true;
+        self.pick_pointer_target = None;
+        self.dirty = true;
+        self.touch();
+        self.log("Marker target pointer dipilih.");
+    }
+
+    /// Position and altitude of a pointer's target marker, using the current
+    /// Play position when the scenario is running. Returns `None` when the
+    /// target is missing or hidden by a spawn/hide animation.
+    pub fn pointer_target(&self, pointer: &PointerAnimation) -> Option<(ObjectKey, GeoPoint, f64)> {
+        let marker_id = pointer.marker_id?;
+        let marker = self.objects.iter().find(|object| {
+            object.server_id == Some(marker_id) && matches!(object.kind, EditorKind::Marker(_))
+        })?;
+        if !marker.visible {
+            return None;
+        }
+        if self.preview && !self.play.is_visible(marker.key) {
+            return None;
+        }
+        let marker_altitude = match &marker.kind {
+            EditorKind::Marker(marker) => marker.altitude,
+            _ => 0.0,
+        };
+        let (point, altitude) = if self.preview {
+            if let Some(unit) = self.play.units.get(&marker.key) {
+                (unit.position, unit.altitude as f64)
+            } else if let Some(unit) = self.play.limited.get(&marker.key) {
+                (unit.position, unit.altitude as f64)
+            } else {
+                (marker.point()?, marker_altitude)
+            }
+        } else {
+            (marker.point()?, marker_altitude)
+        };
+        Some((marker.key, point, altitude))
+    }
+
+    /// Scene visual for a pointer animation: the downward arrow anchored above
+    /// its target marker.
+    fn pointer_scene_object(&self, object: &EditorObject) -> Option<EditorSceneObject> {
+        let EditorKind::Line(line) = &object.kind else {
+            return None;
+        };
+        let pointer = line.pointer.as_ref()?;
+        let (target, point, marker_altitude) = self.pointer_target(pointer)?;
+        let altitude = pointer.base_altitude(marker_altitude);
+        Some(EditorSceneObject {
+            key: object.key,
+            label: object.name.clone(),
+            lon: point.longitude,
+            lat: point.latitude,
+            selected: self.selected.contains(&object.key),
+            kind: EditorSceneKind::Pointer {
+                color: parse_hex_color(&pointer.color),
+                height: pointer.arrow_height() as f32,
+                radius: pointer.arrow_radius() as f32,
+                altitude: altitude as f32,
+                target,
+                lift: (altitude - marker_altitude) as f32,
+            },
+        })
+    }
+
     /// Marker assets that Play can move: animated models and static `Free` or
     /// `Limited` assets.
     pub fn marker_is_animatable(&self, marker: &MarkerObject) -> bool {
@@ -3945,6 +4193,23 @@ impl EditorState {
                 _ => {}
             }
         }
+        let pointer_picks = std::mem::take(&mut self.pending_pointer_picks);
+        for (pointer_key, marker_key) in pointer_picks {
+            let pointer_ready = self.object(pointer_key).is_some_and(
+                |object| matches!(&object.kind, EditorKind::Line(line) if line.pointer.is_some()),
+            );
+            let marker_state = self.object(marker_key).and_then(|object| {
+                matches!(&object.kind, EditorKind::Marker(_)).then_some(object.server_id)
+            });
+            match marker_state {
+                Some(Some(marker_id)) if pointer_ready => {
+                    self.assign_pointer_target(pointer_key, marker_id);
+                    bound = true;
+                }
+                Some(None) => self.pending_pointer_picks.push((pointer_key, marker_key)),
+                _ => {}
+            }
+        }
         bound
     }
 
@@ -3998,6 +4263,12 @@ impl EditorState {
                     && group.order != position
                 {
                     group.order = position;
+                    object.dirty = true;
+                }
+                if let Some(pointer) = &mut line.pointer
+                    && pointer.order != position
+                {
+                    pointer.order = position;
                     object.dirty = true;
                 }
             }
@@ -4149,6 +4420,11 @@ impl EditorState {
                     // The copy keeps its members but moves to the end of the
                     // shared Play order.
                     group.order = next_order;
+                    next_order = next_order.saturating_add(1);
+                } else if let Some(pointer) = &mut line.pointer {
+                    // A copy must not stack a second arrow on the same marker.
+                    pointer.marker_id = None;
+                    pointer.order = next_order;
                     next_order = next_order.saturating_add(1);
                 }
             }
@@ -4500,8 +4776,14 @@ impl EditorState {
             if !object.visible || !self.visible.allows(object.object_type()) {
                 continue;
             }
-            // Routes are authoring guides; hide them while the scenario plays.
-            // Spawn/hide animations have no geometry at all.
+            // Pointer arrows are real 3D content in both authoring and Play; the
+            // other animation kinds are authoring guides and are hidden in Play.
+            if object.is_pointer_animation() {
+                if let Some(scene_object) = self.pointer_scene_object(object) {
+                    objects.push(scene_object);
+                }
+                continue;
+            }
             if self.preview && object.is_animation() {
                 continue;
             }
@@ -6174,6 +6456,139 @@ mod tests {
         assert_eq!(
             line.visibility.as_ref().unwrap().marker_ids,
             vec![marker_id]
+        );
+    }
+
+    #[test]
+    fn pointer_targets_exactly_one_marker() {
+        let mut editor = editor();
+        let first = add_animated_marker(
+            &mut editor,
+            "11111111-1111-4111-8111-111111111111",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let second = add_animated_marker(
+            &mut editor,
+            "22222222-2222-4222-8222-222222222222",
+            GeoPoint::from_local_offset(GeoPoint::new(115.225, -8.648), 8.0, 0.0).expect("east"),
+        );
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        editor.object_mut(first).expect("marker").server_id = Some(first_id);
+        editor.object_mut(second).expect("marker").server_id = Some(second_id);
+
+        editor.add_pointer_animation();
+        let pointer_key = *editor.selected.iter().next().expect("pointer selected");
+        editor.assign_pointer_target(pointer_key, first_id);
+        editor.assign_pointer_target(pointer_key, second_id);
+
+        let EditorKind::Line(line) = &editor.object(pointer_key).expect("pointer").kind else {
+            panic!("expected line");
+        };
+        let pointer = line.pointer.as_ref().expect("pointer animation");
+        assert_eq!(pointer.marker_id, Some(second_id));
+        assert_eq!(editor.pointer_count(), 1);
+        assert!(editor.object(pointer_key).expect("pointer").dirty);
+    }
+
+    #[test]
+    fn pointer_arrow_sits_above_its_marker() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "33333333-3333-4333-8333-333333333333", base);
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+
+        editor.add_pointer_animation();
+        let pointer_key = *editor.selected.iter().next().expect("pointer selected");
+        editor.assign_pointer_target(pointer_key, marker_id);
+
+        // Pointers are 3D content, so they appear in authoring and in Play.
+        for preview in [false, true] {
+            editor.preview = preview;
+            let scene = editor.build_scene();
+            let object = scene
+                .objects
+                .iter()
+                .find(|object| object.key == pointer_key)
+                .expect("pointer in scene");
+            let EditorSceneKind::Pointer {
+                height,
+                altitude,
+                target,
+                lift,
+                ..
+            } = &object.kind
+            else {
+                panic!("expected pointer kind");
+            };
+            let expected = POINTER_HEIGHT_METERS as f32;
+            assert!((*height - expected).abs() < 1e-3);
+            assert!(*altitude >= *height);
+            assert!((*lift - (DEFAULT_POINTER_ALTITUDE as f32 + expected)).abs() < 1e-3);
+            assert_eq!(*target, marker_key);
+        }
+    }
+
+    #[test]
+    fn pointer_skips_hidden_targets() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "44444444-4444-4444-8444-444444444444",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_pointer_animation();
+        let pointer_key = *editor.selected.iter().next().expect("pointer selected");
+        editor.assign_pointer_target(pointer_key, marker_id);
+        editor.select_only(marker_key);
+        editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+
+        editor.preview = true;
+        editor.start_play();
+        // The spawn animation hides the marker before Play starts, and a hidden
+        // marker must not keep a visible pointer arrow.
+        assert!(editor.build_scene().objects.is_empty());
+
+        editor.play_visibility_animation(0);
+        // The marker comes back and the pointer arrow reappears with it.
+        let scene = editor.build_scene();
+        assert_eq!(scene.objects.len(), 2);
+        assert!(scene.objects.iter().any(|object| object.key == pointer_key));
+    }
+
+    #[test]
+    fn pointer_target_of_an_unsaved_marker_binds_after_save() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "55555555-5555-4555-8555-555555555555",
+            GeoPoint::new(115.225, -8.648),
+        );
+        editor.add_pointer_animation();
+        let pointer_key = *editor.selected.iter().next().expect("pointer selected");
+        // The selected marker has no server id yet, so the new pointer queues
+        // the pick and asks for a save.
+        assert_eq!(
+            editor.pending_pointer_picks,
+            vec![(pointer_key, marker_key)]
+        );
+        assert!(editor.requested_save);
+        assert!(!editor.apply_pending_route_picks());
+
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        assert!(editor.apply_pending_route_picks());
+        assert!(editor.pending_pointer_picks.is_empty());
+        let EditorKind::Line(line) = &editor.object(pointer_key).expect("pointer").kind else {
+            panic!("expected line");
+        };
+        assert_eq!(
+            line.pointer.as_ref().expect("pointer").marker_id,
+            Some(marker_id)
         );
     }
 

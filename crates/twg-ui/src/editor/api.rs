@@ -30,9 +30,10 @@ use crate::state::{ClientUi, JobKind, ToastKind};
 use super::model::MarkerAssetModel;
 use super::model::{
     BuildingObject, EditorAssetRow, EditorKind, EditorObject, EditorTextureRow, GroupAnimation,
-    GroupAnimationKind, LineObject, MAX_GROUP_DELAY, MAX_ROUTE_SPACING, MIN_GROUP_DELAY,
-    MIN_ROUTE_SPACING, MarkerObject, ObjectKey, ObjectType, PLAY_FORMATION_SPACING, ParticleObject,
-    ParticleSettings, RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance,
+    GroupAnimationKind, LineObject, MAX_GROUP_DELAY, MAX_POINTER_ALTITUDE, MAX_POINTER_SIZE,
+    MAX_ROUTE_SPACING, MIN_GROUP_DELAY, MIN_POINTER_ALTITUDE, MIN_POINTER_SIZE, MIN_ROUTE_SPACING,
+    MarkerObject, ObjectKey, ObjectType, PLAY_FORMATION_SPACING, ParticleObject, ParticleSettings,
+    PointerAnimation, RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance,
     TextObject, VisibilityAnimation, VisibilityAnimationKind, unit_for_uuid,
 };
 
@@ -1294,6 +1295,7 @@ fn line_object(line: Line) -> EditorObject {
             animation: parse_route_animation(&line.keterangan),
             visibility: parse_visibility_animation(&line.keterangan),
             group: parse_group_animation(&line.keterangan),
+            pointer: parse_pointer_animation(&line.keterangan),
         }),
     }
 }
@@ -1599,22 +1601,38 @@ fn line_keterangan(line: &LineObject) -> String {
         })
         .to_string();
     }
-    let Some(group) = &line.group else {
+    if let Some(group) = &line.group {
+        return serde_json::json!({
+            "animation": {
+                "type": group.kind.key(),
+                "members": group
+                    .members
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>(),
+                "advance": group.advance.key(),
+                "delay": group
+                    .delay_seconds
+                    .clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY),
+                "order": group.order,
+            }
+        })
+        .to_string();
+    }
+    let Some(pointer) = &line.pointer else {
         return String::new();
     };
     serde_json::json!({
         "animation": {
-            "type": group.kind.key(),
-            "members": group
-                .members
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>(),
-            "advance": group.advance.key(),
-            "delay": group
-                .delay_seconds
-                .clamp(MIN_GROUP_DELAY, MAX_GROUP_DELAY),
-            "order": group.order,
+            "type": "pointer",
+            "marker_id": pointer.marker_id.map(|id| id.to_string()),
+            "text": pointer.text,
+            "color": pointer.color,
+            "altitude": pointer
+                .altitude
+                .clamp(MIN_POINTER_ALTITUDE, MAX_POINTER_ALTITUDE),
+            "size": pointer.size.clamp(MIN_POINTER_SIZE, MAX_POINTER_SIZE),
+            "order": pointer.order,
         }
     })
     .to_string()
@@ -1647,6 +1665,46 @@ fn parse_visibility_animation(raw: &str) -> Option<VisibilityAnimation> {
         kind,
         marker_ids: ids("marker_ids"),
         particle_ids: ids("particle_ids"),
+        order: animation
+            .get("order")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(0, i32::MAX as i64) as i32,
+    })
+}
+
+/// Parses pointer metadata stored in `plot_lines.keterangan`.
+fn parse_pointer_animation(raw: &str) -> Option<PointerAnimation> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let animation = value.get("animation")?;
+    if animation.get("type")?.as_str()? != "pointer" {
+        return None;
+    }
+    Some(PointerAnimation {
+        marker_id: animation
+            .get("marker_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok()),
+        text: animation
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        color: animation
+            .get("color")
+            .and_then(Value::as_str)
+            .unwrap_or("#39ff88")
+            .to_owned(),
+        altitude: animation
+            .get("altitude")
+            .and_then(Value::as_f64)
+            .unwrap_or(super::model::DEFAULT_POINTER_ALTITUDE)
+            .clamp(MIN_POINTER_ALTITUDE, MAX_POINTER_ALTITUDE),
+        size: animation
+            .get("size")
+            .and_then(Value::as_f64)
+            .unwrap_or(super::model::DEFAULT_POINTER_SIZE)
+            .clamp(MIN_POINTER_SIZE, MAX_POINTER_SIZE),
         order: animation
             .get("order")
             .and_then(Value::as_i64)
@@ -2321,6 +2379,36 @@ mod tests {
         assert!(
             parse_visibility_animation(r#"{"animation":{"type":"route","kind":"single"}}"#)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn pointer_metadata_round_trips_through_line_keterangan() {
+        let marker_id = Uuid::new_v4();
+        let mut line = LineObject::new(Vec::new());
+        line.pointer = Some(PointerAnimation {
+            marker_id: Some(marker_id),
+            text: "Lomba".to_owned(),
+            color: "#ff3366".to_owned(),
+            altitude: 7.5,
+            size: 2.25,
+            order: 3,
+        });
+
+        let raw = line_keterangan(&line);
+        let parsed = parse_pointer_animation(&raw).expect("pointer metadata");
+        assert_eq!(parsed.marker_id, Some(marker_id));
+        assert_eq!(parsed.text, "Lomba");
+        assert_eq!(parsed.color, "#ff3366");
+        assert!((parsed.altitude - 7.5).abs() < 1.0e-9);
+        assert!((parsed.size - 2.25).abs() < 1.0e-9);
+        assert_eq!(parsed.order, 3);
+        // The other animation parsers must ignore pointer metadata.
+        assert!(parse_route_animation(&raw).is_none());
+        assert!(parse_visibility_animation(&raw).is_none());
+        assert!(parse_group_animation(&raw).is_none());
+        assert!(
+            parse_pointer_animation(r#"{"animation":{"type":"route","kind":"single"}}"#).is_none()
         );
     }
 

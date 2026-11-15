@@ -29,6 +29,7 @@ impl Plugin for EditorRenderPlugin {
                     scene::tag_gizmo_parts,
                     scene::sync_editor_play_scenes,
                     scene::apply_editor_play_frame,
+                    scene::apply_editor_pointer_frame,
                     scene::follow_play_gizmo,
                     scene::sync_editor_play_animations,
                     scene::update_gizmo_scale,

@@ -267,6 +267,19 @@ pub enum EditorSceneKind {
         /// Cached/remote image path used as the base colour texture.
         texture: Option<String>,
     },
+    /// Downward 3D arrow used by the pointer animation. The entity is anchored
+    /// at the arrow's top; `altitude` is that top height.
+    Pointer {
+        color: [f32; 4],
+        height: f32,
+        radius: f32,
+        altitude: f32,
+        /// Editor key of the pointed marker, used to follow it during Play.
+        target: u64,
+        /// Arrow top above the target marker, applied to the live marker
+        /// altitude during Play.
+        lift: f32,
+    },
     Text {
         color: [f32; 4],
         font_size: f32,
@@ -411,6 +424,15 @@ pub(crate) struct ShadingApplied;
 /// Links a rendered marker root to its editor object key.
 #[derive(Component)]
 pub(crate) struct EditorPlayKey(pub u64);
+
+/// Keeps a pointer arrow above its target marker while Play moves it. The
+/// arrow cannot use [`EditorPlayKey`] for this because a pointer is not a play
+/// unit itself.
+#[derive(Component)]
+pub(crate) struct EditorPointerTarget {
+    target: u64,
+    lift: f32,
+}
 
 /// Play-mode animation state for an animated marker root. The `AnimationPlayer`
 /// is created by the glTF scene instance, so it is looked up once and cached.
@@ -917,6 +939,33 @@ pub(crate) fn follow_play_gizmo(
     }
 }
 
+/// Moves pointer arrows with their target marker during Play. Runs after
+/// [`apply_editor_play_frame`] so the arrow reads the marker's new position.
+pub(crate) fn apply_editor_pointer_frame(
+    frame: Res<EditorPlayFrame>,
+    mut pointers: Query<(&EditorPointerTarget, &mut GeoAnchor, &mut Transform)>,
+) {
+    if !frame.active {
+        return;
+    }
+    let units = frame
+        .units
+        .iter()
+        .map(|unit| (unit.key, unit))
+        .collect::<HashMap<_, _>>();
+    for (pointer, mut anchor, mut transform) in &mut pointers {
+        let Some(unit) = units.get(&pointer.target) else {
+            continue;
+        };
+        if let Ok(mercator) = GeoPoint::new(unit.lon, unit.lat).mercator()
+            && anchor.mercator != mercator
+        {
+            anchor.mercator = mercator;
+        }
+        transform.translation.y = unit.altitude + pointer.lift;
+    }
+}
+
 /// Applies the RTS play positions every frame without rebuilding the scene.
 /// Every moving unit turns toward its travel direction; only animated units
 /// swap to the walk clip. Altitude is applied to the local transform so the
@@ -1166,6 +1215,74 @@ fn spawn_object(
             }
             let entity = spawn.id();
             cache.entities.push(entity);
+        }
+        EditorSceneKind::Pointer {
+            color,
+            height,
+            radius,
+            altitude,
+            target,
+            lift,
+        } => {
+            let height = (*height).max(0.1);
+            let radius = (*radius).max(0.05);
+            // The arrow is a short shaft plus a long cone head. The parent is the
+            // arrow top; the render loop moves it with its target marker through
+            // `EditorPointerTarget` instead of rebuilding the scene.
+            let shaft_height = height * 0.3;
+            let head_height = height - shaft_height;
+            let shaft_radius = radius * 0.28;
+            let shaft_mesh = cache
+                .shape_meshes
+                .entry(EditorShapeKind::Cylinder)
+                .or_insert_with(|| meshes.add(mesh::shape_cylinder_mesh()))
+                .clone();
+            let head_mesh = cache
+                .shape_meshes
+                .entry(EditorShapeKind::Cone)
+                .or_insert_with(|| meshes.add(mesh::shape_cone_mesh()))
+                .clone();
+            let material = cache
+                .building_materials
+                .entry((color_key(*color), None))
+                .or_insert_with(|| materials.add(unlit_material(*color, 0.95)))
+                .clone();
+            let root = commands
+                .spawn((
+                    Transform::from_xyz(0.0, *altitude, 0.0),
+                    anchor,
+                    name,
+                    EditorPlayKey(object.key),
+                    EditorPointerTarget {
+                        target: *target,
+                        lift: *lift,
+                    },
+                ))
+                .id();
+            commands.entity(root).with_children(|parent| {
+                // Both shape meshes are anchored at their base and one unit
+                // tall, so flipping them about X makes them grow downward
+                // from the arrow top.
+                parent.spawn((
+                    Mesh3d(shaft_mesh),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_xyz(0.0, 0.0, 0.0)
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::PI))
+                        .with_scale(Vec3::new(
+                            shaft_radius * 2.0,
+                            shaft_height,
+                            shaft_radius * 2.0,
+                        )),
+                ));
+                parent.spawn((
+                    Mesh3d(head_mesh),
+                    MeshMaterial3d(material),
+                    Transform::from_xyz(0.0, -shaft_height, 0.0)
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::PI))
+                        .with_scale(Vec3::new(radius * 2.0, head_height, radius * 2.0)),
+                ));
+            });
+            cache.entities.push(root);
         }
         EditorSceneKind::Line {
             points,

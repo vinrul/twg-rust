@@ -13,8 +13,9 @@ use crate::widgets;
 use super::input::distance_meters;
 use super::model::{
     AssetMarkerDraft, EditorAssetRow, EditorKind, EditorState, EditorTextureRow, EditorTool,
-    GroupAnimation, GroupAnimationKind, MAX_GROUP_DELAY, MAX_ROUTE_SPACING, MIN_GROUP_DELAY,
-    MIN_MARKER_SCALE, MIN_ROUTE_SPACING, ObjectKey, ObjectType, ParticleSettings, PlaybackState,
+    GroupAnimation, GroupAnimationKind, MAX_GROUP_DELAY, MAX_POINTER_ALTITUDE, MAX_POINTER_SIZE,
+    MAX_ROUTE_SPACING, MIN_GROUP_DELAY, MIN_MARKER_SCALE, MIN_POINTER_ALTITUDE, MIN_POINTER_SIZE,
+    MIN_ROUTE_SPACING, ObjectKey, ObjectType, ParticleSettings, PlaybackState, PointerAnimation,
     RouteAnimation, RouteAnimationKind, RouteFormation, SequenceAdvance, VisibilityAnimation,
     VisibilityAnimationKind, marker_color, parse_hex_color, particle_kind_label,
 };
@@ -1370,6 +1371,29 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
         });
 
     ui.add_space(4.0);
+    egui::CollapsingHeader::new("Pointer")
+        .id_salt("editor_animation_create_pointer")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(theme::muted(
+                "Pointer menunjuk satu marker dengan panah 3D dari atas. Warna, tinggi ujung \
+                 panah, ukuran, dan teks label diatur di Inspector.",
+            ));
+            ui.add_space(4.0);
+            if ui
+                .add_enabled(
+                    editor.loaded,
+                    egui::Button::new("+ Pointer marker")
+                        .min_size(egui::vec2(ui.available_width(), 26.0)),
+                )
+                .on_hover_text("Buat panah penunjuk untuk satu marker")
+                .clicked()
+            {
+                editor.add_pointer_animation();
+            }
+        });
+
+    ui.add_space(4.0);
     egui::CollapsingHeader::new("Spawn & Hide")
         .id_salt("editor_animation_create_visibility")
         .default_open(true)
@@ -1442,6 +1466,7 @@ fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AnimationListGroup {
     Route,
+    Pointer,
     Spawn,
     Hide,
     Combine,
@@ -1449,8 +1474,9 @@ enum AnimationListGroup {
 }
 
 impl AnimationListGroup {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Route,
+        Self::Pointer,
         Self::Spawn,
         Self::Hide,
         Self::Combine,
@@ -1460,6 +1486,7 @@ impl AnimationListGroup {
     const fn title(self) -> &'static str {
         match self {
             Self::Route => "Rute",
+            Self::Pointer => "Pointer (penunjuk)",
             Self::Spawn => "Spawn (munculkan)",
             Self::Hide => "Hide (sembunyikan)",
             Self::Combine => "Combine (bersamaan)",
@@ -1470,6 +1497,7 @@ impl AnimationListGroup {
     const fn id_salt(self) -> &'static str {
         match self {
             Self::Route => "editor_animation_list_route",
+            Self::Pointer => "editor_animation_list_pointer",
             Self::Spawn => "editor_animation_list_spawn",
             Self::Hide => "editor_animation_list_hide",
             Self::Combine => "editor_animation_list_combine",
@@ -1491,6 +1519,8 @@ fn draw_animation_list_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
                             VisibilityAnimationKind::Spawn => AnimationListGroup::Spawn,
                             VisibilityAnimationKind::Hide => AnimationListGroup::Hide,
                         }
+                    } else if line.pointer.is_some() {
+                        AnimationListGroup::Pointer
                     } else {
                         match line.group.as_ref()?.kind {
                             GroupAnimationKind::Combine => AnimationListGroup::Combine,
@@ -2912,6 +2942,50 @@ fn draw_object_inspector(
         EditorKind::Line(line) => {
             if let Some(group) = &mut line.group {
                 changed |= draw_group_inspector(ui, editor, key, group, &mut undo);
+            } else if let Some(pointer) = &mut line.pointer {
+                ui.label(theme::title("Animasi pointer"));
+                ui.label(theme::muted(
+                    "Panah 3D menunjuk satu marker dari atas. Warna, tinggi ujung panah, \
+                     ukuran, dan teks label bisa diatur di sini.",
+                ));
+                ui.separator();
+                changed |= draw_pointer_selector(ui, editor, key, pointer);
+                ui.separator();
+                color_row(ui, "Warna panah", &mut pointer.color, &mut changed);
+                let altitude = drag_row_range(
+                    ui,
+                    "Tinggi panah",
+                    &mut pointer.altitude,
+                    MIN_POINTER_ALTITUDE..=MAX_POINTER_ALTITUDE,
+                    0.5,
+                    1,
+                    " m",
+                );
+                undo |= altitude.drag_started();
+                changed |= altitude.changed();
+                let size = drag_row_range(
+                    ui,
+                    "Ukuran",
+                    &mut pointer.size,
+                    MIN_POINTER_SIZE..=MAX_POINTER_SIZE,
+                    0.05,
+                    2,
+                    " x",
+                );
+                undo |= size.drag_started();
+                changed |= size.changed();
+                ui.add_space(4.0);
+                ui.label("Teks label");
+                changed |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut pointer.text)
+                            .hint_text("Contoh: Lomba")
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed();
+                ui.label(theme::muted(
+                    "Kosongkan teks bila label tidak diperlukan. Label tampil di atas panah.",
+                ));
             } else if let Some(visibility) = &mut line.visibility {
                 ui.label(theme::title(match visibility.kind {
                     VisibilityAnimationKind::Spawn => "Animasi spawn",
@@ -3852,6 +3926,116 @@ fn draw_visibility_target_selector(
     changed
 }
 
+/// Inspector for a pointer animation: picks the single marker the arrow points
+/// at, either from a list or by clicking the map.
+fn draw_pointer_selector(
+    ui: &mut egui::Ui,
+    editor: &mut EditorState,
+    key: ObjectKey,
+    pointer: &mut PointerAnimation,
+) -> bool {
+    let mut changed = false;
+    ui.label(theme::title("Marker target"));
+
+    let target = pointer.marker_id.and_then(|id| {
+        editor
+            .objects
+            .iter()
+            .find(|object| object.server_id == Some(id))
+            .map(|object| (object.name.clone(), object.visible))
+    });
+    match &target {
+        Some((name, visible)) => {
+            ui.horizontal(|ui| {
+                ui.label(format!("1. Marker · {name}"));
+                if !*visible {
+                    ui.label(theme::danger("· disembunyikan"));
+                }
+            })
+            .response
+            .on_hover_text("Pointer hanya menunjuk satu marker.");
+            if ui.small_button("Hapus target").clicked() {
+                pointer.marker_id = None;
+                changed = true;
+            }
+        }
+        None if pointer.marker_id.is_some() => {
+            ui.label(theme::danger("Marker target tidak ditemukan."));
+            if ui.small_button("Hapus target").clicked() {
+                pointer.marker_id = None;
+                changed = true;
+            }
+        }
+        None => {
+            ui.label(theme::muted(
+                "Belum ada target. Pilih satu marker dari daftar atau dari peta.",
+            ));
+        }
+    }
+
+    ui.horizontal(|ui| {
+        ui.label(theme::muted("Cari"));
+        ui.add(
+            egui::TextEdit::singleline(&mut editor.pointer_marker_search)
+                .hint_text("Nama marker...")
+                .desired_width(170.0),
+        );
+    });
+
+    let options = editor.pointer_marker_options(key);
+    let option_count = options.len();
+    let mut picked: Option<Uuid> = None;
+    widgets::combo(
+        ui,
+        egui::Id::new(("pointer_target", key)),
+        &mut picked,
+        &options,
+    );
+    if let Some(id) = picked {
+        editor.assign_pointer_target(key, id);
+        pointer.marker_id = Some(id);
+        changed = true;
+    }
+
+    if option_count <= 1 {
+        let searching = !editor.pointer_marker_search.trim().is_empty();
+        let unsaved = editor.objects.iter().any(|object| {
+            object.server_id.is_none() && matches!(object.kind, EditorKind::Marker(_))
+        });
+        let hint = if searching {
+            "Tidak ada marker yang cocok dengan pencarian."
+        } else if unsaved {
+            "Marker di peta belum tersimpan. Klik \"Pilih marker dari peta\" — skenario \
+             disimpan otomatis saat marker dipilih."
+        } else {
+            "Belum ada marker tersimpan di skenario ini."
+        };
+        ui.label(theme::muted(hint));
+    }
+
+    let picking = editor.pick_pointer_target == Some(key);
+    if ui
+        .button(if picking {
+            "Selesai pilih marker di peta"
+        } else {
+            "Pilih marker dari peta"
+        })
+        .clicked()
+    {
+        if picking {
+            editor.pick_pointer_target = None;
+        } else {
+            editor.end_point_edit();
+            editor.pick_route_marker = None;
+            editor.pick_visibility_target = None;
+            editor.pick_pointer_target = Some(key);
+            editor.log("Klik satu marker di peta untuk dijadikan target pointer. Esc selesai.");
+        }
+    }
+
+    changed
+}
+
 /// Inspector for a combine/sequence group: member list, order, and sequence
 /// timing. Members reference saved route and spawn/hide animations.
 fn draw_group_inspector(
@@ -4237,18 +4421,26 @@ fn draw_viewport(root: &mut egui::Ui, editor: &mut EditorState) {
                 draw_scale_bar(&painter, rect, editor);
                 draw_crosshair(&painter, rect);
             }
-            if let Some(route_key) = editor.pick_route_marker {
+            let pick_hint = if let Some(route_key) = editor.pick_route_marker {
                 let multiple = editor.object(route_key).is_some_and(|object| {
                     matches!(&object.kind, EditorKind::Line(line) if line
                         .animation
                         .as_ref()
                         .is_some_and(|animation| animation.kind == RouteAnimationKind::Multiple))
                 });
-                let text = if multiple {
+                Some(if multiple {
                     "Klik marker untuk menambah ke rute · Esc selesai"
                 } else {
                     "Klik marker di peta untuk target rute · Esc batal"
-                };
+                })
+            } else if editor.pick_visibility_target.is_some() {
+                Some("Klik marker/particle di peta untuk target · Esc selesai")
+            } else if editor.pick_pointer_target.is_some() {
+                Some("Klik satu marker di peta untuk target pointer · Esc batal")
+            } else {
+                None
+            };
+            if let Some(text) = pick_hint {
                 let galley = painter.layout_no_wrap(
                     text.to_owned(),
                     egui::FontId::proportional(12.0),
