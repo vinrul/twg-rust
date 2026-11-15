@@ -5409,10 +5409,16 @@ impl EditorState {
                 }
                 continue;
             }
-            // Water cannons are Play effects: the jet exists only while the
-            // cannon sprays. During authoring the particle preview shows it.
+            // Water cannons are Play effects. In Play the jet exists only while
+            // the cannon sprays; during authoring it previews while selected so
+            // the map stays readable with many cannons.
             if object.is_shoot_animation() {
-                if self.preview && !self.play.sprays.contains(&object.key) {
+                let active = if self.preview {
+                    self.play.sprays.contains(&object.key)
+                } else {
+                    self.selected.contains(&object.key)
+                };
+                if !active {
                     continue;
                 }
                 if let Some(scene_object) = self.shoot_scene_object(object) {
@@ -7401,6 +7407,49 @@ mod tests {
         editor.set_cannon_spraying(shoot_key, false);
         assert!(
             !editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == shoot_key)
+        );
+    }
+
+    #[test]
+    fn water_cannon_previews_only_while_selected_in_the_editor() {
+        let mut editor = editor();
+        let marker_key = add_animated_marker(
+            &mut editor,
+            "dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb",
+            GeoPoint::new(115.225, -8.648),
+        );
+        let marker_id = Uuid::new_v4();
+        editor.object_mut(marker_key).expect("marker").server_id = Some(marker_id);
+        editor.add_shoot_animation();
+        let shoot_key = *editor.selected.iter().next().expect("shoot selected");
+        editor.assign_shoot_target(shoot_key, marker_id);
+
+        // The new cannon is selected, so its jet previews on the map.
+        assert!(
+            editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == shoot_key)
+        );
+
+        // Deselecting hides the preview again.
+        editor.selected.clear();
+        assert!(
+            !editor
+                .build_scene()
+                .objects
+                .iter()
+                .any(|object| object.key == shoot_key)
+        );
+
+        editor.select_only(shoot_key);
+        assert!(
+            editor
                 .build_scene()
                 .objects
                 .iter()

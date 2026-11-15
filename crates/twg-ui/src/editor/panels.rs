@@ -1477,171 +1477,177 @@ fn draw_import_tab(ui: &mut egui::Ui, editor: &mut EditorState, import_rows: &[E
 }
 
 fn draw_animation_create_tab(ui: &mut egui::Ui, editor: &mut EditorState) {
-    ui.add_space(2.0);
-    ui.label(theme::title("Buat animasi"));
-    ui.label(theme::muted(
-        "Pilih jenis animasi lalu gambar di peta. Animasi yang sudah dibuat \
-         tampil di Scene → Daftar Anim.",
-    ));
-    ui.add_space(6.0);
-
-    egui::CollapsingHeader::new("Rute")
-        .id_salt("editor_animation_create")
-        .default_open(true)
+    egui::ScrollArea::vertical()
+        .id_salt("editor_animation_create_scroll")
+        .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.add_space(2.0);
+            ui.label(theme::title("Buat animasi"));
             ui.label(theme::muted(
+                "Pilih jenis animasi lalu gambar di peta. Animasi yang sudah dibuat \
+         tampil di Scene → Daftar Anim.",
+            ));
+            ui.add_space(6.0);
+
+            egui::CollapsingHeader::new("Rute")
+                .id_salt("editor_animation_create")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label(theme::muted(
                 "Single marker: satu marker mengikuti garis. Multiple marker: banyak marker \
                  bergerak bersama dalam formasi (grid). Patwal: marker berbaris satu per satu \
                  dengan jarak yang bisa diatur per pasangan.",
             ));
-            ui.add_space(4.0);
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Single marker rute")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Gambar garis rute di peta")
-                .clicked()
-            {
-                editor.begin_route_draw(RouteAnimationKind::Single);
-            }
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Multiple marker rute")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Gambar rute untuk beberapa marker dengan formasi grid")
-                .clicked()
-            {
-                editor.begin_route_draw(RouteAnimationKind::Multiple);
-            }
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Patwal").min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Marker berbaris mengikuti rute seperti patroli pengawalan")
-                .clicked()
-            {
-                editor.begin_route_draw(RouteAnimationKind::Patwal);
-            }
-        });
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Single marker rute")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Gambar garis rute di peta")
+                        .clicked()
+                    {
+                        editor.begin_route_draw(RouteAnimationKind::Single);
+                    }
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Multiple marker rute")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Gambar rute untuk beberapa marker dengan formasi grid")
+                        .clicked()
+                    {
+                        editor.begin_route_draw(RouteAnimationKind::Multiple);
+                    }
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Patwal")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Marker berbaris mengikuti rute seperti patroli pengawalan")
+                        .clicked()
+                    {
+                        editor.begin_route_draw(RouteAnimationKind::Patwal);
+                    }
+                });
 
-    ui.add_space(4.0);
-    egui::CollapsingHeader::new("Pointer")
-        .id_salt("editor_animation_create_pointer")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.label(theme::muted(
+            ui.add_space(4.0);
+            egui::CollapsingHeader::new("Pointer")
+                .id_salt("editor_animation_create_pointer")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label(theme::muted(
                 "Pointer menunjuk satu marker dengan panah 3D dari atas. Warna, tinggi ujung \
                  panah, ukuran, dan teks label diatur di Inspector.",
             ));
-            ui.add_space(4.0);
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Pointer marker")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Buat panah penunjuk untuk satu marker")
-                .clicked()
-            {
-                editor.add_pointer_animation();
-            }
-        });
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Pointer marker")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Buat panah penunjuk untuk satu marker")
+                        .clicked()
+                    {
+                        editor.add_pointer_animation();
+                    }
+                });
 
-    ui.add_space(4.0);
-    egui::CollapsingHeader::new("Shoot")
-        .id_salt("editor_animation_create_shoot")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.label(theme::muted(
+            ui.add_space(4.0);
+            egui::CollapsingHeader::new("Shoot")
+                .id_salt("editor_animation_create_shoot")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label(theme::muted(
                 "Shoot memasang water cannon di satu marker. Saat Play, air disemprotkan dari \
                  nozzle dan bisa diarahkan, diatur panjang serta banyaknya di Inspector.",
             ));
-            ui.add_space(4.0);
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Water cannon")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Buat semprotan water cannon pada satu marker")
-                .clicked()
-            {
-                editor.add_shoot_animation();
-            }
-        });
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Water cannon")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Buat semprotan water cannon pada satu marker")
+                        .clicked()
+                    {
+                        editor.add_shoot_animation();
+                    }
+                });
 
-    ui.add_space(4.0);
-    egui::CollapsingHeader::new("Spawn & Hide")
-        .id_salt("editor_animation_create_visibility")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.label(theme::muted(
-                "Spawn: objek disembunyikan saat Play dimulai lalu muncul. Hide: objek \
+            ui.add_space(4.0);
+            egui::CollapsingHeader::new("Spawn & Hide")
+                .id_salt("editor_animation_create_visibility")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label(theme::muted(
+                        "Spawn: objek disembunyikan saat Play dimulai lalu muncul. Hide: objek \
                  tampil saat Play dimulai lalu hilang. Marker/particle yang sedang dipilih \
                  otomatis menjadi target.",
-            ));
-            ui.add_space(4.0);
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Spawn objek")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Buat animasi yang memunculkan target saat diputar")
-                .clicked()
-            {
-                editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
-            }
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Hide objek")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Buat animasi yang menyembunyikan target saat diputar")
-                .clicked()
-            {
-                editor.add_visibility_animation(VisibilityAnimationKind::Hide);
-            }
-        });
+                    ));
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Spawn objek")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Buat animasi yang memunculkan target saat diputar")
+                        .clicked()
+                    {
+                        editor.add_visibility_animation(VisibilityAnimationKind::Spawn);
+                    }
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Hide objek")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Buat animasi yang menyembunyikan target saat diputar")
+                        .clicked()
+                    {
+                        editor.add_visibility_animation(VisibilityAnimationKind::Hide);
+                    }
+                });
 
-    ui.add_space(4.0);
-    egui::CollapsingHeader::new("Gabungan")
-        .id_salt("editor_animation_create_group")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.label(theme::muted(
-                "Combine menjalankan semua animasi anggota bersamaan. Sequence menjalankan \
-                 anggota berurutan; urutan dan waktu mulai diatur di Inspector.",
-            ));
             ui.add_space(4.0);
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Combine animasi")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Gabungkan beberapa animasi dan jalankan semuanya bersamaan")
-                .clicked()
-            {
-                editor.add_group_animation(GroupAnimationKind::Combine);
-            }
-            if ui
-                .add_enabled(
-                    editor.loaded,
-                    egui::Button::new("+ Sequence animasi")
-                        .min_size(egui::vec2(ui.available_width(), 26.0)),
-                )
-                .on_hover_text("Gabungkan beberapa animasi dan jalankan berurutan")
-                .clicked()
-            {
-                editor.add_group_animation(GroupAnimationKind::Sequence);
-            }
+            egui::CollapsingHeader::new("Gabungan")
+                .id_salt("editor_animation_create_group")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label(theme::muted(
+                        "Combine menjalankan semua animasi anggota bersamaan. Sequence menjalankan \
+                 anggota berurutan; urutan dan waktu mulai diatur di Inspector.",
+                    ));
+                    ui.add_space(4.0);
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Combine animasi")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Gabungkan beberapa animasi dan jalankan semuanya bersamaan")
+                        .clicked()
+                    {
+                        editor.add_group_animation(GroupAnimationKind::Combine);
+                    }
+                    if ui
+                        .add_enabled(
+                            editor.loaded,
+                            egui::Button::new("+ Sequence animasi")
+                                .min_size(egui::vec2(ui.available_width(), 26.0)),
+                        )
+                        .on_hover_text("Gabungkan beberapa animasi dan jalankan berurutan")
+                        .clicked()
+                    {
+                        editor.add_group_animation(GroupAnimationKind::Sequence);
+                    }
+                });
         });
 }
 
@@ -3178,7 +3184,8 @@ fn draw_object_inspector(
                 ui.label(theme::title("Animasi shoot · Water cannon"));
                 ui.label(theme::muted(
                     "Water cannon menempel di satu marker dan menyemprotkan air saat Play. \
-                     Atur letak nozzle, arah, panjang, dan banyaknya air di sini.",
+                     Semprotan tampil di peta selama animasi ini dipilih. Atur letak nozzle, \
+                     arah, panjang, dan banyaknya air di sini.",
                 ));
                 ui.separator();
                 changed |= draw_shoot_selector(ui, editor, key, shoot);

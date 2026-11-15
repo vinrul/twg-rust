@@ -649,6 +649,10 @@ punya tombol **+ Water cannon**.
 - Pengaturan **semprotan**: **Panjang semprotan** (1–100 m), **Banyak air**
   (0,25–3×), **Sudut elevasi** (0–70°), **Sebaran** (0–40°), **Ukuran butiran**
   (0,3–3×), **Warna air**, dan **Opasitas**.
+- Saat mengedit, semprotan air hanya tampil di peta ketika animasi water
+  cannon **dipilih** (dari Daftar Anim, Scene, atau tepat setelah dibuat) supaya
+  peta tidak penuh partikel. Semprotan juga mengikuti toggle **Animasi
+  particle** di toolbar.
 - **Semprot otomatis saat Play** membuat air langsung menyemprot begitu Play
   dimulai. Bila dimatikan, tekan **Semprotkan** di bagian **Shoot** panel
   Animasi saat Play; tombolnya berubah menjadi **Stop**. Status tiap cannon
