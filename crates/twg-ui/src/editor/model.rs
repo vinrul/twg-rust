@@ -1943,6 +1943,8 @@ pub struct EditorState {
     pub visibility_target_search: String,
     /// Marker search text for the pointer inspector.
     pub pointer_marker_search: String,
+    /// Search text for the Play animation panel.
+    pub play_anim_search: String,
     /// Route waiting for a marker picked directly on the map.
     pub pick_route_marker: Option<ObjectKey>,
     /// Spawn/hide animation waiting for a marker or particle picked on the map.
@@ -2093,6 +2095,7 @@ impl EditorState {
             route_marker_search: String::new(),
             visibility_target_search: String::new(),
             pointer_marker_search: String::new(),
+            play_anim_search: String::new(),
             pick_route_marker: None,
             pick_visibility_target: None,
             pick_pointer_target: None,
@@ -2139,6 +2142,7 @@ impl EditorState {
         self.pending_route_picks.clear();
         self.pending_visibility_picks.clear();
         self.pending_pointer_picks.clear();
+        self.play_anim_search.clear();
         self.next_key = 1;
         self.dirty = false;
         self.touch();

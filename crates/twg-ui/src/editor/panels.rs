@@ -273,23 +273,98 @@ fn draw_animation_play_panel(
                 draw_play_scenario_list(ui, editor, scenarios, &mut requested_scenario);
                 return;
             }
+            let total_animations = editor.play.animations.len()
+                + editor.play.visibility_animations.len()
+                + editor.play.groups.len()
+                + editor.play.pointers.len();
+            if total_animations > 0 {
+                ui.horizontal(|ui| {
+                    ui.label(theme::muted("Cari"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut editor.play_anim_search)
+                            .hint_text("Nama animasi...")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+                if !editor.play_anim_search.trim().is_empty() {
+                    if ui.small_button("Reset pencarian").clicked() {
+                        editor.play_anim_search.clear();
+                    }
+                    ui.add_space(2.0);
+                }
+                ui.separator();
+            }
+            // Filter by name or kind label so "patwal", "spawn", "pointer",
+            // and the pointer label text all find their rows.
+            let needle = editor.play_anim_search.trim().to_lowercase();
+            let matches = |name: &str, kind: &str| {
+                needle.is_empty()
+                    || name.to_lowercase().contains(&needle)
+                    || kind.to_lowercase().contains(&needle)
+            };
+            let routes = editor
+                .play
+                .animations
+                .iter()
+                .enumerate()
+                .filter(|(_, animation)| matches(&animation.name, animation.kind.label()))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let visibility = editor
+                .play
+                .visibility_animations
+                .iter()
+                .enumerate()
+                .filter(|(_, animation)| matches(&animation.name, animation.kind.label()))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let groups = editor
+                .play
+                .groups
+                .iter()
+                .enumerate()
+                .filter(|(_, group)| matches(&group.name, group.kind.label()))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let pointers = editor
+                .play
+                .pointers
+                .iter()
+                .enumerate()
+                .filter(|(_, pointer)| {
+                    matches(&pointer.name, "Pointer")
+                        || pointer.label.to_lowercase().contains(&needle)
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
             egui::ScrollArea::vertical()
                 .id_salt("editor_play_animations")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if editor.play.animations.is_empty()
-                        && editor.play.visibility_animations.is_empty()
-                        && editor.play.groups.is_empty()
-                        && editor.play.pointers.is_empty()
-                    {
+                    if total_animations == 0 {
                         ui.label(theme::muted(
                             "Belum ada animasi. Buat rute, spawn/hide, atau pointer di tab \
                              Animasi saat mengedit skenario.",
                         ));
                         return;
                     }
+                    if routes.is_empty()
+                        && visibility.is_empty()
+                        && groups.is_empty()
+                        && pointers.is_empty()
+                    {
+                        ui.label(theme::muted(
+                            "Tidak ada animasi yang cocok dengan pencarian.",
+                        ));
+                        if ui.small_button("Hapus pencarian").clicked() {
+                            editor.play_anim_search.clear();
+                        }
+                        return;
+                    }
                     let mut command: Option<(usize, RouteCommand)> = None;
-                    for (index, animation) in editor.play.animations.iter().enumerate() {
+                    for index in &routes {
+                        let animation = &editor.play.animations[*index];
+                        let index = *index;
                         ui.label(egui::RichText::new(&animation.name).strong());
                         let status = match animation.state {
                             PlaybackState::Stopped => "Berhenti",
@@ -346,14 +421,14 @@ fn draw_animation_play_panel(
                             RouteCommand::Stop => editor.stop_route_animation(index),
                         }
                     }
-                    if !editor.play.visibility_animations.is_empty() {
+                    if !visibility.is_empty() {
                         ui.separator();
                         ui.label(theme::title("Spawn & Hide"));
                         ui.label(theme::muted("Animasi visibilitas objek saat Play."));
                         let mut trigger = None;
-                        for (index, animation) in
-                            editor.play.visibility_animations.iter().enumerate()
-                        {
+                        for index in &visibility {
+                            let animation = &editor.play.visibility_animations[*index];
+                            let index = *index;
                             let total = animation.targets.len();
                             let hidden = animation
                                 .targets
@@ -408,13 +483,15 @@ fn draw_animation_play_panel(
                             editor.reset_play_visibility();
                         }
                     }
-                    if !editor.play.groups.is_empty() {
+                    if !groups.is_empty() {
                         ui.separator();
                         ui.label(theme::title("Gabungan"));
                         ui.label(theme::muted("Combine dan Sequence."));
                         let mut play_group = None;
                         let mut stop_group = None;
-                        for (index, group) in editor.play.groups.iter().enumerate() {
+                        for index in &groups {
+                            let group = &editor.play.groups[*index];
+                            let index = *index;
                             let finished = group.is_finished(&editor.play.animations);
                             let status = match group.state {
                                 PlaybackState::Stopped => "Berhenti".to_owned(),
@@ -474,7 +551,7 @@ fn draw_animation_play_panel(
                             editor.stop_group_animation(index);
                         }
                     }
-                    if !editor.play.pointers.is_empty() {
+                    if !pointers.is_empty() {
                         ui.separator();
                         ui.label(theme::title("Pointer"));
                         ui.label(theme::muted(
@@ -482,7 +559,8 @@ fn draw_animation_play_panel(
                              saat skenario membutuhkannya.",
                         ));
                         let mut toggle = None;
-                        for pointer in &editor.play.pointers {
+                        for index in &pointers {
+                            let pointer = &editor.play.pointers[*index];
                             let shown = editor.play.shown_pointers.contains(&pointer.pointer_key);
                             ui.label(egui::RichText::new(&pointer.name).strong());
                             let status = if shown { "Tampil" } else { "Tersembunyi" };

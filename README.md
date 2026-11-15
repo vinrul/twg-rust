@@ -641,6 +641,11 @@ untuk menandai lokasi penting (misalnya "Lomba"). Tab **Buat** punya tombol
 Tombol **▶ Play** menjalankan skenario sebagai simulasi RTS sederhana di
 viewport editor:
 
+- Panel **Animasi** di kiri berisi semua kontrol animasi saat Play (rute,
+  spawn/hide, gabungan, pointer). Kotak **Cari** di atas panel menyaring daftar
+  berdasarkan nama animasi atau jenisnya (misalnya ketik `patwal`, `spawn`,
+  `combine`, atau `pointer`); bagian yang tidak punya hasil ikut disembunyikan.
+  Kosongkan kotak atau tekan **Reset pencarian** untuk menampilkan semuanya.
 - Label objek disembunyikan. Kamera tetap bisa di-orbit (klik kanan tahan) dan
   di-pan (tombol tengah) seperti biasa.
 - Marker dengan aset model **Animasi** menjadi unit yang bisa dipilih dan
