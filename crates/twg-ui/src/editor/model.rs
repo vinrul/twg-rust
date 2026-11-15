@@ -7458,6 +7458,63 @@ mod tests {
     }
 
     #[test]
+    fn water_cannon_scene_matches_between_authoring_and_play() {
+        let mut editor = editor();
+        let base = GeoPoint::new(115.225, -8.648);
+        let marker_key =
+            add_animated_marker(&mut editor, "eeeeeeee-ffff-4aaa-8bbb-cccccccccccc", base);
+        let marker_id = Uuid::new_v4();
+        {
+            let object = editor.object_mut(marker_key).expect("marker");
+            object.server_id = Some(marker_id);
+            if let EditorKind::Marker(marker) = &mut object.kind {
+                marker.rot_y = 35.0;
+                marker.altitude = 2.0;
+            }
+        }
+        editor.add_shoot_animation();
+        let shoot_key = *editor.selected.iter().next().expect("shoot selected");
+        editor.assign_shoot_target(shoot_key, marker_id);
+        {
+            let EditorKind::Line(line) = &mut editor.object_mut(shoot_key).expect("shoot").kind
+            else {
+                panic!("expected line");
+            };
+            let shoot = line.shoot.as_mut().expect("water cannon");
+            shoot.length = 42.0;
+            shoot.elevation = 27.0;
+            shoot.height = 3.2;
+            shoot.distance = 2.4;
+            shoot.side = CannonSide::Right;
+            shoot.spread = 15.0;
+            shoot.amount = 1.7;
+            shoot.droplet_size = 1.3;
+        }
+
+        let authoring = editor
+            .build_scene()
+            .objects
+            .into_iter()
+            .find(|object| object.key == shoot_key)
+            .expect("cannon while authoring")
+            .kind;
+
+        editor.preview = true;
+        editor.start_play();
+        editor.set_cannon_spraying(shoot_key, true);
+        let playing = editor
+            .build_scene()
+            .objects
+            .into_iter()
+            .find(|object| object.key == shoot_key)
+            .expect("cannon while playing")
+            .kind;
+
+        // The renderer receives exactly the same jet parameters in both modes.
+        assert_eq!(authoring, playing);
+    }
+
+    #[test]
     fn water_cannon_can_start_spraying_with_play() {
         let mut editor = editor();
         let marker_key = add_animated_marker(

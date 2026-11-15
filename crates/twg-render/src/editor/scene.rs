@@ -510,6 +510,15 @@ pub(crate) struct JetDrop {
     size: f32,
 }
 
+/// Flat marker on the ground at the authored spray reach. It makes the
+/// `Panjang semprotan` value visible on the map, so the editor preview and Play
+/// can be compared at a glance.
+#[derive(Component)]
+pub(crate) struct JetImpact {
+    reach: f32,
+    height: f32,
+}
+
 /// One animated puff/droplet inside a [`ParticleEffectRoot`]. All motion is
 /// derived from `elapsed` and the stored phase, so no per-frame state has to be
 /// written back.
@@ -1727,6 +1736,19 @@ fn spawn_water_cannon(
     cache.entities.push(root);
 
     let count = ((70.0 * amount.clamp(0.05, 4.0)).round() as usize).clamp(8, 200);
+    // Faint ground disc at the landing point, so the authored reach is visible
+    // in the editor and in Play alike.
+    let guide_material = cache
+        .water_materials
+        .entry((color_key(color), 2, 3))
+        .or_insert_with(|| materials.add(water_drop_material(&texture, color, 1, 0.28)))
+        .clone();
+    let ring_mesh = cache
+        .shape_meshes
+        .entry(EditorShapeKind::Cylinder)
+        .or_insert_with(|| meshes.add(mesh::shape_cylinder_mesh()))
+        .clone();
+    let ring_radius = (reach * 0.04).clamp(0.35, 1.6);
     commands.entity(root).with_children(|parent| {
         for index in 0..count {
             let seed = (key as u32)
@@ -1758,6 +1780,16 @@ fn spawn_water_cannon(
                 },
             ));
         }
+        parent.spawn((
+            Mesh3d(ring_mesh),
+            MeshMaterial3d(guide_material),
+            Transform::from_xyz(base_dir[0] * reach, -ground + 0.03, base_dir[1] * reach)
+                .with_scale(Vec3::new(ring_radius * 2.0, 0.04, ring_radius * 2.0)),
+            JetImpact {
+                reach,
+                height: -ground + 0.03,
+            },
+        ));
     });
 }
 
@@ -1977,7 +2009,7 @@ pub(crate) fn animate_water_jets(
     cameras: Query<&GlobalTransform, With<MapCamera>>,
     mut roots: Query<(Entity, &WaterJetRoot, &mut Transform, &mut Visibility), Without<JetDrop>>,
     children: Query<&Children>,
-    mut drops: Query<(&JetDrop, &mut Transform), Without<WaterJetRoot>>,
+    mut parts: Query<(&mut Transform, Option<&JetDrop>, Option<&JetImpact>), Without<WaterJetRoot>>,
 ) {
     let animate = mode.preview || mode.particles_animate;
     if !animate {
@@ -2001,14 +2033,28 @@ pub(crate) fn animate_water_jets(
             continue;
         };
         for child in list.iter() {
-            let Ok((drop, mut drop_transform)) = drops.get_mut(child) else {
+            let Ok((mut part_transform, drop, impact)) = parts.get_mut(child) else {
+                continue;
+            };
+            if let Some(impact) = impact {
+                // The landing disc follows the spray direction when the marker
+                // turns during Play.
+                part_transform.translation = Vec3::new(
+                    root.dir[0] * impact.reach,
+                    impact.height,
+                    root.dir[1] * impact.reach,
+                );
+                part_transform.rotation = Quat::IDENTITY;
+                continue;
+            }
+            let Some(drop) = drop else {
                 continue;
             };
             let t = (elapsed / drop.lifetime + drop.phase).fract();
             let (translation, size) = water_drop_pose(drop, root.dir, t);
-            drop_transform.translation = translation;
-            drop_transform.rotation = camera_rotation;
-            drop_transform.scale = Vec3::splat(size);
+            part_transform.translation = translation;
+            part_transform.rotation = camera_rotation;
+            part_transform.scale = Vec3::splat(size);
         }
     }
 }
