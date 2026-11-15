@@ -213,7 +213,7 @@ fn draw_preview_bar(
                         if can_admin && ui.button("Muat ulang").clicked() {
                             *action = EditorAction::Reload;
                         }
-                    } else if ui.button("■ Stop").clicked() {
+                    } else if stop_button(ui).clicked() {
                         editor.preview = false;
                         editor.touch();
                     }
@@ -903,14 +903,7 @@ fn draw_toolbar(ui: &mut egui::Ui, editor: &mut EditorState, action: &mut Editor
                         }
                     });
                 ui.separator();
-                if ui
-                    .add(egui::Button::new(if editor.dirty {
-                        "● Simpan"
-                    } else {
-                        "Simpan"
-                    }))
-                    .clicked()
-                {
+                if save_button(ui, editor.dirty).clicked() {
                     *action = EditorAction::Save;
                 }
                 if ui.button("▶ Play").clicked() {
@@ -930,6 +923,137 @@ fn draw_toolbar(ui: &mut egui::Ui, editor: &mut EditorState, action: &mut Editor
                 }
             });
         });
+}
+
+/// Button with a painted icon followed by a label. The bundled fonts do not
+/// cover several symbol glyphs (●, ■, and similar shapes), so UI icons are
+/// painted directly instead of relying on characters.
+fn icon_text_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    hover: Option<&str>,
+    icon: impl FnOnce(&egui::Painter, egui::Rect, egui::Color32),
+) -> egui::Response {
+    let font = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Button)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(FONT_SM));
+    let text_color = theme::color(DARK.foreground);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, text_color);
+    let icon_size = 12.0;
+    let gap = 6.0;
+    let padding = egui::vec2(8.0, 4.0);
+    let size = egui::vec2(
+        padding.x * 2.0 + icon_size + gap + galley.size().x,
+        (galley.size().y + padding.y * 2.0).max(22.0),
+    );
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let fill = if response.is_pointer_button_down_on() {
+        theme::color(DARK.input)
+    } else if response.hovered() {
+        theme::color(DARK.secondary)
+    } else {
+        theme::color(DARK.card)
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(4),
+        fill,
+        egui::Stroke::new(1.0, theme::color(DARK.border)),
+        egui::StrokeKind::Inside,
+    );
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + padding.x + icon_size * 0.5, rect.center().y),
+        egui::vec2(icon_size, icon_size),
+    );
+    icon(ui.painter(), icon_rect, text_color);
+    ui.painter().galley(
+        egui::pos2(
+            rect.left() + padding.x + icon_size + gap,
+            rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        text_color,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    match hover {
+        Some(text) => response.on_hover_text(text),
+        None => response,
+    }
+}
+
+/// Toolbar save button with a painted floppy-disk icon. The unsaved state marks
+/// the icon with a warning dot instead of a `●` character.
+fn save_button(ui: &mut egui::Ui, dirty: bool) -> egui::Response {
+    icon_text_button(
+        ui,
+        "Simpan",
+        Some(if dirty {
+            "Simpan skenario (Ctrl+S) — ada perubahan yang belum disimpan"
+        } else {
+            "Simpan skenario (Ctrl+S)"
+        }),
+        |painter, rect, color| {
+            let color = if dirty {
+                theme::color(DARK.warning)
+            } else {
+                color
+            };
+            paint_save_icon(painter, rect, color, dirty);
+        },
+    )
+}
+
+/// Play-mode stop button with a painted square.
+fn stop_button(ui: &mut egui::Ui) -> egui::Response {
+    icon_text_button(
+        ui,
+        "Stop",
+        Some("Keluar dari Play kembali ke editor"),
+        |painter, rect, color| {
+            painter.rect_filled(rect.shrink(2.0), 1.0, color);
+        },
+    )
+}
+
+fn paint_save_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, unsaved: bool) {
+    let stroke = egui::Stroke::new(1.3, color);
+    let body = rect.shrink(0.75);
+    let cut = 3.5;
+    painter.add(egui::Shape::closed_line(
+        vec![
+            body.left_top(),
+            egui::pos2(body.right() - cut, body.top()),
+            egui::pos2(body.right(), body.top() + cut),
+            body.right_bottom(),
+            body.left_bottom(),
+        ],
+        stroke,
+    ));
+    // Top shutter and bottom label of the floppy.
+    let shutter = egui::Rect::from_min_max(
+        egui::pos2(body.left() + 2.5, body.top() + 1.2),
+        egui::pos2(body.right() - 3.2, body.top() + 4.4),
+    );
+    painter.rect_stroke(shutter, 0.5, stroke, egui::StrokeKind::Inside);
+    let label = egui::Rect::from_min_max(
+        egui::pos2(body.left() + 2.0, body.bottom() - 4.4),
+        egui::pos2(body.right() - 2.0, body.bottom() - 1.2),
+    );
+    painter.rect_stroke(label, 0.5, stroke, egui::StrokeKind::Inside);
+    if unsaved {
+        painter.circle_filled(
+            egui::pos2(body.right() - 0.5, body.top() + 0.5),
+            2.0,
+            theme::color(DARK.warning),
+        );
+    }
 }
 
 /// Icon-only button for the transform tools. The icons are painted directly so
@@ -1077,7 +1201,7 @@ fn draw_status(ui: &mut egui::Ui, editor: &EditorState) {
                     .cursor_geo
                     .map(|point| format!("{:.6}, {:.6}", point.latitude, point.longitude))
                     .unwrap_or_else(|| "—, —".to_owned());
-                let dirty = if editor.dirty { " ●" } else { "" };
+                let dirty = if editor.dirty { " *" } else { "" };
                 ui.monospace(format!("{}{}", editor.scenario_name, dirty));
                 ui.separator();
                 ui.monospace(format!("cursor {cursor}"));
