@@ -193,6 +193,9 @@ cp .env.example .env   # sesuaikan DB_SOURCE dan TOKEN_SYMMETRIC_KEY
 cargo run -p twg-server-app
 ```
 
+Untuk deployment ke VPS (systemd, Nginx + TLS, web statis, backup), lihat
+[docs/DEPLOY_SERVER.md](docs/DEPLOY_SERVER.md).
+
 `.env` dibaca dari working directory; environment process tetap menang. File
 lama `app.env` masih didukung dan menimpa `.env` bila ada.
 `TOKEN_SYMMETRIC_KEY` wajib tepat 32 byte. `readyz` melakukan ping PostgreSQL;
@@ -820,6 +823,7 @@ Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
 
 ## Dokumen
 
+- [Deploy server ke VPS](docs/DEPLOY_SERVER.md)
 - [Rekomendasi arsitektur dan library](docs/RUST_MIGRATION_LIBRARY_RECOMMENDATIONS.md)
 - [Checklist implementasi](docs/RUST_IMPLEMENTATION_CHECKLIST.md)
 - [Laporan Fase 1](docs/PHASE1_REPORT.md)
