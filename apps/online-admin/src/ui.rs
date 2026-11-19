@@ -6,12 +6,14 @@ use std::time::{Duration, Instant};
 use bevy_egui::{EguiContexts, egui};
 use twg_client::ApiClient;
 use twg_client::api::{ApiError, ApiHandle, ApiResponse, HttpMethod};
+use twg_client::connection::{ConnectionMode, ConnectionSettings, normalize_host};
 use twg_client::design::{DARK, Rgb};
 use twg_client::session::ClientSession;
 use twg_contracts::users::{KickUserResponse, OnlineUser};
 use twg_domain::Role;
 use uuid::Uuid;
 
+use bevy::app::AppExit;
 use bevy::prelude::*;
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -51,6 +53,10 @@ pub fn device_id() -> String {
 enum JobKind {
     Login,
     Logout,
+    /// Reachability check for the selected connection.
+    Health,
+    /// Reachability check for the connection form before saving it.
+    ConnectionTest,
     Online,
     Kick(Uuid),
 }
@@ -63,8 +69,17 @@ struct UiJob {
 #[derive(Resource)]
 pub struct OnlineAdminUi {
     api: ApiClient,
-    base_url: String,
     device_id: String,
+    connection: ConnectionSettings,
+    connection_mode: ConnectionMode,
+    connection_host: String,
+    connection_port: String,
+    connection_message: Option<(bool, String)>,
+    connection_testing: bool,
+    connection_probe: Option<ApiClient>,
+    exit_requested: bool,
+    exit_confirm: bool,
+    restored_session: bool,
     username: String,
     password: String,
     show_password: bool,
@@ -81,13 +96,26 @@ pub struct OnlineAdminUi {
 }
 
 impl OnlineAdminUi {
-    pub fn new(api: ApiClient, base_url: String) -> Self {
+    pub fn new(api: ApiClient, connection: ConnectionSettings) -> Self {
         let device_id = api.device_id();
         let session = api.restore();
+        let restored_session = session.is_some();
+        let connection_mode = connection.mode;
+        let connection_host = connection.local_host.clone();
+        let connection_port = connection.local_port.to_string();
         let mut ui = Self {
             api,
-            base_url,
             device_id,
+            connection,
+            connection_mode,
+            connection_host,
+            connection_port,
+            connection_message: None,
+            connection_testing: false,
+            connection_probe: None,
+            exit_requested: false,
+            exit_confirm: false,
+            restored_session,
             username: String::new(),
             password: String::new(),
             show_password: false,
@@ -102,10 +130,88 @@ impl OnlineAdminUi {
             next_refresh: None,
             confirm: None,
         };
-        if ui.session.is_some() {
-            ui.refresh_online();
-        }
+        ui.begin_health_check();
         ui
+    }
+
+    fn begin_health_check(&mut self) {
+        self.loading = true;
+        let handle = self.api.health();
+        self.track(JobKind::Health, handle);
+    }
+
+    /// Connection form values, or `None` when the local address is invalid.
+    fn connection_draft(&self) -> Option<ConnectionSettings> {
+        let host = normalize_host(&self.connection_host);
+        let port = self.connection_port.trim().parse::<u16>().ok();
+        if self.connection_mode == ConnectionMode::Local
+            && (host.is_empty() || port.is_none_or(|port| port == 0))
+        {
+            return None;
+        }
+        Some(
+            ConnectionSettings {
+                mode: self.connection_mode,
+                local_host: host,
+                local_port: port.unwrap_or(self.connection.local_port),
+            }
+            .normalized(),
+        )
+    }
+
+    fn begin_connection_test(&mut self) {
+        let Some(settings) = self.connection_draft() else {
+            self.connection_message =
+                Some((false, "IP dan port server lokal tidak valid.".to_owned()));
+            return;
+        };
+        self.connection_message = None;
+        self.connection_testing = true;
+        let probe = self.api.with_base_url(settings.base_url());
+        let handle = probe.health();
+        self.connection_probe = Some(probe);
+        self.track(JobKind::ConnectionTest, handle);
+    }
+
+    fn save_connection(&mut self) {
+        let Some(settings) = self.connection_draft() else {
+            self.connection_message =
+                Some((false, "IP dan port server lokal tidak valid.".to_owned()));
+            return;
+        };
+        if let Err(error) = settings.save() {
+            self.connection_message = Some((false, error));
+            return;
+        }
+        self.apply_connection(settings);
+    }
+
+    /// Rebuilds the API client against the selected server and returns to the
+    /// login screen; the old session belongs to the previous server.
+    fn apply_connection(&mut self, settings: ConnectionSettings) {
+        let base_url = settings.base_url();
+        let _ = self.api.logout();
+        self.api.clear_session();
+        self.api = self.api.with_base_url(base_url);
+        self.connection = settings.clone();
+        self.connection_mode = settings.mode;
+        self.connection_host = settings.local_host.clone();
+        self.connection_port = settings.local_port.to_string();
+        self.connection_probe = None;
+        self.connection_testing = false;
+        self.restored_session = false;
+        self.session = None;
+        self.users.clear();
+        self.jobs.clear();
+        self.logging_in = false;
+        self.password.clear();
+        self.show_password = false;
+        self.error = None;
+        self.notice = None;
+        self.confirm = None;
+        self.next_refresh = None;
+        self.connection_message = None;
+        self.begin_health_check();
     }
 
     fn track(&mut self, kind: JobKind, handle: ApiHandle) {
@@ -161,6 +267,9 @@ impl OnlineAdminUi {
 
     fn poll(&mut self) {
         self.api.tick();
+        if let Some(probe) = &self.connection_probe {
+            probe.tick();
+        }
         let jobs = std::mem::take(&mut self.jobs);
         for job in jobs {
             let Some(result) = job.handle.try_take() else {
@@ -199,6 +308,55 @@ impl OnlineAdminUi {
             JobKind::Logout => {
                 self.session = None;
                 self.users.clear();
+            }
+            JobKind::Health => {
+                self.loading = false;
+                match result {
+                    Ok(_) => {
+                        self.connection_message = Some((
+                            true,
+                            format!("Terhubung ke server {}.", self.connection.label()),
+                        ));
+                        if self.restored_session {
+                            self.session = self.api.session();
+                            self.refresh_online();
+                        }
+                    }
+                    Err(error) => {
+                        self.session = None;
+                        self.users.clear();
+                        self.connection_message = Some((
+                            false,
+                            format!(
+                                "Koneksi ke server gagal. Coba pindah koneksi. ({})",
+                                error.message
+                            ),
+                        ));
+                    }
+                }
+            }
+            JobKind::ConnectionTest => {
+                self.connection_testing = false;
+                self.connection_probe = None;
+                let target = self.connection_draft().map_or_else(
+                    || self.connection_mode.label().to_owned(),
+                    |settings| settings.label(),
+                );
+                match result {
+                    Ok(_) => {
+                        self.connection_message =
+                            Some((true, format!("Koneksi ke server {target} berhasil.")));
+                    }
+                    Err(error) => {
+                        self.connection_message = Some((
+                            false,
+                            format!(
+                                "Koneksi ke server {target} gagal. Periksa IP/port dan pastikan server berjalan. ({})",
+                                error.message
+                            ),
+                        ));
+                    }
+                }
             }
             JobKind::Online => {
                 self.loading = false;
@@ -254,7 +412,11 @@ impl OnlineAdminUi {
 
 // ---------------------------------------------------------------- drawing
 
-pub fn draw(mut contexts: EguiContexts, mut admin: ResMut<OnlineAdminUi>) -> Result {
+pub fn draw(
+    mut contexts: EguiContexts,
+    mut admin: ResMut<OnlineAdminUi>,
+    mut exit: MessageWriter<AppExit>,
+) -> Result {
     let context = contexts.ctx_mut()?;
     apply_theme(context);
     admin.poll();
@@ -265,11 +427,23 @@ pub fn draw(mut contexts: EguiContexts, mut admin: ResMut<OnlineAdminUi>) -> Res
         draw_online(context, &mut admin);
     }
     draw_confirm(context, &mut admin);
+    if admin.exit_requested {
+        admin.exit_requested = false;
+        exit.write(AppExit::Success);
+    }
     Ok(())
 }
 
 fn draw_login(context: &egui::Context, admin: &mut OnlineAdminUi) {
     root_ui(context, |ui| {
+        egui::Area::new(egui::Id::new("online_admin_exit"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 12.0))
+            .order(egui::Order::Foreground)
+            .show(context, |ui| {
+                if secondary(ui, "Keluar Aplikasi").clicked() {
+                    admin.exit_confirm = true;
+                }
+            });
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(60.0);
             ui.vertical_centered(|ui| {
@@ -320,6 +494,10 @@ fn draw_login(context: &egui::Context, admin: &mut OnlineAdminUi) {
                         if primary(ui, label).clicked() || submit {
                             admin.begin_login();
                         }
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        connection_section(ui, admin);
                     });
 
                 ui.add_space(10.0);
@@ -330,7 +508,10 @@ fn draw_login(context: &egui::Context, admin: &mut OnlineAdminUi) {
                     banner(ui, notice, DARK.success);
                 }
                 ui.add_space(8.0);
-                ui.label(muted(format!("Server: {}", admin.base_url)));
+                ui.label(muted(format!(
+                    "Koneksi aktif: {}",
+                    admin.connection.label()
+                )));
                 ui.label(muted(format!("Device id: {}", admin.device_id)));
                 ui.label(muted(
                     "Role admin bersifat single-device; gunakan TWG_ADMIN_DEVICE_ID \
@@ -363,9 +544,13 @@ fn draw_online(context: &egui::Context, admin: &mut OnlineAdminUi) {
                             );
                         }
                     }
+                    ui.label(muted(format!("Koneksi: {}", admin.connection.label())));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if secondary(ui, "Logout").clicked() {
                             admin.logout();
+                        }
+                        if secondary(ui, "Keluar Aplikasi").clicked() {
+                            admin.exit_confirm = true;
                         }
                         if secondary(ui, "Muat ulang").clicked() {
                             admin.refresh_online();
@@ -454,6 +639,43 @@ fn draw_online(context: &egui::Context, admin: &mut OnlineAdminUi) {
     });
 }
 
+fn connection_section(ui: &mut egui::Ui, admin: &mut OnlineAdminUi) {
+    ui.label(egui::RichText::new("Koneksi server").size(12.0).strong());
+    let mut mode = admin.connection_mode;
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut mode, ConnectionMode::Public, "Publik");
+        ui.radio_value(&mut mode, ConnectionMode::Local, "Lokal");
+    });
+    if mode != admin.connection_mode {
+        admin.connection_mode = mode;
+        admin.connection_message = None;
+    }
+    if admin.connection_mode == ConnectionMode::Local {
+        let host = &mut admin.connection_host;
+        let port = &mut admin.connection_port;
+        ui.columns(2, |columns| {
+            field(&mut columns[0], "IP Address", host);
+            field(&mut columns[1], "Port", port);
+        });
+    }
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if secondary(ui, "Simpan").clicked() {
+            admin.save_connection();
+        }
+        if secondary(ui, "Tes").clicked() {
+            admin.begin_connection_test();
+        }
+        if admin.connection_testing {
+            ui.spinner();
+        }
+    });
+    if let Some((ok, message)) = &admin.connection_message {
+        let rgb = if *ok { DARK.success } else { DARK.destructive };
+        banner(ui, message, rgb);
+    }
+}
+
 fn root_ui<R>(context: &egui::Context, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let mut ui = egui::Ui::new(
         context.clone(),
@@ -465,7 +687,36 @@ fn root_ui<R>(context: &egui::Context, add: impl FnOnce(&mut egui::Ui) -> R) -> 
     add(&mut ui)
 }
 
+fn draw_exit_confirm(context: &egui::Context, admin: &mut OnlineAdminUi) {
+    if !admin.exit_confirm {
+        return;
+    }
+    let mut close = false;
+    egui::Window::new("Keluar aplikasi")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(context, |ui| {
+            ui.set_min_width(320.0);
+            ui.label("Tutup TWG Online Admin?");
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if danger(ui, "Keluar").clicked() {
+                    admin.exit_requested = true;
+                    close = true;
+                }
+                if secondary(ui, "Batal").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if close {
+        admin.exit_confirm = false;
+    }
+}
+
 fn draw_confirm(context: &egui::Context, admin: &mut OnlineAdminUi) {
+    draw_exit_confirm(context, admin);
     let Some(user) = admin.confirm.clone() else {
         return;
     };

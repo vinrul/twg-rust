@@ -404,10 +404,15 @@ cargo run -p twg-online-admin
   jumlah sesi).
 - Route lama `POST /public/users/{id}/kick-session` (tanpa autentikasi, temuan
   S1 di `baseline/security/findings.md`) sudah dihapus.
-- Konfigurasi: `TWG_API_URL` (default `http://127.0.0.1:8122`),
-  `TWG_ADMIN_DEVICE_ID` (opsional, device id tetap), dan
-  `TWG_ADMIN_SESSION_FILE` untuk lokasi file sesi (default
-  `online-admin-session.json`, terpisah dari sesi `twg-desktop`).
+- Konfigurasi: `TWG_API_URL` (override; default mengikuti pengaturan
+  koneksi, awalnya `http://127.0.0.1:8122`), `TWG_ADMIN_DEVICE_ID` (opsional,
+  device id tetap), dan `TWG_ADMIN_SESSION_FILE` untuk lokasi file sesi
+  (default `online-admin-session.json`, terpisah dari sesi `twg-desktop`).
+- Halaman login punya pilihan koneksi **Publik/Lokal** dengan tombol **Simpan**
+  dan **Tes**; pengaturannya memakai `connection.json` yang sama dengan
+  `twg-desktop`. Mengganti koneksi mengakhiri sesi yang sedang berjalan.
+  Tombol **Keluar Aplikasi** ada di pojok kanan atas halaman login dan di
+  topbar daftar online.
 - Route login biasa (`POST /auth/login`) tetap menolak admin yang sudah aktif di
   device lain; hanya route admin-tool yang membuat sesi tambahan.
 

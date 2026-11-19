@@ -11,15 +11,16 @@ use bevy::window::{PresentMode, WindowPlugin};
 use bevy::winit::WinitSettings;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use twg_client::ApiClient;
+use twg_client::connection::ConnectionSettings;
 use twg_client::native::{FileTokenStore, UreqTransport};
 
 use ui::OnlineAdminUi;
 
 fn main() {
+    let connection = ConnectionSettings::load();
     let base_url = std::env::var("TWG_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8122".to_owned())
-        .trim_end_matches('/')
-        .to_owned();
+        .map(|url| url.trim_end_matches('/').to_owned())
+        .unwrap_or_else(|_| connection.base_url());
     let store = Arc::new(FileTokenStore::new(ui::session_path()));
     let api = ApiClient::new(
         base_url.clone(),
@@ -40,7 +41,7 @@ fn main() {
         }))
         .insert_resource(WinitSettings::continuous())
         .add_plugins(EguiPlugin::default())
-        .insert_resource(OnlineAdminUi::new(api, base_url))
+        .insert_resource(OnlineAdminUi::new(api, connection))
         .add_systems(Startup, spawn_camera)
         .add_systems(EguiPrimaryContextPass, ui::draw)
         .run();
