@@ -23,7 +23,7 @@ const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const distDir = join(projectRoot, "apps", "web", "dist");
 const docsDir = join(projectRoot, "docs");
 const shotDir = join(docsDir, "assets", "web-stress");
-const tileBackend = process.env.TILE_PROXY_BACKEND ?? "http://127.0.0.1:8010";
+const tileBackend = process.env.TILE_PROXY_BACKEND ?? "http://127.0.0.1:8122";
 
 const COUNTS = [1_000, 5_000, 10_000];
 const MODES = [

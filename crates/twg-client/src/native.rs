@@ -250,17 +250,22 @@ impl FileTokenStore {
         if let Ok(path) = std::env::var("TWG_TOKEN_FILE") {
             return path.into();
         }
-        let base = if cfg!(windows) {
-            std::env::var("APPDATA").map(PathBuf::from)
-        } else {
-            std::env::var("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .or_else(|_| std::env::var("HOME").map(|home| PathBuf::from(home).join(".config")))
-        };
-        base.unwrap_or_else(|_| PathBuf::from("."))
-            .join("twg")
-            .join("session.json")
+        config_dir().join("session.json")
     }
+}
+
+/// Per-user configuration directory: `%APPDATA%\twg` on Windows,
+/// `$XDG_CONFIG_HOME/twg` (or `~/.config/twg`) elsewhere. Settings files such
+/// as the saved session and the connection choice live here.
+pub fn config_dir() -> PathBuf {
+    let base = if cfg!(windows) {
+        std::env::var("APPDATA").map(PathBuf::from)
+    } else {
+        std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| std::env::var("HOME").map(|home| PathBuf::from(home).join(".config")))
+    };
+    base.unwrap_or_else(|_| PathBuf::from(".")).join("twg")
 }
 
 impl Default for FileTokenStore {
@@ -324,8 +329,8 @@ mod tests {
     #[test]
     fn websocket_urls_split_host_and_port() {
         assert_eq!(
-            host_and_port("ws://127.0.0.1:8010/ws?ticket=abc").unwrap(),
-            ("127.0.0.1".to_owned(), 8010)
+            host_and_port("ws://127.0.0.1:8122/ws?ticket=abc").unwrap(),
+            ("127.0.0.1".to_owned(), 8122)
         );
         assert_eq!(
             host_and_port("wss://example.test/ws").unwrap(),

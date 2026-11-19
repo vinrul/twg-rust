@@ -17,7 +17,7 @@ use ui::OnlineAdminUi;
 
 fn main() {
     let base_url = std::env::var("TWG_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8010".to_owned())
+        .unwrap_or_else(|_| "http://127.0.0.1:8122".to_owned())
         .trim_end_matches('/')
         .to_owned();
     let store = Arc::new(FileTokenStore::new(ui::session_path()));

@@ -7,7 +7,7 @@ use bevy_egui::{
     PrimaryEguiContext,
 };
 use std::path::PathBuf;
-use twg_client::{ApiClient, WsTransport};
+use twg_client::{ApiClient, ConnectionSettings, WsTransport};
 use twg_contracts::assets::{AssetSourceSlot, AssetVariantKind};
 #[cfg(not(target_arch = "wasm32"))]
 use twg_render::PreviewPhase;
@@ -46,6 +46,8 @@ pub struct ClientBackend {
     pub api: ApiClient,
     pub ws_transport: Arc<dyn WsTransport>,
     pub base_url: String,
+    /// Saved connection choice; the UI can switch to another server at runtime.
+    pub connection: ConnectionSettings,
 }
 
 /// Adds the egui shell. Without a backend the plugin runs the map demo only,
@@ -89,12 +91,14 @@ impl Plugin for TacticalUiPlugin {
                 backend.api.clone(),
                 backend.ws_transport.clone(),
                 backend.base_url.clone(),
+                backend.connection.clone(),
             ));
             app.add_systems(Update, editor::input::sync_editor_mode.before(MapUpdateSet));
             app.add_systems(
                 Update,
                 (
                     editor::input::editor_input,
+                    apply_pending_tile_proxy,
                     sync_tile_proxy,
                     collect_file_drops,
                     publish_preview_request,
@@ -136,6 +140,21 @@ fn sync_tile_proxy(proxy: Res<TileProxyConfig>, mut client: ResMut<ClientUi>) {
     if client.tile_proxy != proxy.0 {
         client.tile_proxy.clone_from(&proxy.0);
         client.scenario_preview.clear_tile_cache();
+    }
+}
+
+/// Applies the tile proxy that follows a connection switch. Runs before
+/// [`sync_tile_proxy`] so the change is mirrored back into the UI state in the
+/// same frame.
+fn apply_pending_tile_proxy(mut client: ResMut<ClientUi>, proxy: Option<ResMut<TileProxyConfig>>) {
+    let Some(mut proxy) = proxy else {
+        return;
+    };
+    let Some(next) = client.pending_tile_proxy.take() else {
+        return;
+    };
+    if proxy.0 != next {
+        proxy.0 = next;
     }
 }
 

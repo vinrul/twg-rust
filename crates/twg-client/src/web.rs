@@ -228,7 +228,7 @@ pub fn api_base_url() -> String {
     }
     web_sys::window()
         .and_then(|window| window.location().origin().ok())
-        .unwrap_or_else(|| "http://127.0.0.1:8010".to_owned())
+        .unwrap_or_else(|| "http://127.0.0.1:8122".to_owned())
 }
 
 pub fn stress_requested() -> bool {

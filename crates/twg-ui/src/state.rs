@@ -11,6 +11,7 @@ use twg_client::ApiClient;
 use twg_client::api::{ApiError, ApiHandle, ApiResponse, HttpMethod};
 #[cfg(not(target_arch = "wasm32"))]
 use twg_client::asset_cache::AssetCache;
+use twg_client::connection::{ConnectionMode, ConnectionSettings, normalize_host};
 use twg_client::realtime::{RealtimeState, RealtimeStatus, WsConnection, WsTransport};
 use twg_client::session::{ClientSession, ClientState, NavItem, Screen};
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +55,10 @@ pub enum JobKind {
     Identify,
     Login,
     Logout,
+    /// Reachability check against the active connection on app start.
+    Health,
+    /// Reachability check against the connection form before saving it.
+    ConnectionTest,
     Operations,
     Scenarios,
     Users,
@@ -408,6 +413,16 @@ pub struct ClientUi {
     pub api: ApiClient,
     pub ws_transport: Arc<dyn WsTransport>,
     pub base_url: String,
+    /// Connection that the API client is currently using (also persisted).
+    pub connection: ConnectionSettings,
+    /// Values edited in the connection form (not yet saved).
+    pub connection_mode: ConnectionMode,
+    pub connection_host: String,
+    pub connection_port: String,
+    pub connection_message: Option<(bool, String)>,
+    pub connection_testing: bool,
+    /// Temporary client used to probe the connection form without switching.
+    connection_probe: Option<ApiClient>,
     pub login_username: String,
     pub login_password: String,
     pub login_password_visible: bool,
@@ -441,6 +456,9 @@ pub struct ClientUi {
     pub layer_order: Vec<&'static str>,
     pub selected_layer: &'static str,
     pub boot_checked: bool,
+    /// A persisted session was found on app start; identify it once the
+    /// health check confirms the server is reachable.
+    restored_session: bool,
     pub last_screen: Screen,
     pub editor: EditorState,
     pub assets: Vec<Asset>,
@@ -448,6 +466,8 @@ pub struct ClientUi {
     pub scenario_preview: crate::scenario_preview::ScenarioPreview,
     /// Tile proxy from `TWG_TILE_PROXY`, mirrored from the render plugin.
     pub tile_proxy: Option<String>,
+    /// New tile proxy to push into the renderer after a connection switch.
+    pub pending_tile_proxy: Option<Option<String>>,
     /// Import assets of the operation loaded in the editor (all users of the
     /// operation share them).
     pub imports: Vec<Asset>,
@@ -492,16 +512,23 @@ pub struct ClientUi {
 }
 
 impl ClientUi {
-    pub fn new(api: ApiClient, ws_transport: Arc<dyn WsTransport>, base_url: String) -> Self {
+    pub fn new(
+        api: ApiClient,
+        ws_transport: Arc<dyn WsTransport>,
+        base_url: String,
+        connection: ConnectionSettings,
+    ) -> Self {
         let pending_editor_scenario = initial_editor_scenario();
         let mut state = ClientState::default();
         let session = api.restore();
         bevy::log::info!("client shell: restored session = {}", session.is_some());
-        if session.is_some() {
-            state.screen = Screen::Boot;
-        } else {
-            state.screen = Screen::Login;
-        }
+        // Always start on Boot: the server is health-checked before the login
+        // form or the restored session is used.
+        state.screen = Screen::Boot;
+        let restored_session = session.is_some();
+        let connection_mode = connection.mode;
+        let connection_host = connection.local_host.clone();
+        let connection_port = connection.local_port.to_string();
         #[cfg(not(target_arch = "wasm32"))]
         let asset_cache = Some(Arc::new(Mutex::new(AssetCache::new())));
         // `TWG_ACTIVE_ASSET=<uuid>` starts the app with an asset already picked
@@ -515,6 +542,13 @@ impl ClientUi {
             api,
             ws_transport,
             base_url,
+            connection,
+            connection_mode,
+            connection_host,
+            connection_port,
+            connection_message: None,
+            connection_testing: false,
+            connection_probe: None,
             login_username: String::new(),
             login_password: String::new(),
             login_password_visible: false,
@@ -545,11 +579,13 @@ impl ClientUi {
             layer_order: vec!["OpenStreetMap", "Satelit"],
             selected_layer: "OpenStreetMap",
             boot_checked: false,
+            restored_session,
             last_screen: Screen::Boot,
             editor: EditorState::new(),
             assets: Vec::new(),
             scenario_preview: crate::scenario_preview::ScenarioPreview::default(),
             tile_proxy: None,
+            pending_tile_proxy: None,
             imports: Vec::new(),
             asset_filter: None,
             asset_group_filter: None,
@@ -643,9 +679,95 @@ impl ClientUi {
         self.track(JobKind::Identify, handle);
     }
 
+    /// Probes the active server; `Screen::Boot` waits for the result.
+    pub fn begin_health_check(&mut self) {
+        self.boot_checked = false;
+        self.state.screen = Screen::Boot;
+        let handle = self.api.health();
+        self.track(JobKind::Health, handle);
+    }
+
+    /// Connection form values, or `None` when the local address is invalid.
+    pub fn connection_draft(&self) -> Option<ConnectionSettings> {
+        let host = normalize_host(&self.connection_host);
+        let port = self.connection_port.trim().parse::<u16>().ok();
+        if self.connection_mode == ConnectionMode::Local
+            && (host.is_empty() || port.is_none_or(|port| port == 0))
+        {
+            return None;
+        }
+        Some(
+            ConnectionSettings {
+                mode: self.connection_mode,
+                local_host: host,
+                local_port: port.unwrap_or(self.connection.local_port),
+            }
+            .normalized(),
+        )
+    }
+
+    /// Tests the connection form against the server without saving it.
+    pub fn begin_connection_test(&mut self) {
+        let Some(settings) = self.connection_draft() else {
+            self.connection_message =
+                Some((false, "IP dan port server lokal tidak valid.".to_owned()));
+            return;
+        };
+        self.connection_message = None;
+        self.connection_testing = true;
+        let probe = self.api.with_base_url(settings.base_url());
+        let handle = probe.health();
+        self.connection_probe = Some(probe);
+        self.track(JobKind::ConnectionTest, handle);
+    }
+
+    /// Persists the connection form and switches the client to it.
+    pub fn save_connection(&mut self) {
+        let Some(settings) = self.connection_draft() else {
+            self.connection_message =
+                Some((false, "IP dan port server lokal tidak valid.".to_owned()));
+            return;
+        };
+        if let Err(error) = settings.save() {
+            self.connection_message = Some((false, error));
+            return;
+        }
+        self.apply_connection(settings);
+    }
+
+    /// Rebuilds the API client against the selected server and starts over
+    /// from the boot check. The old session is revoked and cleared because its
+    /// tokens belong to the previous server.
+    fn apply_connection(&mut self, settings: ConnectionSettings) {
+        let base_url = settings.base_url();
+        bevy::log::info!("client shell: connection switched to {base_url}");
+        let _ = self.api.logout();
+        self.api.clear_session();
+        self.api = self.api.with_base_url(base_url.clone());
+        self.base_url = base_url.clone();
+        self.connection = settings.clone();
+        self.connection_mode = settings.mode;
+        self.connection_host = settings.local_host.clone();
+        self.connection_port = settings.local_port.to_string();
+        self.connection_probe = None;
+        self.connection_testing = false;
+        self.pending_tile_proxy = Some(Some(base_url));
+        self.jobs.clear();
+        self.restored_session = false;
+        self.login_error = None;
+        self.reset_client_state();
+        self.connection_message = None;
+        self.begin_health_check();
+    }
+
     pub fn logout(&mut self) {
         let handle = self.api.logout();
         self.track(JobKind::Logout, handle);
+        self.reset_client_state();
+        self.toast("Logout berhasil.", ToastKind::Info);
+    }
+
+    fn reset_client_state(&mut self) {
         self.state.logout();
         self.data = ClientData::default();
         self.close_ws();
@@ -668,7 +790,7 @@ impl ClientUi {
         self.asset_sync = AssetSyncUi::default();
         self.pending_asset_nav = None;
         self.used_asset = None;
-        self.toast("Logout berhasil.", ToastKind::Info);
+        self.logging_in = false;
     }
 
     pub fn refresh_operations(&mut self) {
@@ -762,6 +884,9 @@ impl ClientUi {
 
     pub fn poll(&mut self) {
         self.api.tick();
+        if let Some(probe) = &self.connection_probe {
+            probe.tick();
+        }
         let jobs = std::mem::take(&mut self.jobs);
         for job in jobs {
             let Some(result) = job.handle.try_take() else {
@@ -864,6 +989,59 @@ impl ClientUi {
                 }
             }
             JobKind::Logout => {}
+            JobKind::Health => {
+                self.boot_checked = true;
+                match result {
+                    Ok(_) => {
+                        self.connection_message = Some((
+                            true,
+                            format!("Terhubung ke server {}.", self.connection.label()),
+                        ));
+                        if self.restored_session {
+                            self.begin_identify();
+                        } else {
+                            self.state.screen = Screen::Login;
+                        }
+                    }
+                    Err(error) => {
+                        self.state.screen = Screen::Login;
+                        self.toast(
+                            "Koneksi ke server gagal. Coba pindah koneksi.",
+                            ToastKind::Error,
+                        );
+                        self.connection_message = Some((
+                            false,
+                            format!(
+                                "Koneksi ke server gagal. Coba pindah koneksi. ({})",
+                                error.message
+                            ),
+                        ));
+                    }
+                }
+            }
+            JobKind::ConnectionTest => {
+                self.connection_testing = false;
+                self.connection_probe = None;
+                let target = self.connection_draft().map_or_else(
+                    || self.connection_mode.label().to_owned(),
+                    |settings| settings.label(),
+                );
+                match result {
+                    Ok(_) => {
+                        self.connection_message =
+                            Some((true, format!("Koneksi ke server {target} berhasil.")));
+                    }
+                    Err(error) => {
+                        self.connection_message = Some((
+                            false,
+                            format!(
+                                "Koneksi ke server {target} gagal. Periksa IP/port dan pastikan server berjalan. ({})",
+                                error.message
+                            ),
+                        ));
+                    }
+                }
+            }
             JobKind::Operations => {
                 self.data.set_loading("operations", false);
                 match result.and_then(|response| response.list::<Operation>()) {
@@ -2751,7 +2929,7 @@ impl ClientUi {
             }
             NavItem::Profile => self.sync_profile_fields(),
             NavItem::Preview => self.reload_editor(),
-            NavItem::BigScreen => {}
+            NavItem::BigScreen | NavItem::Settings => {}
         }
     }
 

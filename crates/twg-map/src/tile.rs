@@ -320,10 +320,10 @@ mod tests {
     #[test]
     fn proxy_source_uses_the_local_tile_route() {
         let source =
-            BaseLayer::ArcGisImagery.tile_source_with_proxy(Some("http://127.0.0.1:8010/"));
+            BaseLayer::ArcGisImagery.tile_source_with_proxy(Some("http://127.0.0.1:8122/"));
         assert_eq!(
             source.url(TileId::new(19, 429948, 274783).unwrap()),
-            "http://127.0.0.1:8010/tiles/satellite/19/429948/274783.png"
+            "http://127.0.0.1:8122/tiles/satellite/19/429948/274783.png"
         );
         assert_eq!(source.max_zoom(), 19);
     }

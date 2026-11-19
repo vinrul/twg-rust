@@ -33,10 +33,11 @@ pub enum NavItem {
     Preview,
     BigScreen,
     Profile,
+    Settings,
 }
 
 impl NavItem {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Dashboard,
         Self::Operations,
         Self::Scenarios,
@@ -50,6 +51,7 @@ impl NavItem {
         Self::Preview,
         Self::BigScreen,
         Self::Profile,
+        Self::Settings,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -67,6 +69,7 @@ impl NavItem {
             Self::Preview => "Peta",
             Self::BigScreen => "Layar Besar",
             Self::Profile => "Profil",
+            Self::Settings => "Pengaturan",
         }
     }
 
@@ -85,6 +88,7 @@ impl NavItem {
             Self::Preview => "MP",
             Self::BigScreen => "LB",
             Self::Profile => "PR",
+            Self::Settings => "PG",
         }
     }
 

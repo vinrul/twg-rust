@@ -42,7 +42,7 @@ Reports are written to `docs/web-stress-results*.json`, `.md`, and
 `docs/assets/web-stress/`.
 
 `--proxy-test` proxies `/tiles/*` through the harness origin to
-`TILE_PROXY_BACKEND` (default `http://127.0.0.1:8010`) and then verifies the
+`TILE_PROXY_BACKEND` (default `http://127.0.0.1:8122`) and then verifies the
 service-worker Cache Storage entries. This keeps the test same-origin, which is
 what the browser client sees in production. Pass `--proxy=<url>` to test a
 different proxy origin directly.
@@ -66,7 +66,7 @@ node tools/client-smoke.mjs --username=baselinemonitor
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--api=<url>` | `http://127.0.0.1:8010` | Rust API origin |
+| `--api=<url>` | `http://127.0.0.1:8122` | Rust API origin |
 | `--username=<name>` | `baselineadmin` | Baseline account; use `baselinemonitor` when the admin device is already logged in |
 | `--password=<pass>` | `Baseline#2026` | Baseline password |
 | `--zoom=<z>` | — | Initial camera zoom passed to the page |

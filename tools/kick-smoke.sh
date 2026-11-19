@@ -4,12 +4,12 @@
 # Requires a running server and the baseline fixture users.
 #
 # Usage:
-#   BASE=http://127.0.0.1:8010 \
+#   BASE=http://127.0.0.1:8122 \
 #   ADMIN_DEVICE=device-1 USER_DEVICE=kick-smoke \
 #   bash tools/kick-smoke.sh
 set -euo pipefail
 
-BASE=${BASE:-http://127.0.0.1:8010}
+BASE=${BASE:-http://127.0.0.1:8122}
 ADMIN_USERNAME=${ADMIN_USERNAME:-baselineadmin}
 ADMIN_PASSWORD=${ADMIN_PASSWORD:-Baseline#2026}
 USER_USERNAME=${USER_USERNAME:-baselineuser}

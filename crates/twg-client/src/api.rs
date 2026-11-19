@@ -238,6 +238,9 @@ enum RequestKind {
     Login,
     Refresh,
     Logout,
+    /// Unauthenticated request (health checks) that must not be blocked while
+    /// the client has no tokens, e.g. on the login screen.
+    Public,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +402,42 @@ impl ApiClient {
         self.request(HttpMethod::Get, "/private/identify", None)
     }
 
+    /// Unauthenticated reachability probe used by the connection settings.
+    pub fn health(&self) -> ApiHandle {
+        self.submit(RequestSpec {
+            method: HttpMethod::Get,
+            path: "/healthz".to_owned(),
+            body: None,
+            body_bytes: None,
+            content_type: None,
+            kind: RequestKind::Public,
+        })
+    }
+
+    /// Same configuration but pointing at another server, without a session.
+    /// Used to test a connection draft before saving it.
+    pub fn with_base_url(&self, base_url: impl Into<String>) -> Self {
+        let device_id = self.device_id();
+        let store = {
+            let inner = self.inner.lock().expect("api state poisoned");
+            inner.store.clone()
+        };
+        Self {
+            inner: Arc::new(Mutex::new(ApiInner {
+                base_url: base_url.into().trim_end_matches('/').to_owned(),
+                device_id,
+                tokens: None,
+                session: None,
+                store,
+                in_flight: Vec::new(),
+                queued: VecDeque::new(),
+                refresh: None,
+                refresh_waiters: Vec::new(),
+            })),
+            transport: self.transport.clone(),
+        }
+    }
+
     pub fn request(
         &self,
         method: HttpMethod,
@@ -476,7 +515,9 @@ impl ApiClient {
 impl ApiInner {
     fn enqueue(&mut self, queued: Queued) {
         match queued.spec.kind {
-            RequestKind::Login | RequestKind::Refresh => self.queued.push_back(queued),
+            RequestKind::Login | RequestKind::Refresh | RequestKind::Public => {
+                self.queued.push_back(queued)
+            }
             RequestKind::Normal | RequestKind::Logout => {
                 let now = Utc::now().fixed_offset();
                 let access_valid = self
@@ -847,6 +888,33 @@ mod tests {
 
         let requests = transport.requests();
         assert_eq!(requests[0].url, "http://localhost/auth/login");
+        assert!(
+            !requests[0]
+                .headers
+                .iter()
+                .any(|(name, _)| name == "authorization")
+        );
+    }
+
+    #[test]
+    fn health_probe_needs_no_session_and_uses_its_own_base_url() {
+        let transport = Arc::new(ScriptedTransport::new(vec![(
+            200,
+            r#"{"status":"ok"}"#.to_owned(),
+        )]));
+        let api = ApiClient::new(
+            "http://localhost",
+            "device-1",
+            transport.clone(),
+            Arc::new(MemoryTokenStore::new()),
+        );
+        let probe = api.with_base_url("http://10.0.0.5:8122/");
+        let handle = probe.health();
+        probe.tick();
+        let response = handle.try_take().expect("health response").expect("ok");
+        assert_eq!(response.status, 200);
+        let requests = transport.requests();
+        assert_eq!(requests[0].url, "http://10.0.0.5:8122/healthz");
         assert!(
             !requests[0]
                 .headers

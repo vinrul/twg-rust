@@ -1,6 +1,7 @@
 pub mod api;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod asset_cache;
+pub mod connection;
 pub mod design;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
@@ -14,6 +15,7 @@ pub use api::{
     ApiClient, ApiError, ApiErrorKind, ApiHandle, ApiResponse, HttpMethod, HttpRequest,
     HttpResponse, PendingResponse, Transport, TransportError,
 };
+pub use connection::{ConnectionMode, ConnectionSettings};
 pub use design::{DARK, DesignTokens, Rgb};
 pub use realtime::{RealtimeState, RealtimeStatus, WsConnection, WsTransport};
 pub use session::{ClientSession, ClientState, NavItem, Screen};

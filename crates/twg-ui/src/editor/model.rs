@@ -8323,7 +8323,7 @@ mod tests {
     #[test]
     fn uploaded_textures_resolve_against_the_server_base_url() {
         let mut editor = editor();
-        editor.base_url = "http://127.0.0.1:8010/".to_owned();
+        editor.base_url = "http://127.0.0.1:8122/".to_owned();
         editor.add_shape(EditorShapeKind::Box, GeoPoint::new(115.225, -8.648));
         let key = *editor.selected.iter().next().expect("shape selected");
         let object = editor.object_mut(key).expect("shape object");
@@ -8335,13 +8335,13 @@ mod tests {
 
         assert_eq!(
             editor.texture_source("/uploads/123-bukit.png").as_deref(),
-            Some("http://127.0.0.1:8010/uploads/123-bukit.png")
+            Some("http://127.0.0.1:8122/uploads/123-bukit.png")
         );
         let scene = editor.build_scene();
         match &scene.objects[0].kind {
             EditorSceneKind::Building { texture, .. } => assert_eq!(
                 texture.as_deref(),
-                Some("http://127.0.0.1:8010/uploads/123-bukit.png")
+                Some("http://127.0.0.1:8122/uploads/123-bukit.png")
             ),
             _ => panic!("expected building scene"),
         }

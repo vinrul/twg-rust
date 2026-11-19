@@ -1,13 +1,13 @@
-# Deploy `twg-server-app` ke VPS (akses langsung port 8010)
+# Deploy `twg-server-app` ke VPS (akses langsung port 8122)
 
 Panduan ini memasang **`twg-server-app`** (backend Rust/Axum) di satu VPS Linux
-dan membukanya **langsung di port 8010 tanpa Nginx/reverse proxy**. Semua contoh
+dan membukanya **langsung di port 8122 tanpa Nginx/reverse proxy**. Semua contoh
 memakai Ubuntu 24.04, IP `203.0.113.10`, dan database `twg`. Ganti nilai
 tersebut sesuai server kamu.
 
 > **Penting — tanpa TLS.** Server hanya melayani HTTP. Password, token, dan isi
 > skenario dikirim **tanpa enkripsi**. Cocok untuk jaringan internal/VPN atau
-> tahap uji. Untuk internet publik, batasi port 8010 ke IP tertentu, pakai VPN,
+> tahap uji. Untuk internet publik, batasi port 8122 ke IP tertentu, pakai VPN,
 > atau pasang TLS di depan server (lihat [Lampiran A](#lampiran-a-nginx--tls-opsional)).
 >
 > **Web statis tidak dilayani server.** Aplikasi `twg-web` harus di-host
@@ -23,8 +23,8 @@ tersebut sesuai server kamu.
 
 ```mermaid
 graph TD
-    D[twg-desktop] -->|HTTP :8010| S[twg-server-app 0.0.0.0:8010]
-    W[twg-web statis di host terpisah] -->|HTTP :8010| S
+    D[twg-desktop] -->|HTTP :8122| S[twg-server-app 0.0.0.0:8122]
+    W[twg-web statis di host terpisah] -->|HTTP :8122| S
     S --> P[(PostgreSQL 127.0.0.1:5432)]
     S --> U[/var/lib/twg/uploads]
     S --> A[/var/lib/twg/asset-store]
@@ -36,17 +36,17 @@ graph TD
 
 | Komponen | Peran |
 |---|---|
-| `twg-server-app` | REST API, login/PASETO, WebSocket `/ws`, static `/uploads` dan `/assets`, proxy tile `/tiles`, semua di port 8010 |
+| `twg-server-app` | REST API, login/PASETO, WebSocket `/ws`, static `/uploads` dan `/assets`, proxy tile `/tiles`, semua di port 8122 |
 | PostgreSQL | Semua data skenario; migrasi SQLx otomatis saat server start |
 | `gltf-transform` | Konversi Draco/LOD2 dari UI admin (opsional, tapi dibutuhkan untuk asset pipeline) |
-| `twg-desktop` | Client utama; arahkan `TWG_API_URL` ke `http://IP:8010` |
-| `twg-web` | Statis WASM; harus di-host terpisah dan memanggil API port 8010 |
+| `twg-desktop` | Client utama; pilih **Publik** atau isi IP VPS lewat **Pengaturan** (lihat bagian 9) |
+| `twg-web` | Statis WASM; harus di-host terpisah dan memanggil API port 8122 |
 
 ## Yang perlu disiapkan
 
 - VPS Ubuntu 22.04/24.04, **minimal 2 vCPU / 4 GB RAM / 40 GB disk**.
   Build release Rust butuh ~2–4 GB RAM; kalau RAM 2 GB, tambahkan swap 2 GB.
-- **Port 22 dan 8010** terbuka di UFW **dan** firewall penyedia VPS
+- **Port 22 dan 8122** terbuka di UFW **dan** firewall penyedia VPS
   (Security Group / Firewall Rules).
 - Akses `sudo`.
 - (Opsional) akses keluar HTTPS ke `tile.openstreetmap.org` dan
@@ -58,9 +58,9 @@ graph TD
 1. Install paket sistem, Rust, Node.js, dan PostgreSQL.
 2. Buat user `twg`, direktori runtime, dan database.
 3. Clone repo, build `twg-server-app` mode release.
-4. Isi `/etc/twg/server.env` dengan bind `0.0.0.0:8010`.
+4. Isi `/etc/twg/server.env` dengan bind `0.0.0.0:8122`.
 5. Pasang systemd service, start, lalu buat admin pertama lewat SQL.
-6. Buka port 8010 di firewall, arahkan client ke `http://IP:8010`.
+6. Buka port 8122 di firewall, arahkan client ke `http://IP:8122`.
 7. Verifikasi health check dan login.
 8. Atur backup, log, dan prosedur upgrade.
 
@@ -78,16 +78,16 @@ Firewall (SSH + port aplikasi):
 
 ```bash
 sudo ufw allow OpenSSH
-sudo ufw allow 8010/tcp
+sudo ufw allow 8122/tcp
 sudo ufw enable
 sudo ufw status
 ```
 
-> Jangan lupa membuka **8010/tcp** juga di firewall penyedia VPS. Tanpa itu,
+> Jangan lupa membuka **8122/tcp** juga di firewall penyedia VPS. Tanpa itu,
 > `ufw` saja tidak cukup dan koneksi dari luar tetap gagal.
 >
 > Kalau client berasal dari jaringan tetap, batasi sumbernya:
-> `sudo ufw allow from 10.20.0.0/16 to any port 8010 proto tcp`.
+> `sudo ufw allow from 10.20.0.0/16 to any port 8122 proto tcp`.
 
 Rust (pakai user `twg`, jangan root):
 
@@ -178,6 +178,11 @@ menjalankan server.
 > Alternatif: build di mesin lain/CI lalu unggah dengan
 > `scp target/release/twg-server-app user@vps:/opt/twg/`. Pastikan glibc target
 > build ≤ glibc VPS.
+>
+> **Jangan menyalin binary hasil build Windows (`.exe`) ke VPS.** systemd akan
+> gagal dengan `status=203/EXEC`. Cek dengan `file /opt/twg/twg-server-app`:
+> hasil yang benar adalah `ELF 64-bit ... x86-64` (atau `aarch64` sesuai VPS),
+> bukan `PE32+ executable ... MS Windows`.
 
 ## 4. Konfigurasi environment (bind ke 0.0.0.0)
 
@@ -196,8 +201,8 @@ TOKEN_SYMMETRIC_KEY=0123456789abcdef0123456789abcdef
 
 # --- Jaringan ----------------------------------------------------------
 # WAJIB 0.0.0.0 agar bisa diakses dari luar VPS.
-# Default aplikasi 127.0.0.1:8010 dan hanya bisa diakses lokal.
-HTTP_SERVER_ADDRESS=0.0.0.0:8010
+# Default aplikasi 127.0.0.1:8122 dan hanya bisa diakses lokal.
+HTTP_SERVER_ADDRESS=0.0.0.0:8122
 # Origin frontend web yang diizinkan (comma-separated). Untuk desktop tidak
 # berpengaruh. Contoh: http://192.168.1.50:8080 atau https://twg.example.com.
 # Gunakan * hanya bila tidak butuh cookie/credentials.
@@ -250,7 +255,7 @@ sudo chmod 640 /etc/twg/server.env
 |---|---|---|---|
 | `DB_SOURCE` / `DATABASE_URL` | ya | — | URL PostgreSQL. `sslmode=disable` untuk loopback. |
 | `TOKEN_SYMMETRIC_KEY` | ya | — | Tepat 32 byte. Dipakai enkripsi token PASETO. Ganti = semua sesi logout. |
-| `HTTP_SERVER_ADDRESS` | ya* | `127.0.0.1:8010` | **Set `0.0.0.0:8010`** untuk akses luar. `[::]:8010` untuk IPv6. |
+| `HTTP_SERVER_ADDRESS` | ya* | `127.0.0.1:8122` | **Set `0.0.0.0:8122`** untuk akses luar. `[::]:8122` untuk IPv6. |
 | `CORS_DOMAIN` | tidak | `http://localhost:5173` | Daftar origin web dipisah koma, atau `*` (tanpa credentials). |
 | `ACCESS_TOKEN_DURATION` / `REFRESH_TOKEN_DURATION` | tidak | `24h` / `168h` | Format `s/m/h/d`. |
 | `SINGLE_DEVICE_ROLES` | tidak | `admin,admin_satker` | Role yang hanya boleh punya satu sesi aktif. |
@@ -329,23 +334,23 @@ sudo journalctl -u twg-server -f
 Log awal yang sehat kira-kira:
 
 ```text
-loaded server configuration address=0.0.0.0:8010 cors=[...] max_body_bytes=104857600
-starting twg server address=0.0.0.0:8010
+loaded server configuration address=0.0.0.0:8122 cors=[...] max_body_bytes=104857600
+starting twg server address=0.0.0.0:8122
 ```
 
 Pastikan listening di semua interface (bukan `127.0.0.1`):
 
 ```bash
-ss -ltnp | grep 8010
-# LISTEN 0 1024 0.0.0.0:8010 ... users:(("twg-server-app",...))
+ss -ltnp | grep 8122
+# LISTEN 0 1024 0.0.0.0:8122 ... users:(("twg-server-app",...))
 ```
 
 Cek dari dalam VPS:
 
 ```bash
-curl -fsS http://127.0.0.1:8010/healthz     # {"status":"ok"}
-curl -fsS http://203.0.113.10:8010/healthz  # dari luar juga harus 200
-curl -fsS http://127.0.0.1:8010/readyz      # 503 bila database belum siap
+curl -fsS http://127.0.0.1:8122/healthz     # {"status":"ok"}
+curl -fsS http://203.0.113.10:8122/healthz  # dari luar juga harus 200
+curl -fsS http://127.0.0.1:8122/readyz      # 503 bila database belum siap
 ```
 
 `/healthz` selalu 200 bila proses hidup. `/readyz` melakukan ping PostgreSQL
@@ -370,7 +375,7 @@ SQL
 Cek login lewat API (response dibungkus `{code, message, data}`):
 
 ```bash
-curl -fsS -X POST http://203.0.113.10:8010/auth/login \
+curl -fsS -X POST http://203.0.113.10:8122/auth/login \
   -H 'content-type: application/json' \
   -d '{"username":"admin","password":"GANTI_PASSWORD_ADMIN"}'
 ```
@@ -384,20 +389,20 @@ admin/desktop — tidak perlu seeding manual.
 
 ## 7. Firewall, akses, dan batasan tanpa TLS
 
-Tanpa reverse proxy, port 8010 adalah satu-satunya pintu masuk:
+Tanpa reverse proxy, port 8122 adalah satu-satunya pintu masuk:
 
 ```bash
 sudo ufw status
-sudo ufw allow 8010/tcp
+sudo ufw allow 8122/tcp
 # batasi bila client dari jaringan tetap:
-# sudo ufw allow from 10.20.0.0/16 to any port 8010 proto tcp
+# sudo ufw allow from 10.20.0.0/16 to any port 8122 proto tcp
 ```
 
 Uji dari komputer lain:
 
 ```bash
-curl -v http://203.0.113.10:8010/healthz
-# curl: (7) Failed to connect  → cek HTTP_SERVER_ADDRESS=0.0.0.0:8010,
+curl -v http://203.0.113.10:8122/healthz
+# curl: (7) Failed to connect  → cek HTTP_SERVER_ADDRESS=0.0.0.0:8122,
 #                                ufw, dan firewall penyedia VPS
 ```
 
@@ -408,13 +413,13 @@ Batasan yang harus disadari:
 - **Web dari HTTPS tidak bisa memanggil API HTTP.** Browser memblokir sebagai
   *mixed content*. Web statis harus di-host lewat HTTP (tidak disarankan) atau
   API juga harus HTTPS (lihat [Lampiran A](#lampiran-a-nginx--tls-opsional)).
-- **Desktop tidak terpengaruh mixed content**; `http://IP:8010` langsung
+- **Desktop tidak terpengaruh mixed content**; `http://IP:8122` langsung
   berfungsi. WebSocket otomatis memakai `ws://` karena URL dibentuk dari base
   API (`replace("http", "ws")`).
 - **Rate limit per IP asli** sekarang berfungsi normal karena tidak ada proxy.
 - **Tidak ada kompresi, HTTP/2, atau cache aset** di depan server. Untuk
   kebutuhan itu, pasang reverse proxy.
-- **Port 8010 terbuka ke internet** = siapa pun bisa mencoba login (dibatasi
+- **Port 8122 terbuka ke internet** = siapa pun bisa mencoba login (dibatasi
   rate limit). Persempit dengan firewall/VPN.
 
 ## 8. Web statis (opsional)
@@ -438,10 +443,10 @@ Hasilnya di `/opt/twg/src/apps/web/dist/`. Pilihan hosting:
 - **Pengujian lokal**: `python3 -m http.server 8080 --directory dist` (jangan
   dipakai produksi).
 
-Arahkan web ke API port 8010:
+Arahkan web ke API port 8122:
 
 ```text
-http://192.168.1.50:8080/?api=http://203.0.113.10:8010
+http://192.168.1.50:8080/?api=http://203.0.113.10:8122
 ```
 
 atau ubah default di `apps/web` (`api_base_url()` di
@@ -461,26 +466,41 @@ Catatan:
 
 ## 9. Client desktop
 
-Di komputer operator:
+Di komputer operator, jalankan aplikasi tanpa konfigurasi tambahan:
 
 ```bash
-export TWG_API_URL=http://203.0.113.10:8010
-export TWG_TILE_PROXY=http://203.0.113.10:8010   # opsional
 cargo run -p twg-desktop --release
 ```
 
-`TWG_TILE_PROXY` kosong berarti desktop mengambil tile langsung dari OSM/Esri.
-Memakai proxy server akan memanfaatkan cache `.tile-cache` dan menyamakan
-attribution.
+Saat pertama dibuka, desktop memeriksa koneksi sesuai pilihan tersimpan, lalu
+menampilkan halaman login. Pilihan koneksi ada di halaman login dan menu
+**Pengaturan**:
+
+- **Publik** — server tetap `103.179.218.76:8122` (alamat tidak ditampilkan di
+  UI).
+- **Lokal** — isi IP/host dan port server sendiri, mis. `127.0.0.1:8122` atau
+  `203.0.113.10:8122`.
+- **Simpan** menyimpan pilihan ke berkas per komputer
+  (`%APPDATA%\twg\connection.json` di Windows,
+  `~/.config/twg/connection.json` di Linux) lalu memeriksa ulang server.
+  Menyimpan koneksi baru mengakhiri sesi lama.
+- **Tes** menguji alamat pada form tanpa menyimpannya.
+
+Bila server tidak terjangkau, halaman login menampilkan pesan koneksi gagal;
+pindah pilihan koneksi lalu klik **Simpan**.
+
+`TWG_API_URL` masih bisa dipakai sebagai override (untuk skrip/CI) dan menang
+atas pengaturan tersimpan. `TWG_TILE_PROXY` opsional; bila kosong, desktop
+memakai server API sebagai proxy tile sehingga mengikuti pilihan koneksi.
 
 ## 10. Verifikasi (smoke test)
 
 ```bash
-API=http://203.0.113.10:8010
+API=http://203.0.113.10:8122
 
 # 1. Proses & port
 sudo systemctl is-active twg-server
-ss -ltnp | grep 8010            # harus 0.0.0.0:8010
+ss -ltnp | grep 8122            # harus 0.0.0.0:8122
 
 # 2. Health
 curl -fsS "$API/healthz"
@@ -583,7 +603,7 @@ sudo find /var/lib/twg/tile-cache -type f -mtime +30 -delete
 - `CORS_DOMAIN=*` mematikan credentials. Aplikasi memakai token di header, jadi
   tetap berfungsi, tetapi origin terbuka. Lebih baik sebutkan origin web secara
   eksplisit bila web dipakai.
-- **Port 8010** sebaiknya dibatasi ke IP client (`ufw allow from ...`). Server
+- **Port 8122** sebaiknya dibatasi ke IP client (`ufw allow from ...`). Server
   tidak punya WAF/rate limit selain login.
 - `/uploads` dan `/assets` disajikan dengan
   `Content-Security-Policy: default-src 'none'; sandbox` dan
@@ -599,7 +619,7 @@ sudo find /var/lib/twg/tile-cache -type f -mtime +30 -delete
 
 | Gejala | Penyebab & solusi |
 |---|---|
-| `curl: (7) Failed to connect` dari luar | `HTTP_SERVER_ADDRESS` masih `127.0.0.1`, port 8010 belum dibuka di `ufw`, atau firewall penyedia VPS belum dibuka. Cek `ss -ltnp \| grep 8010`. |
+| `curl: (7) Failed to connect` dari luar | `HTTP_SERVER_ADDRESS` masih `127.0.0.1`, port 8122 belum dibuka di `ufw`, atau firewall penyedia VPS belum dibuka. Cek `ss -ltnp \| grep 8122`. |
 | Service gagal start, log `missing environment variable` | `DB_SOURCE`/`TOKEN_SYMMETRIC_KEY` tidak terbaca. Cek `EnvironmentFile` dan izin `/etc/twg/server.env`. |
 | `TOKEN_SYMMETRIC_KEY must be exactly 32 bytes` | Hasilkan dengan `openssl rand -hex 16` (32 karakter). |
 | `/readyz` 503 | PostgreSQL mati/salah password. Uji `psql` dengan URL yang sama. |
@@ -608,13 +628,57 @@ sudo find /var/lib/twg/tile-cache -type f -mtime +30 -delete
 | Upload 413 | Naikkan `MAX_BODY_BYTES`, lalu restart service. |
 | Web dari HTTPS error `Mixed Content` / API diblokir | Halaman HTTPS tidak boleh memanggil API HTTP. Pasang TLS di depan API (Lampiran A) atau host web via HTTP internal. |
 | CORS error di browser | `CORS_DOMAIN` harus memuat origin web persis (skema + host + port, tanpa slash). Restart service setelah diubah. |
-| WebSocket gagal dari web | Pastikan halaman HTTP (bukan HTTPS) dan `CORS_DOMAIN` benar. URL WS dibentuk dari base API menjadi `ws://IP:8010/ws`. |
-| WebSocket gagal dari desktop | `TWG_API_URL` harus `http://IP:8010` (bukan `https`) selama server tanpa TLS. |
+| WebSocket gagal dari web | Pastikan halaman HTTP (bukan HTTPS) dan `CORS_DOMAIN` benar. URL WS dibentuk dari base API menjadi `ws://IP:8122/ws`. |
+| WebSocket gagal dari desktop | `TWG_API_URL` harus `http://IP:8122` (bukan `https`) selama server tanpa TLS. |
 | Tile 503/timeout | VPS tidak bisa akses internet, atau provider membatasi. Cek `journalctl`, kurangi `TILE_PROXY_CONCURRENCY`. |
 | Tile 404 setelah ganti area | Normal: tile belum ter-cache dan provider belum punya zoom tersebut. |
 | Konversi asset gagal, log menyebut `gltf-transform` | Node/CLI tidak terpasang atau `GLTF_TRANSFORM_BIN` salah. Uji `sudo -u twg gltf-transform --version`. |
 | Log `existing legacy schema detected ... skipping migrations` | Database berasal dari server lama. Untuk produksi baru pakai database kosong. |
 | Binary error glibc saat start | Binary di-build di distro lebih baru. Build ulang di VPS atau Ubuntu versi sama. |
+| Service gagal dengan `status=203/EXEC` | systemd tidak bisa mengeksekusi file (aplikasi belum jalan). Lihat [subsection 13.1](#131-status203exec). |
+
+### 13.1 `status=203/EXEC`
+
+`203/EXEC` berarti `execve()` gagal: path salah, file tidak executable, format
+binary salah (Windows/arsitektur lain), loader tidak ada, atau file tersembunyi
+oleh hardening. Aplikasi tidak sempat menulis log apa pun.
+
+```bash
+systemctl cat twg-server | grep ExecStart
+ls -l /opt/twg/twg-server-app
+file /opt/twg/twg-server-app
+uname -m
+sudo -u twg test -x /opt/twg/twg-server-app && echo executable || echo NOT-executable
+sudo -u twg /opt/twg/twg-server-app 2>&1 | head -20   # Ctrl+C bila benar-benar start
+ldd /opt/twg/twg-server-app | head
+ldd --version | head -1
+findmnt -T /opt/twg/twg-server-app -o TARGET,OPTIONS
+```
+
+| Temuan | Penyebab | Perbaikan |
+|---|---|---|
+| `file` → `PE32+ ... MS Windows` | Binary build Windows terunggah | Build ulang di VPS |
+| `file` → arsitektur beda dari `uname -m` | Arch tidak cocok | Build ulang / cross-compile |
+| File tidak ada / symlink rusak | Path `ExecStart` salah | `sudo install -o twg -g twg -m 755 target/release/twg-server-app /opt/twg/twg-server-app` |
+| `NOT-executable` | Izin hilang setelah `scp`/`cp` | `sudo chmod 755` + `sudo chown twg:twg` |
+| `No such file or directory` padahal file ada | glibc/loader tidak cocok (build di distro lebih baru atau VPS musl) | Build di VPS itu sendiri, atau musl static |
+| `GLIBC_2.xx not found` | glibc VPS lebih lama | Build di VPS/distro sama |
+| `findmnt` menyebut `noexec` | Mount filesystem melarang eksekusi | Pindahkan binary ke `/opt/twg` |
+| `ExecStart` di `/home/...` | Unit memakai `ProtectHome=true` | Pindahkan binary ke `/opt/twg` atau set `ProtectHome=false` |
+| `audit: denied` di `dmesg` | SELinux/AppArmor | Perbaiki label/context (`restorecon -Rv /opt/twg`) |
+
+Perbaikan cepat:
+
+```bash
+sudo systemctl stop twg-server
+sudo install -o twg -g twg -m 755 \
+  /opt/twg/src/target/release/twg-server-app /opt/twg/twg-server-app
+sudo -u twg /opt/twg/twg-server-app        # uji manual, lalu Ctrl+C
+sudo systemd-analyze verify /etc/systemd/system/twg-server.service
+sudo systemctl reset-failed twg-server
+sudo systemctl restart twg-server
+sudo journalctl -u twg-server -n 50 --no-pager
+```
 
 ## Lampiran A: Nginx + TLS (opsional)
 
@@ -630,7 +694,7 @@ sudo apt install -y nginx certbot python3-certbot-nginx
 2. Ubah `/etc/twg/server.env`:
 
 ```ini
-HTTP_SERVER_ADDRESS=127.0.0.1:8010
+HTTP_SERVER_ADDRESS=127.0.0.1:8122
 CORS_DOMAIN=https://twg.example.com
 ```
 
@@ -660,7 +724,7 @@ map $http_upgrade $connection_upgrade {
 }
 
 upstream twg_api {
-    server 127.0.0.1:8010;
+    server 127.0.0.1:8122;
     keepalive 32;
 }
 
@@ -749,24 +813,24 @@ sudo chown -R www-data:www-data /var/www/twg
 sudo systemctl restart twg-server
 ```
 
-6. Tutup akses langsung 8010:
+6. Tutup akses langsung 8122:
 
 ```bash
-sudo ufw delete allow 8010/tcp
+sudo ufw delete allow 8122/tcp
 ```
 
 Setelah TLS aktif, client memakai `https://twg.example.com` dan tidak perlu
 `?api=`. Alternatif yang lebih sederhana: **Caddy** dengan konfigurasi
-`reverse_proxy 127.0.0.1:8010` + `file_server`, atau **Cloudflare Tunnel** bila
+`reverse_proxy 127.0.0.1:8122` + `file_server`, atau **Cloudflare Tunnel** bila
 tidak ingin membuka port sama sekali.
 
 ## Checklist akhir (akses langsung)
 
-- [ ] `HTTP_SERVER_ADDRESS=0.0.0.0:8010` dan `ss -ltnp` menunjukkan
-      `0.0.0.0:8010`.
-- [ ] Port 8010 dibuka di `ufw` **dan** firewall penyedia VPS (atau dibatasi ke
+- [ ] `HTTP_SERVER_ADDRESS=0.0.0.0:8122` dan `ss -ltnp` menunjukkan
+      `0.0.0.0:8122`.
+- [ ] Port 8122 dibuka di `ufw` **dan** firewall penyedia VPS (atau dibatasi ke
       IP client).
-- [ ] `curl http://IP:8010/healthz` dan `/readyz` = 200 dari luar VPS.
+- [ ] `curl http://IP:8122/healthz` dan `/readyz` = 200 dari luar VPS.
 - [ ] `sudo systemctl is-enabled twg-server` = enabled.
 - [ ] Login `admin` berhasil dan `/private/operasis` mengembalikan data.
 - [ ] Upload asset besar berhasil lewat UI admin/desktop.

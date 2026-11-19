@@ -1,4 +1,5 @@
 use bevy_egui::egui;
+use twg_client::ConnectionMode;
 use twg_client::design::{
     DARK, MOBILE_BREAKPOINT, SIDEBAR_WIDTH, SPACE_2, SPACE_3, SPACE_4, SPACE_6,
 };
@@ -53,7 +54,7 @@ fn root_ui<R>(context: &egui::Context, add: impl FnOnce(&mut egui::Ui) -> R) -> 
 
 fn draw_boot(context: &egui::Context, client: &mut ClientUi) {
     if !client.boot_checked && client.jobs.is_empty() {
-        client.begin_identify();
+        client.begin_health_check();
     }
     root_ui(context, |ui| {
         egui::CentralPanel::default().show(ui, |ui| {
@@ -111,6 +112,10 @@ fn draw_login(context: &egui::Context, client: &mut ClientUi) {
                     });
                     ui.add_space(SPACE_2);
                     widgets::key_hint(ui, "Enter", "Masuk");
+                    ui.add_space(SPACE_3);
+                    ui.separator();
+                    ui.add_space(SPACE_2);
+                    connection_section(ui, client);
                 });
             });
         });
@@ -286,6 +291,7 @@ fn draw_screen(ui: &mut egui::Ui, client: &mut ClientUi) {
         NavItem::Online => screen_online(ui, client),
         NavItem::Snapshots => screen_snapshots(ui, client),
         NavItem::Profile => screen_profile(ui, client),
+        NavItem::Settings => screen_settings(ui, client),
         NavItem::Preview => {}
         NavItem::BigScreen => {}
     }
@@ -988,6 +994,70 @@ fn screen_profile(ui: &mut egui::Ui, client: &mut ClientUi) {
             });
         }
     });
+}
+
+fn screen_settings(ui: &mut egui::Ui, client: &mut ClientUi) {
+    widgets::section(
+        ui,
+        "Pengaturan",
+        Some("Pilih server yang dipakai desktop ini (disimpan per komputer)."),
+    );
+    widgets::card(ui, |ui| {
+        ui.set_max_width(520.0);
+        ui.horizontal(|ui| {
+            ui.label(theme::muted("Koneksi aktif:"));
+            widgets::badge(ui, &client.connection.label(), DARK.success);
+        });
+        ui.add_space(SPACE_2);
+        connection_section(ui, client);
+        ui.add_space(SPACE_3);
+        ui.label(theme::muted(
+            "Menyimpan koneksi baru akan mengakhiri sesi saat ini dan memeriksa ulang server.",
+        ));
+    });
+}
+
+/// Radio choice plus the local address fields and the Simpan/Tes actions.
+/// Shared by the login card and the Settings screen.
+fn connection_section(ui: &mut egui::Ui, client: &mut ClientUi) {
+    ui.label(egui::RichText::new("Koneksi server").size(12.0).strong());
+    let mut mode = client.connection_mode;
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut mode, ConnectionMode::Public, "Publik");
+        ui.radio_value(&mut mode, ConnectionMode::Local, "Lokal");
+    });
+    if mode != client.connection_mode {
+        client.connection_mode = mode;
+        client.connection_message = None;
+    }
+    if client.connection_mode == ConnectionMode::Local {
+        let host = &mut client.connection_host;
+        let port = &mut client.connection_port;
+        ui.columns(2, |columns| {
+            widgets::labeled_input(&mut columns[0], "IP Address", host);
+            widgets::labeled_input(&mut columns[1], "Port", port);
+        });
+    }
+    ui.add_space(SPACE_2);
+    ui.horizontal(|ui| {
+        if widgets::secondary_button(ui, "Simpan").clicked() {
+            client.save_connection();
+        }
+        if widgets::secondary_button(ui, "Tes").clicked() {
+            client.begin_connection_test();
+        }
+        if client.connection_testing {
+            ui.spinner();
+        }
+    });
+    if let Some((ok, message)) = &client.connection_message {
+        ui.add_space(SPACE_2);
+        if *ok {
+            widgets::success_banner(ui, message);
+        } else {
+            widgets::error_banner(ui, message);
+        }
+    }
 }
 
 // ---------------------------------------------------------------- modals

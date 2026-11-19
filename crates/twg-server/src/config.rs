@@ -7,7 +7,7 @@ use twg_auth::AuthConfig;
 
 use crate::assets::ConvertConfig;
 
-pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8010";
+pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8122";
 pub const DEFAULT_MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 pub const DEFAULT_RATE_LIMIT: u32 = 10;
 pub const DEFAULT_RATE_WINDOW_SECONDS: u64 = 60;

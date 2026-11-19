@@ -34,6 +34,7 @@ pub fn build_app() -> App {
     #[cfg(target_arch = "wasm32")]
     let ui = {
         use twg_client::ApiClient;
+        use twg_client::ConnectionSettings;
         use twg_client::web::{
             BrowserWsTransport, FetchTransport, LocalStorageTokenStore, api_base_url,
             persisted_device_id, stress_requested,
@@ -52,6 +53,7 @@ pub fn build_app() -> App {
                 api,
                 ws_transport: Arc::new(BrowserWsTransport),
                 base_url,
+                connection: ConnectionSettings::default(),
             })
         }
     };

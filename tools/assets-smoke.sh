@@ -9,7 +9,7 @@
 # the other session or reuse its DEVICE_ID.
 #
 # Usage:
-#   BASE=http://127.0.0.1:8010 DEVICE_ID=device-1 bash tools/assets-smoke.sh
+#   BASE=http://127.0.0.1:8122 DEVICE_ID=device-1 bash tools/assets-smoke.sh
 set -euo pipefail
 
 BASE=${BASE:-http://127.0.0.1:8099}

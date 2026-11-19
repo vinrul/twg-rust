@@ -235,10 +235,12 @@ Desktop:
 cargo run -p twg-desktop
 ```
 
-Desktop membuka client shell dan memakai `TWG_API_URL` (default
-`http://127.0.0.1:8010`). Gunakan `--stress ...` atau `TWG_DEMO=1` untuk
-menjalankan map demo tanpa shell. Desktop mencari aset di `../../assets`
-relatif terhadap direktori kerja; override dengan `TWG_ASSET_PATH`.
+Desktop membuka client shell. Pilihan koneksi (Publik/Lokal) diatur dari
+halaman login atau menu **Pengaturan** dan disimpan per komputer; `TWG_API_URL`
+masih tersedia sebagai override (default `http://127.0.0.1:8122`). Gunakan
+`--stress ...` atau `TWG_DEMO=1` untuk menjalankan map demo tanpa shell. Desktop
+mencari aset di `../../assets` relatif terhadap direktori kerja; override dengan
+`TWG_ASSET_PATH`.
 
 Stress marker memakai mesh LOD2 secara default. Tambahkan `--full` untuk mesh
 penuh dan `--draco` untuk varian terkompresi (lihat
@@ -402,7 +404,7 @@ cargo run -p twg-online-admin
   jumlah sesi).
 - Route lama `POST /public/users/{id}/kick-session` (tanpa autentikasi, temuan
   S1 di `baseline/security/findings.md`) sudah dihapus.
-- Konfigurasi: `TWG_API_URL` (default `http://127.0.0.1:8010`),
+- Konfigurasi: `TWG_API_URL` (default `http://127.0.0.1:8122`),
   `TWG_ADMIN_DEVICE_ID` (opsional, device id tetap), dan
   `TWG_ADMIN_SESSION_FILE` untuk lokasi file sesi (default
   `online-admin-session.json`, terpisah dari sesi `twg-desktop`).
@@ -801,13 +803,13 @@ node tools/client-smoke.mjs --username=baselinemonitor \
   --scenario=44444444-4444-4444-8444-444444444441 --editor-test=true
 ```
 
-`HTTP_SERVER_ADDRESS` dapat dioverride; default `127.0.0.1:8010`.
+`HTTP_SERVER_ADDRESS` dapat dioverride; default `127.0.0.1:8122`.
 
 Tile proxy server-side tersedia di `GET /tiles/{layer}/{z}/{x}/{y}.png`
 (`layer`: `osm` atau `satellite`) dengan disk cache di `.tile-cache/`. Client
-web memakai route yang sama lewat `?proxy=<origin>`; desktop memakai
-`TWG_TILE_PROXY=<origin>`. Bila tidak diset, client mengambil tile langsung
-dari provider.
+web memakai route yang sama lewat `?proxy=<origin>`; desktop memakai server API
+sebagai proxy tile mengikuti pilihan koneksi (override dengan
+`TWG_TILE_PROXY=<origin>`).
 
 Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
 `WS_TICKET_TTL_SECONDS` mengatur umur tiket (default 30 detik) dan

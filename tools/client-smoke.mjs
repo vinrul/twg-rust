@@ -9,7 +9,7 @@
 // Usage:
 //   trunk build
 //   node tools/client-smoke.mjs
-//   node tools/client-smoke.mjs --headless=false --api=http://127.0.0.1:8010
+//   node tools/client-smoke.mjs --headless=false --api=http://127.0.0.1:8122
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -24,7 +24,7 @@ const distDir = join(projectRoot, "apps", "web", "dist");
 const shotDir = join(projectRoot, "docs", "assets");
 
 const args = parseArgs(process.argv.slice(2));
-const apiBase = (args.api ?? process.env.TWG_API_URL ?? "http://127.0.0.1:8010").replace(/\/+$/, "");
+const apiBase = (args.api ?? process.env.TWG_API_URL ?? "http://127.0.0.1:8122").replace(/\/+$/, "");
 const username = args.username ?? process.env.TWG_USER ?? "baselineadmin";
 const password = args.password ?? process.env.TWG_PASSWORD ?? "Baseline#2026";
 const headless = args.headless !== "false";

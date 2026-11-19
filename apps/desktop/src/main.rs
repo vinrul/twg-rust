@@ -6,6 +6,7 @@ use bevy::window::{PresentMode, PrimaryWindow, WindowPlugin};
 use bevy::winit::WinitSettings;
 use std::sync::Arc;
 use twg_client::ApiClient;
+use twg_client::ConnectionSettings;
 use twg_client::TokenStore;
 use twg_client::native::{
     FileTokenStore, TungsteniteTransport, UreqTransport, persisted_device_id,
@@ -47,10 +48,6 @@ fn main() {
     )
     .insert_resource(WinitSettings::continuous());
 
-    if let Ok(proxy) = std::env::var("TWG_TILE_PROXY") {
-        app.insert_resource(TileProxyConfig(Some(proxy)));
-    }
-
     if let Some(run) = cli.stress {
         app.insert_resource(run);
     }
@@ -75,10 +72,17 @@ fn main() {
     } else {
         bevy::log::info!("twg-desktop: client shell mode; login/dashboard enabled");
     }
-    let ui = if demo {
-        TacticalUiPlugin::map_demo()
-    } else {
-        TacticalUiPlugin::new(client_backend())
+    let backend = (!demo).then(client_backend);
+    if let Ok(proxy) = std::env::var("TWG_TILE_PROXY") {
+        app.insert_resource(TileProxyConfig(Some(proxy)));
+    } else if let Some(backend) = &backend {
+        // The server also proxies map tiles, so the tile source follows the
+        // connection chosen in the desktop settings.
+        app.insert_resource(TileProxyConfig(Some(backend.base_url.clone())));
+    }
+    let ui = match backend {
+        Some(backend) => TacticalUiPlugin::new(backend),
+        None => TacticalUiPlugin::map_demo(),
     };
     app.add_plugins((TacticalRenderPlugin, ui));
     app.add_systems(PostStartup, maximize_window);
@@ -110,10 +114,10 @@ fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
 }
 
 fn client_backend() -> ClientBackend {
+    let connection = ConnectionSettings::load();
     let base_url = std::env::var("TWG_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8010".to_owned())
-        .trim_end_matches('/')
-        .to_owned();
+        .map(|url| url.trim_end_matches('/').to_owned())
+        .unwrap_or_else(|_| connection.base_url());
     let store = Arc::new(FileTokenStore::default()) as Arc<dyn TokenStore>;
     let api = ApiClient::new(
         base_url.clone(),
@@ -125,6 +129,7 @@ fn client_backend() -> ClientBackend {
         api,
         ws_transport: Arc::new(TungsteniteTransport),
         base_url,
+        connection,
     }
 }
 
