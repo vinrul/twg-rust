@@ -69,6 +69,24 @@ fn draw_boot(context: &egui::Context, client: &mut ClientUi) {
 
 fn draw_login(context: &egui::Context, client: &mut ClientUi) {
     root_ui(context, |ui| {
+        // Exit sits in the window corner so it never competes with the login
+        // form or the connection settings inside the card.
+        #[cfg(not(target_arch = "wasm32"))]
+        egui::Area::new(egui::Id::new("login_exit"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-SPACE_4, SPACE_3))
+            .order(egui::Order::Foreground)
+            .show(context, |ui| {
+                if widgets::ghost_button(ui, "Keluar Aplikasi")
+                    .on_hover_text("Tutup Tactical Game 3D")
+                    .clicked()
+                {
+                    client.modal = Modal::Confirm(ConfirmDialog {
+                        title: "Keluar aplikasi".to_owned(),
+                        message: "Tutup Tactical Game 3D?".to_owned(),
+                        action: ConfirmAction::Exit,
+                    });
+                }
+            });
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(90.0);
@@ -208,6 +226,7 @@ fn draw_topbar(ui: &mut egui::Ui, client: &mut ClientUi, compact: bool) {
                     action: ConfirmAction::Logout,
                 });
             }
+            #[cfg(not(target_arch = "wasm32"))]
             if widgets::ghost_button(ui, "Keluar Aplikasi").clicked() {
                 client.modal = Modal::Confirm(ConfirmDialog {
                     title: "Keluar aplikasi".to_owned(),
@@ -1002,6 +1021,7 @@ fn screen_profile(ui: &mut egui::Ui, client: &mut ClientUi) {
                     action: ConfirmAction::Logout,
                 });
             }
+            #[cfg(not(target_arch = "wasm32"))]
             if widgets::secondary_button(ui, "Keluar aplikasi").clicked() {
                 client.modal = Modal::Confirm(ConfirmDialog {
                     title: "Keluar aplikasi".to_owned(),
