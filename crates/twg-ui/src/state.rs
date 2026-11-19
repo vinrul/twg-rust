@@ -165,6 +165,8 @@ pub enum ConfirmAction {
     DeleteAsset(Uuid),
     DeleteAssetGroup(Uuid),
     Logout,
+    /// Close the desktop application.
+    Exit,
 }
 
 pub struct ConfirmDialog {
@@ -428,6 +430,8 @@ pub struct ClientUi {
     pub login_password_visible: bool,
     pub login_error: Option<String>,
     pub logging_in: bool,
+    /// Set by the exit button/modal; the Bevy shell writes `AppExit`.
+    pub exit_requested: bool,
     pub modal: Modal,
     pub toasts: Vec<Toast>,
     pub jobs: Vec<UiJob>,
@@ -554,6 +558,7 @@ impl ClientUi {
             login_password_visible: false,
             login_error: None,
             logging_in: false,
+            exit_requested: false,
             modal: Modal::None,
             toasts: Vec::new(),
             jobs: Vec::new(),
@@ -1786,6 +1791,13 @@ impl ClientUi {
         {
             None
         }
+    }
+
+    /// Local folder that mirrors one asset (`<cache>/<asset-id>`), if it exists.
+    pub fn asset_local_dir(&self, asset_id: Uuid) -> Option<PathBuf> {
+        let root = self.asset_cache_root()?;
+        let dir = PathBuf::from(root).join(asset_id.to_string());
+        dir.is_dir().then_some(dir)
     }
 
     /// Latest saved preview screenshot per asset id. Desktop only; the web
@@ -3221,6 +3233,7 @@ impl ClientUi {
                 self.begin_asset_group_delete(id);
             }
             ConfirmAction::Logout => self.logout(),
+            ConfirmAction::Exit => self.exit_requested = true,
         }
         self.modal.close();
     }

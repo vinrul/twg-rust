@@ -500,6 +500,7 @@ impl ClientUi {
             is_model,
             can_delete,
             preview,
+            local_dir: self.asset_local_dir(asset.id),
         }
     }
 

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::window::FileDragAndDrop;
 use bevy_egui::{
@@ -207,6 +208,7 @@ fn draw_client_shell(
     preview: Option<Res<AssetPreview>>,
     orbit: Option<ResMut<PreviewOrbitInputs>>,
     load_status: Option<Res<RenderLoadStatus>>,
+    mut exit: MessageWriter<AppExit>,
 ) -> Result {
     client.poll();
     client.load_status = load_status.as_deref().copied().unwrap_or_default();
@@ -243,6 +245,10 @@ fn draw_client_shell(
     }
     let context = contexts.ctx_mut()?;
     screens::draw(context, &mut client);
+    if client.exit_requested {
+        client.exit_requested = false;
+        exit.write(AppExit::Success);
+    }
     if let Some(mut orbit) = orbit {
         orbit.0 = client.preview_orbit;
         client.preview_orbit = [PreviewOrbitInput::default(); PREVIEW_SLOTS];

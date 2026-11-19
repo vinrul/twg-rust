@@ -1544,6 +1544,9 @@ fn draw_asset_tooltip(ui: &mut egui::Ui, editor: &mut EditorState, row: &EditorA
     } else {
         "Status: belum diunduh"
     }));
+    if let Some(dir) = &row.local_dir {
+        ui.label(theme::muted(&format!("Folder offline: {}", dir.display())));
+    }
     if let Some(path) = &row.preview {
         if let Some(texture) = editor.stored_preview(ui.ctx(), path) {
             ui.add_space(4.0);

@@ -208,6 +208,14 @@ fn draw_topbar(ui: &mut egui::Ui, client: &mut ClientUi, compact: bool) {
                     action: ConfirmAction::Logout,
                 });
             }
+            if widgets::ghost_button(ui, "Keluar Aplikasi").clicked() {
+                client.modal = Modal::Confirm(ConfirmDialog {
+                    title: "Keluar aplikasi".to_owned(),
+                    message: "Tutup Tactical Game 3D? Perubahan yang belum disimpan akan hilang."
+                        .to_owned(),
+                    action: ConfirmAction::Exit,
+                });
+            }
             if let Some(session) = &client.state.session {
                 ui.label(theme::muted(&session.name));
                 widgets::badge(ui, &role_label(session.role), DARK.success);
@@ -986,13 +994,23 @@ fn screen_profile(ui: &mut egui::Ui, client: &mut ClientUi) {
         ui.label(theme::title("Session"));
         ui.label(theme::muted(&format!("Device {}", client.api.device_id())));
         ui.label(theme::muted(&format!("Role {}", identity.role_label)));
-        if widgets::secondary_button(ui, "Logout").clicked() {
-            client.modal = Modal::Confirm(ConfirmDialog {
-                title: "Keluar".to_owned(),
-                message: "Keluar dari sesi ini?".to_owned(),
-                action: ConfirmAction::Logout,
-            });
-        }
+        ui.horizontal(|ui| {
+            if widgets::secondary_button(ui, "Logout").clicked() {
+                client.modal = Modal::Confirm(ConfirmDialog {
+                    title: "Keluar".to_owned(),
+                    message: "Keluar dari sesi ini?".to_owned(),
+                    action: ConfirmAction::Logout,
+                });
+            }
+            if widgets::secondary_button(ui, "Keluar aplikasi").clicked() {
+                client.modal = Modal::Confirm(ConfirmDialog {
+                    title: "Keluar aplikasi".to_owned(),
+                    message: "Tutup Tactical Game 3D? Perubahan yang belum disimpan akan hilang."
+                        .to_owned(),
+                    action: ConfirmAction::Exit,
+                });
+            }
+        });
     });
 }
 

@@ -111,6 +111,8 @@ pub struct EditorAssetRow {
     pub can_delete: bool,
     /// Latest saved preview screenshot, when one exists.
     pub preview: Option<PathBuf>,
+    /// Local cache folder with the synced files, when the asset is offline.
+    pub local_dir: Option<PathBuf>,
 }
 
 /// One image asset available as a shape texture.

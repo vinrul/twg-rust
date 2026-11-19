@@ -633,6 +633,9 @@ fn draw_detail(ui: &mut egui::Ui, client: &mut ClientUi) {
         asset.version,
         asset.updated_at.format("%d %b %Y %H:%M")
     )));
+    if let Some(dir) = client.asset_local_dir(asset.id) {
+        ui.label(theme::muted(&format!("Folder offline: {}", dir.display())));
+    }
     if can_admin {
         ui.add_space(SPACE_2);
         draw_rename(ui, client, &asset);

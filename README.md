@@ -811,6 +811,12 @@ web memakai route yang sama lewat `?proxy=<origin>`; desktop memakai server API
 sebagai proxy tile mengikuti pilihan koneksi (override dengan
 `TWG_TILE_PROXY=<origin>`).
 
+Cache aset offline desktop berada di `%LOCALAPPDATA%\twg\assets` (Windows),
+`$XDG_CACHE_HOME/twg/assets`, atau `~/.cache/twg/assets` (Linux), dan bisa
+diganti lewat `TWG_ASSET_CACHE`. Satu aset menempati
+`<cache>/<asset-id>/<slot>/<file>`, mis. `<id>/idle/draco_lod2.glb`. Path folder
+lengkap tampil di detail **Aset** dan tooltip tab **Assets** editor.
+
 Realtime memakai `POST /private/ws-ticket` lalu `GET /ws?ticket=...`.
 `WS_TICKET_TTL_SECONDS` mengatur umur tiket (default 30 detik) dan
 `WS_HISTORY_LIMIT` mengatur jumlah event yang disimpan untuk resume (default
