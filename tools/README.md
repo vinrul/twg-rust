@@ -176,3 +176,29 @@ node tools/ws-smoke.mjs
 | `DB_NAME` | `twg_baseline` | Database name |
 | `SEED_PATH` | `baseline/fixtures/seed.sql` | Seed file |
 | `TWG_PASSWORD` | `Baseline#2026` | Password for baseline accounts |
+
+## `gen-icons.mjs`
+
+Redraws the application icons for `twg-desktop` and `twg-online-admin` and
+writes every platform format into `assets/icons/` (PNG sizes 16–1024, Windows
+`.ico`, macOS `.icns`, and a 256×256 `.rgba` used for the live window icon).
+Run it only after editing the artwork in the script.
+
+```bash
+node tools/gen-icons.mjs
+```
+
+## Packaging scripts
+
+Build release bundles with the application icons and desktop launchers:
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1
+bash tools/package-linux.sh
+bash tools/package-macos.sh
+```
+
+Outputs go to `dist/` (ignored by git). Windows builds embed the `.ico` in the
+`.exe` and hide the console; the Linux bundle ships `.desktop` entries with
+`Terminal=false`; macOS produces `.app` bundles. See
+[docs/RELEASE.md](../docs/RELEASE.md).

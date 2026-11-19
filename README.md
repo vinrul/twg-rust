@@ -201,6 +201,22 @@ lama `app.env` masih didukung dan menimpa `.env` bila ada.
 `TOKEN_SYMMETRIC_KEY` wajib tepat 32 byte. `readyz` melakukan ping PostgreSQL;
 `GET /tiles/...` tetap tersedia untuk proxy tile.
 
+### Release aplikasi desktop
+
+`twg-desktop` dan `twg-online-admin` memakai ikon aplikasi di semua platform
+(`assets/icons/`, dibuat ulang dengan `node tools/gen-icons.mjs`). Build
+release Windows menyematkan ikon ke `.exe` lewat `build.rs` dan tidak membuka
+console; Linux/macOS memakai paket `.desktop`/`.app`.
+
+```bash
+node tools/gen-icons.mjs                  # hanya bila ikon diubah
+powershell -File tools/package-windows.ps1
+bash tools/package-linux.sh
+bash tools/package-macos.sh
+```
+
+Detail ada di [docs/RELEASE.md](docs/RELEASE.md).
+
 ### PostgreSQL lokal (Docker Desktop)
 
 ```bash

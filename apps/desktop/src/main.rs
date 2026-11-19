@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
+
 use bevy::asset::io::file::FileAssetReader;
 use bevy::asset::io::{AssetSourceBuilder, AssetSourceId};
 use bevy::asset::{AssetApp, AssetMetaCheck, AssetPlugin};
@@ -86,6 +91,8 @@ fn main() {
     };
     app.add_plugins((TacticalRenderPlugin, ui));
     app.add_systems(PostStartup, maximize_window);
+    app.insert_non_send(window_icon_state());
+    app.add_systems(Update, apply_window_icon);
 
     if cli.zoom.is_some() || cli.pitch.is_some() || cli.bearing.is_some() {
         let mut camera = MapCameraState::default();
@@ -111,6 +118,49 @@ fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
     if let Ok(mut window) = windows.single_mut() {
         window.set_maximized(true);
     }
+}
+
+/// Live window icon for the title bar/taskbar. The embedded `.ico`/`.icns` cover
+/// Explorer, Finder, and Linux launchers; this covers the window itself on
+/// Windows and X11. Winit queues the call onto the main thread.
+struct WindowIconState {
+    icon: winit::window::Icon,
+    applied: bool,
+}
+
+fn window_icon_state() -> WindowIconState {
+    const SIZE: u32 = 256;
+    let bytes = include_bytes!("../../../assets/icons/twg-desktop-ui.rgba").to_vec();
+    let icon = winit::window::Icon::from_rgba(bytes, SIZE, SIZE)
+        .expect("embedded desktop window icon is valid RGBA");
+    WindowIconState {
+        icon,
+        applied: false,
+    }
+}
+
+fn apply_window_icon(
+    windows: Query<Entity, With<PrimaryWindow>>,
+    mut state: NonSendMut<WindowIconState>,
+) {
+    if state.applied {
+        return;
+    }
+    let Ok(entity) = windows.single() else {
+        return;
+    };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|winit_windows| {
+        let Some(window) = winit_windows.get_window(entity) else {
+            return;
+        };
+        window.set_window_icon(Some(state.icon.clone()));
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::WindowExtWindows;
+            window.set_taskbar_icon(Some(state.icon.clone()));
+        }
+        state.applied = true;
+    });
 }
 
 fn client_backend() -> ClientBackend {
