@@ -772,6 +772,7 @@ fn draw_menu(ui: &mut egui::Ui, editor: &mut EditorState, action: &mut EditorAct
                     ui.label("Klik ganda / Enter: selesai menggambar");
                     ui.label("Esc: batal · Del: hapus · G: snap");
                     ui.label("Klik kanan tahan: orbit · tengah: pan");
+                    ui.label("Trackpad: dua jari: pan · pinch: zoom · Shift+scroll: pan");
                 });
             });
         });

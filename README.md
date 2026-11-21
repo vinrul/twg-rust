@@ -258,6 +258,24 @@ masih tersedia sebagai override (default `http://127.0.0.1:8122`). Gunakan
 mencari aset di `../../assets` relatif terhadap direktori kerja; override dengan
 `TWG_ASSET_PATH`.
 
+Kontrol kamera (mouse dan trackpad):
+
+| Input | Aksi |
+|---|---|
+| Drag tengah, atau drag kiri di luar editor | Pan |
+| Dua jari di trackpad (delta piksel presisi) | Pan |
+| Pinch dua jari (macOS) | Zoom |
+| Scroll roda mouse | Zoom |
+| `Ctrl`/`Cmd` + scroll | Zoom |
+| `Shift` + scroll | Pan |
+| Drag kanan | Orbit (rotate + pitch) |
+| `WASD`/arrow, `Q`/`E`, `R`/`F`, `N`, `H`, `+`/`-` | Pan, rotate, pitch, north, reset, zoom |
+
+Backend native membedakan roda mouse (delta baris) dari trackpad (delta piksel),
+sehingga dua jari langsung mem-pan dan pinch/`Ctrl`+scroll untuk zoom. Di browser
+keduanya dikirim sebagai delta piksel, jadi scroll tetap zoom; pan memakai
+`Shift`+scroll atau drag.
+
 Stress marker memakai mesh LOD2 secara default. Tambahkan `--full` untuk mesh
 penuh dan `--draco` untuk varian terkompresi (lihat
 [laporan Draco](docs/DRACO_REPORT.md)). Di web, padanan query-nya adalah

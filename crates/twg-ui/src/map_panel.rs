@@ -80,6 +80,9 @@ pub fn draw_map_panel_ctx(
             ui.small(layer.0.attribution());
             ui.separator();
             ui.label("Drag: pan  ·  Right-drag: orbit  ·  Wheel: zoom  ·  Click marker: select");
+            ui.label(
+                "Trackpad: dua jari: pan  ·  pinch: zoom  ·  Shift+scroll: pan  ·  Ctrl/Cmd+scroll: zoom",
+            );
             ui.label("WASD/arrows: pan  ·  Q/E: rotate  ·  R/F: pitch  ·  N: north  ·  H: reset");
             ui.label("L: switch base layer  ·  +/-: zoom step");
         });
