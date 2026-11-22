@@ -23,6 +23,8 @@ use twg_render::{
 };
 use twg_ui::{ClientBackend, TacticalUiPlugin};
 
+mod update;
+
 fn main() {
     let asset_path = std::env::var("TWG_ASSET_PATH").unwrap_or_else(|_| "../../assets".to_owned());
     let cli = CliArgs::parse();
@@ -90,6 +92,12 @@ fn main() {
         None => TacticalUiPlugin::map_demo(),
     };
     app.add_plugins((TacticalRenderPlugin, ui));
+    let updater = !demo
+        && std::env::var_os("TWG_SKIP_UPDATE").is_none()
+        && (!cfg!(debug_assertions) || std::env::var_os("TWG_UPDATE_URL").is_some());
+    if updater {
+        app.add_plugins(update::UpdatePlugin);
+    }
     app.add_systems(PostStartup, maximize_window);
     app.insert_non_send(window_icon_state());
     app.add_systems(Update, apply_window_icon);

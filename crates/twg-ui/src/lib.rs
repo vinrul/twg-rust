@@ -38,6 +38,19 @@ pub use state::ClientUi;
 #[cfg(not(target_arch = "wasm32"))]
 use state::ToastKind;
 
+/// Lets the desktop updater take over the window before the login/boot shell
+/// starts drawing. Defaults to open so web/demo builds are unaffected.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ClientUiGate {
+    pub open: bool,
+}
+
+impl Default for ClientUiGate {
+    fn default() -> Self {
+        Self { open: true }
+    }
+}
+
 /// Asset selected with **Gunakan**, resolved to offline cache paths. Editors
 /// and gameplay systems read this resource instead of loading from the server.
 #[derive(Resource, Default, Clone, Debug)]
@@ -86,6 +99,7 @@ impl Plugin for TacticalUiPlugin {
         }
         app.init_resource::<editor::input::EditorInputFocus>();
         app.init_resource::<ActiveAsset>();
+        app.init_resource::<ClientUiGate>();
         app.add_systems(PostStartup, attach_primary_egui_context);
         if let Some(backend) = &self.backend {
             app.insert_resource(ClientUi::new(
@@ -110,7 +124,9 @@ impl Plugin for TacticalUiPlugin {
             );
             app.add_systems(
                 EguiPrimaryContextPass,
-                (apply_theme, draw_client_shell, track_ui_pointer).chain(),
+                (apply_theme, draw_client_shell, track_ui_pointer)
+                    .chain()
+                    .run_if(client_ui_open),
             );
         } else {
             app.add_systems(
@@ -135,6 +151,10 @@ fn apply_theme(mut contexts: EguiContexts, mut applied: Local<bool>) -> Result {
         *applied = true;
     }
     Ok(())
+}
+
+fn client_ui_open(gate: Res<ClientUiGate>) -> bool {
+    gate.open
 }
 
 fn sync_tile_proxy(proxy: Res<TileProxyConfig>, mut client: ResMut<ClientUi>) {

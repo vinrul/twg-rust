@@ -28,6 +28,7 @@ infer = "0.19"
 js-sys = "0.3"
 rand = "0.8"
 rfd = "0.18"
+ring = "0.17"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 serde_json = "1.0"
@@ -68,6 +69,7 @@ twg-render = { path = "crates/twg-render" }
 twg-server = { path = "crates/twg-server" }
 twg-storage = { path = "crates/twg-storage" }
 twg-ui = { path = "crates/twg-ui" }
+twg-update = { path = "crates/twg-update" }
 
 [profile.dev]
 opt-level = 1

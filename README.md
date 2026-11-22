@@ -212,10 +212,18 @@ console; Linux/macOS memakai paket `.desktop`/`.app`.
 node tools/gen-icons.mjs                  # hanya bila ikon diubah
 powershell -File tools/package-windows.ps1
 bash tools/package-linux.sh
+bash tools/package-linux-appimage.sh
 bash tools/package-macos.sh
 ```
 
-Detail ada di [docs/RELEASE.md](docs/RELEASE.md).
+`twg-desktop` memeriksa auto-update bertanda tangan dari server publik sebelum
+login; detail di [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md). Build number
+release diatur lewat `TWG_BUILD_NUMBER` (harus naik tiap rilis), dan manifest
+dipublikasikan dengan `node tools/publish-update.mjs`. Saat pengembangan,
+`TWG_SKIP_UPDATE=1` melewati updater; `TWG_UPDATE_URL` mengarahkan ke manifest
+lokal.
+
+Detail packaging ada di [docs/RELEASE.md](docs/RELEASE.md).
 
 ### PostgreSQL lokal (Docker Desktop)
 

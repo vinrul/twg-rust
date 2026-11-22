@@ -92,6 +92,18 @@ cd dist/linux
 
 Arsip siap distribusi: `dist/twg-linux-<arch>.tar.gz`.
 
+### AppImage (untuk auto-update)
+
+Updater Linux mendeteksi env `APPIMAGE` dan mengganti file AppImage saat
+update. Build AppImage membutuhkan `appimagetool`:
+
+```bash
+bash tools/package-linux-appimage.sh
+```
+
+Hasil: `dist/twg-desktop-<version>-linux-<arch>.AppImage`. File ini yang
+dipublikasikan sebagai artefak `linux-<arch>-appimage` di manifest update.
+
 ## macOS
 
 `.app` bundle memakai `Info.plist` + `AppIcon.icns`. Membuka bundle dari Finder
@@ -115,12 +127,173 @@ Bundle belum ditandatangani/notarized. Untuk distribusi publik, jalankan
 xattr -dr com.apple.quarantine "Tactical Game 3D.app"
 ```
 
+## Auto-update
+
+`twg-desktop` memeriksa manifest bertanda tangan dari server publik sebelum
+login. Detail arsitektur ada di [AUTO_UPDATE.md](AUTO_UPDATE.md).
+
+1. Saat build release, set nomor build yang naik:
+
+   ```bash
+   TWG_BUILD_NUMBER=87 cargo build --release -p twg-desktop
+   ```
+
+   Tanpa env tersebut, build memakai jumlah commit git.
+
+2. Buat manifest + signature (private key dari `dist/keys/`, jangan commit):
+
+   ```bash
+   export TWG_UPDATE_SIGNING_KEY=dist/keys/twg-update-signing-key.pem
+   node tools/publish-update.mjs \
+     --version 0.2.0 --build 87 --notes "..." \
+     --windows dist/windows/twg-desktop.exe \
+     --linux-appimage dist/twg-desktop-0.2.0-linux-x86_64.AppImage \
+     --linux target/release/twg-desktop \
+     --macos-arm dist/TacticalGame3D-macos.zip \
+     --out dist/updates/twg-desktop \
+     --base-url http://103.179.218.76:8122/updates/twg-desktop
+   ```
+
+3. Upload ke VPS:
+
+   ```bash
+   scp -r dist/updates/twg-desktop/* \
+     user@103.179.218.76:/var/lib/twg/updates/twg-desktop/
+   ```
+
+4. Uji dengan versi lama: jalankan client lama, pastikan layar update muncul,
+   unduhan terverifikasi, aplikasi restart, lalu masuk ke login.
+
+Catatan:
+
+- Public key ada di `assets/update-public-key.txt`. Mengganti key berarti
+  client lama tidak bisa memverifikasi update baru dan harus dibangun ulang.
+- Build debug hanya memeriksa update jika `TWG_UPDATE_URL` diset; gunakan
+  `TWG_SKIP_UPDATE=1` untuk melewati updater saat pengembangan.
+- `TWG_UPDATE_CACHE` dapat mengganti folder unduhan sementara.
+
+## Alur rilis multi-platform
+
+`publish-update.mjs` **hanya dijalankan sekali** untuk satu rilis. Manifest
+hanya punya satu `stable.json` + satu signature dan harus memuat semua
+platform. Kalau dijalankan terpisah di Windows, macOS, dan WSL, setiap run akan
+menimpa manifest dengan platform miliknya saja — client di platform lain
+kehilangan update.
+
+Urutannya: **build di tiap OS → kumpulkan artefak ke satu mesin → publish
+sekali → upload**. Yang memegang private key hanya mesin koordinator.
+
+### 1. Siapkan source dan nomor build
+
+- Commit/tag source, lalu pull commit yang sama di Windows, macOS, dan WSL.
+- Tentukan nomor build yang sama untuk semua mesin, mis. `43`. Naikkan setiap
+  rilis.
+- Jangan jalankan `--keygen` lagi; public key harus sama di semua build.
+
+### 2. Build di tiap OS
+
+Windows (PowerShell):
+
+```powershell
+$env:TWG_BUILD_NUMBER = "43"
+powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1
+```
+
+macOS M1:
+
+```bash
+export TWG_BUILD_NUMBER=43
+bash tools/package-macos.sh
+```
+
+WSL Ubuntu (clone repo di filesystem ext4, mis. `~/twgrev`, bukan `/mnt/...`):
+
+```bash
+export TWG_BUILD_NUMBER=43
+bash tools/package-linux-appimage.sh
+# binary mentah untuk opsi --linux:
+# target/release/twg-desktop
+```
+
+Build number **harus sama** di ketiga mesin. Kalau Windows build 43 tetapi
+macOS build 44, manifest hanya bisa menyebut satu angka dan client di platform
+lain akan salah membandingkan versi.
+
+### 3. Kumpulkan artefak di satu mesin
+
+Contoh staging di Windows:
+
+```text
+C:\twg-release\
+  windows\twg-desktop.exe
+  linux\twg-desktop-0.2.0-linux-x86_64.AppImage
+  linux\twg-desktop
+  macos\TacticalGame3D-macos.zip
+```
+
+Copy dari macOS/WSL lewat shared folder, USB, atau `scp`. Dari WSL bisa langsung
+ke `/mnt/c/Users/...`. Pastikan nama file tidak berubah.
+
+### 4. Publish sekali (di mesin koordinator)
+
+Di Windows (atau mesin lain yang memegang private key):
+
+```powershell
+$env:TWG_UPDATE_SIGNING_KEY = "C:\keys\twg-update-signing-key.pem"
+
+node tools/publish-update.mjs `
+  --version 0.2.0 --build 43 --notes "Perbaikan ..." `
+  --windows C:\twg-release\windows\twg-desktop.exe `
+  --linux-appimage C:\twg-release\linux\twg-desktop-0.2.0-linux-x86_64.AppImage `
+  --linux C:\twg-release\linux\twg-desktop `
+  --macos-arm C:\twg-release\macos\TacticalGame3D-macos.zip `
+  --out dist/updates/twg-desktop `
+  --base-url http://103.179.218.76:8122/updates/twg-desktop
+```
+
+Satu manifest akan memuat semua platform dan ditandatangani sekali.
+
+### 5. Upload ke VPS
+
+Upload artefak dulu, lalu signature, lalu manifest terakhir supaya client tidak
+pernah melihat manifest yang menunjuk file yang belum ada:
+
+```bash
+scp -r dist/updates/twg-desktop/0.2.0 \
+  user@103.179.218.76:/var/lib/twg/updates/twg-desktop/
+scp dist/updates/twg-desktop/stable.json.sig \
+  user@103.179.218.76:/var/lib/twg/updates/twg-desktop/
+scp dist/updates/twg-desktop/stable.json \
+  user@103.179.218.76:/var/lib/twg/updates/twg-desktop/
+```
+
+### 6. Verifikasi
+
+Jalankan client versi lama di tiap platform dan pastikan layar update muncul,
+unduhan terverifikasi, dan aplikasi restart. Cek juga manifest publik:
+
+```bash
+curl -fsS http://103.179.218.76:8122/updates/twg-desktop/stable.json
+```
+
+Catatan:
+
+- MacBook M1 menghasilkan `macos-aarch64`. Untuk Intel Mac, build terpisah
+  (`--target x86_64-apple-darwin`) lalu publish dengan `--macos-x64`.
+- WSL di PC x86_64 menghasilkan `linux-x86_64`. Build di Ubuntu yang lebih tua
+  untuk kompatibilitas glibc/AppImage.
+- Private key hanya perlu ada di mesin koordinator; mesin build lain tidak
+  membutuhkannya.
+- macOS belum ditandatangani; Gatekeeper masih bisa memblokir update.
+
 ## Daftar periksa rilis
 
 1. `cargo fmt --all --check`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
-3. `cargo test -p twg-ui --lib && cargo test -p twg-render --lib`
-4. `cargo build --release -p twg-desktop -p twg-online-admin`
+3. `cargo test -p twg-ui --lib && cargo test -p twg-render --lib && cargo test -p twg-update --lib`
+4. `TWG_BUILD_NUMBER=<naik> cargo build --release -p twg-desktop`
 5. Jalankan skrip paket sesuai platform.
-6. Uji: ikon muncul di taskbar/dock/menu, tidak ada console/terminal, login
-   Publik dan Lokal berfungsi, tombol **Keluar Aplikasi** menutup aplikasi.
+6. Publish manifest update ke VPS (bagian Auto-update).
+7. Uji: ikon muncul di taskbar/dock/menu, tidak ada console/terminal, login
+   Publik dan Lokal berfungsi, tombol **Keluar Aplikasi** menutup aplikasi,
+   update dari build lama berhasil dan restart.

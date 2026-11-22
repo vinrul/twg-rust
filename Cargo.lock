@@ -7375,10 +7375,12 @@ name = "twg-desktop"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_egui",
  "twg-client",
  "twg-map",
  "twg-render",
  "twg-ui",
+ "twg-update",
  "winit",
  "winresource",
 ]
@@ -7523,6 +7525,20 @@ dependencies = [
  "ureq",
  "uuid",
  "web-sys",
+]
+
+[[package]]
+name = "twg-update"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]

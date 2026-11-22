@@ -188,6 +188,32 @@ Run it only after editing the artwork in the script.
 node tools/gen-icons.mjs
 ```
 
+## `publish-update.mjs`
+
+Creates the signed auto-update manifest for `twg-desktop`. The first time,
+generate the Ed25519 key pair (commit the public key, keep the private key
+safe):
+
+```bash
+node tools/publish-update.mjs --keygen
+```
+
+Then publish artifacts built on each OS:
+
+```bash
+node tools/publish-update.mjs \
+  --version 0.2.0 --build 87 --notes "..." \
+  --windows dist/windows/twg-desktop.exe \
+  --linux-appimage dist/linux/TacticalGame3D.AppImage \
+  --linux target/release/twg-desktop \
+  --macos-arm dist/TacticalGame3D-macos.zip \
+  --out dist/updates/twg-desktop
+```
+
+This writes `stable.json` and `stable.json.sig`; upload the directory to
+`UPDATES_DIR/twg-desktop` on the VPS. See
+[docs/AUTO_UPDATE.md](../docs/AUTO_UPDATE.md).
+
 ## Packaging scripts
 
 Build release bundles with the application icons and desktop launchers:
@@ -195,10 +221,11 @@ Build release bundles with the application icons and desktop launchers:
 ```bash
 powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1
 bash tools/package-linux.sh
+bash tools/package-linux-appimage.sh
 bash tools/package-macos.sh
 ```
 
 Outputs go to `dist/` (ignored by git). Windows builds embed the `.ico` in the
 `.exe` and hide the console; the Linux bundle ships `.desktop` entries with
-`Terminal=false`; macOS produces `.app` bundles. See
-[docs/RELEASE.md](../docs/RELEASE.md).
+`Terminal=false`; the AppImage script needs `appimagetool`; macOS produces
+`.app` bundles. See [docs/RELEASE.md](../docs/RELEASE.md).

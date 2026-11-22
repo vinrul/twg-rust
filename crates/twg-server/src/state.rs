@@ -23,6 +23,7 @@ pub struct AppState {
     pub uploads_dir: PathBuf,
     pub uploads: Arc<dyn UploadStorage>,
     pub assets_dir: PathBuf,
+    pub updates_dir: PathBuf,
     pub asset_files: Arc<AssetFiles>,
     pub convert: Arc<ConvertConfig>,
     pub cors_domains: Vec<String>,
@@ -51,6 +52,7 @@ impl AppState {
             uploads_dir: config.uploads_dir.clone(),
             uploads: Arc::new(LocalUploadStorage::new(config.uploads_dir.clone())),
             assets_dir: config.assets_dir.clone(),
+            updates_dir: config.updates_dir.clone(),
             asset_files: Arc::new(AssetFiles::new(config.assets_dir.clone())),
             convert: Arc::new(config.convert.clone()),
             cors_domains: config.cors_domains.clone(),
@@ -60,6 +62,7 @@ impl AppState {
 
     pub fn for_test(auth: AuthService, rate_limit: RateLimitConfig) -> Self {
         let assets_dir = std::env::temp_dir().join("twg-test-assets");
+        let updates_dir = std::env::temp_dir().join("twg-test-updates");
         Self {
             auth: Arc::new(auth),
             pool: None,
@@ -73,6 +76,7 @@ impl AppState {
                 std::env::temp_dir().join("twg-test-uploads"),
             )),
             assets_dir: assets_dir.clone(),
+            updates_dir,
             asset_files: Arc::new(AssetFiles::new(assets_dir)),
             convert: Arc::new(ConvertConfig::default()),
             cors_domains: vec!["http://localhost:5173".to_owned()],

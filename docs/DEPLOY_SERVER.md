@@ -28,6 +28,7 @@ graph TD
     S --> P[(PostgreSQL 127.0.0.1:5432)]
     S --> U[/var/lib/twg/uploads]
     S --> A[/var/lib/twg/asset-store]
+    S --> UP[/var/lib/twg/updates]
     S --> T[/var/lib/twg/tile-cache]
     S -. proxy tile .-> OSM[tile.openstreetmap.org]
     S -. proxy tile .-> ESRI[server.arcgisonline.com]
@@ -36,7 +37,7 @@ graph TD
 
 | Komponen | Peran |
 |---|---|
-| `twg-server-app` | REST API, login/PASETO, WebSocket `/ws`, static `/uploads` dan `/assets`, proxy tile `/tiles`, semua di port 8122 |
+| `twg-server-app` | REST API, login/PASETO, WebSocket `/ws`, static `/uploads`, `/assets`, dan `/updates`, proxy tile `/tiles`, semua di port 8122 |
 | PostgreSQL | Semua data skenario; migrasi SQLx otomatis saat server start |
 | `gltf-transform` | Konversi Draco/LOD2 dari UI admin (opsional, tapi dibutuhkan untuk asset pipeline) |
 | `twg-desktop` | Client utama; pilih **Publik** atau isi IP VPS lewat **Pengaturan** (lihat bagian 9) |
@@ -151,7 +152,7 @@ Catatan:
 ## 3. Direktori, source, dan build
 
 ```bash
-sudo mkdir -p /opt/twg /etc/twg /var/lib/twg/uploads /var/lib/twg/asset-store /var/lib/twg/tile-cache
+sudo mkdir -p /opt/twg /etc/twg /var/lib/twg/uploads /var/lib/twg/asset-store /var/lib/twg/updates /var/lib/twg/tile-cache
 sudo chown -R twg:twg /opt/twg /var/lib/twg
 sudo chmod 750 /etc/twg
 sudo -u twg git clone https://github.com/vinrul/twg-rust.git /opt/twg/src
@@ -227,6 +228,7 @@ WS_HISTORY_LIMIT=256
 # --- Penyimpanan -------------------------------------------------------
 UPLOADS_DIR=/var/lib/twg/uploads
 ASSETS_DIR=/var/lib/twg/asset-store
+UPDATES_DIR=/var/lib/twg/updates
 TILE_CACHE_DIR=/var/lib/twg/tile-cache
 
 # --- Proxy tile (opsional) --------------------------------------------
@@ -262,6 +264,7 @@ sudo chmod 640 /etc/twg/server.env
 | `MAX_BODY_BYTES` | tidak | `104857600` | Batas body upload. |
 | `UPLOADS_DIR` | tidak | `uploads` | File upload gambar/video. Disajikan di `/uploads`. |
 | `ASSETS_DIR` | tidak | `asset-store` | File asset library. Disajikan di `/assets`. |
+| `UPDATES_DIR` | tidak | `updates` | Manifest dan artefak auto-update desktop. Disajikan di `/updates`. |
 | `TILE_CACHE_DIR` | tidak | `.tile-cache` | Cache tile hasil proxy. |
 | `TILE_PROXY_CONCURRENCY` | tidak | `8` | Jumlah fetch tile paralel. |
 | `TILE_PROXY_MIN_INTERVAL_MS` | tidak | `50` | Jeda minimum antar-fetch ke provider tile. |
@@ -489,9 +492,66 @@ menampilkan halaman login. Pilihan koneksi ada di halaman login dan menu
 Bila server tidak terjangkau, halaman login menampilkan pesan koneksi gagal;
 pindah pilihan koneksi lalu klik **Simpan**.
 
+Saat pertama dibuka, `twg-desktop` memeriksa update bertanda tangan dari
+server publik sebelum health check/login. Jika ada build baru, aplikasi wajib
+mengunduh, memasang, dan restart sebelum halaman login muncul. Detail konsep
+ada di [AUTO_UPDATE.md](AUTO_UPDATE.md).
+
 `TWG_API_URL` masih bisa dipakai sebagai override (untuk skrip/CI) dan menang
 atas pengaturan tersimpan. `TWG_TILE_PROXY` opsional; bila kosong, desktop
 memakai server API sebagai proxy tile sehingga mengikuti pilihan koneksi.
+
+### 9.1 Update otomatis desktop
+
+`twg-desktop` mengambil `GET /updates/twg-desktop/stable.json` dan
+`stable.json.sig` dari server publik. Manifest ditandatangani Ed25519; private
+key tidak disimpan di server.
+
+Siapkan direktori (sudah dibuat di langkah 3):
+
+```bash
+sudo mkdir -p /var/lib/twg/updates/twg-desktop
+sudo chown -R twg:twg /var/lib/twg/updates
+```
+
+Di mesin rilis, setelah artefak tiap platform dibangun:
+
+```bash
+export TWG_UPDATE_SIGNING_KEY=/path/aman/twg-update-signing-key.pem
+
+node tools/publish-update.mjs \
+  --version 0.2.0 --build 43 \
+  --notes "Perbaikan ..." \
+  --windows dist/windows/twg-desktop.exe \
+  --linux-appimage dist/twg-desktop-0.2.0-linux-x86_64.AppImage \
+  --linux target/release/twg-desktop \
+  --macos-arm dist/TacticalGame3D-macos.zip \
+  --out dist/updates/twg-desktop \
+  --base-url http://103.179.218.76:8122/updates/twg-desktop
+
+scp -r dist/updates/twg-desktop/* \
+  user@103.179.218.76:/var/lib/twg/updates/twg-desktop/
+```
+
+Cek dari luar:
+
+```bash
+curl -fsS http://103.179.218.76:8122/updates/twg-desktop/stable.json
+curl -fsS http://103.179.218.76:8122/updates/twg-desktop/stable.json.sig
+```
+
+Catatan:
+
+- `--build` harus naik setiap rilis. Nilai ini disematkan ke binary lewat
+  `TWG_BUILD_NUMBER` saat build (fallback: jumlah commit git).
+- Public key ada di `assets/update-public-key.txt`; private key harus disimpan
+  aman dan tidak di-commit. Mengganti key berarti semua client harus dibangun
+  ulang.
+- Updater Linux membedakan `linux-x86_64-appimage` dan `linux-x86_64-binary`.
+- Semua rilis bersifat wajib (`mandatory: true`). Jika server update tidak
+  terjangkau, client menampilkan peringatan dan boleh lanjut memakai aplikasi.
+- Build debug hanya memeriksa update jika `TWG_UPDATE_URL` diset; build release
+  selalu memeriksa.
 
 ## 10. Verifikasi (smoke test)
 

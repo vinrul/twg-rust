@@ -14,6 +14,7 @@ pub const DEFAULT_RATE_WINDOW_SECONDS: u64 = 60;
 pub const DEFAULT_WS_TICKET_TTL_SECONDS: u64 = 30;
 pub const DEFAULT_WS_HISTORY_LIMIT: usize = 256;
 pub const DEFAULT_ASSETS_DIR: &str = "asset-store";
+pub const DEFAULT_UPDATES_DIR: &str = "updates";
 pub const DEFAULT_GLTF_TRANSFORM: &str = "gltf-transform";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub struct ServerConfig {
     pub max_body_bytes: usize,
     pub uploads_dir: PathBuf,
     pub assets_dir: PathBuf,
+    pub updates_dir: PathBuf,
     pub convert: ConvertConfig,
     pub auth: AuthConfig,
     pub rate_limit: RateLimitConfig,
@@ -89,6 +91,9 @@ impl ServerConfig {
         let assets_dir = env::var("ASSETS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_ASSETS_DIR));
+        let updates_dir = env::var("UPDATES_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_UPDATES_DIR));
         let convert = ConvertConfig {
             gltf_transform: env::var("GLTF_TRANSFORM_BIN")
                 .unwrap_or_else(|_| DEFAULT_GLTF_TRANSFORM.to_owned()),
@@ -134,6 +139,7 @@ impl ServerConfig {
             max_body_bytes,
             uploads_dir,
             assets_dir,
+            updates_dir,
             convert,
             auth,
             rate_limit: RateLimitConfig {
@@ -156,6 +162,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("max_body_bytes", &self.max_body_bytes)
             .field("uploads_dir", &self.uploads_dir)
             .field("assets_dir", &self.assets_dir)
+            .field("updates_dir", &self.updates_dir)
             .field("convert", &self.convert)
             .field("auth", &self.auth)
             .field("rate_limit", &self.rate_limit)

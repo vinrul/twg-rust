@@ -495,6 +495,15 @@ pub fn router(state: AppState) -> Router {
             HeaderValue::from_static("same-site"),
         ));
 
+    let updates_service =
+        ServeDir::new(state.updates_dir.clone()).append_index_html_on_directories(false);
+    let updates_router = Router::<AppState>::new()
+        .nest_service("/updates", updates_service)
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'none'; sandbox"),
+        ));
+
     Router::<AppState>::new()
         .merge(public)
         .merge(logout)
@@ -504,6 +513,7 @@ pub fn router(state: AppState) -> Router {
         .merge(admin_only)
         .merge(uploads_router)
         .merge(asset_files_router)
+        .merge(updates_router)
         .merge(tiles::router::<AppState>())
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .layer(SetResponseHeaderLayer::overriding(
@@ -637,6 +647,28 @@ mod tests {
                 window: Duration::from_secs(60),
             },
         )
+    }
+
+    #[tokio::test]
+    async fn update_files_are_served_without_auth() {
+        let state = test_state(100);
+        let file = state.updates_dir.join("twg-desktop").join("stable.json");
+        std::fs::create_dir_all(file.parent().expect("updates parent")).unwrap();
+        std::fs::write(&file, br#"{"build":1}"#).unwrap();
+        let (status, headers, bytes) = send_raw(
+            router(state),
+            Method::GET,
+            "/updates/twg-desktop/stable.json",
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, br#"{"build":1}"#);
+        assert_eq!(
+            headers[header::CONTENT_TYPE].to_str().unwrap(),
+            "application/json"
+        );
     }
 
     async fn send_raw(
