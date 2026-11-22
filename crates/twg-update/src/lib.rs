@@ -256,19 +256,11 @@ where
 /// Installs the downloaded artifact and returns the path that should be
 /// launched for the new version.
 pub fn install(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
-        install_windows(downloaded, current_build)
+        platform::install(downloaded, current_build)
     }
-    #[cfg(target_os = "linux")]
-    {
-        install_linux(downloaded, current_build)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        install_macos(downloaded, current_build)
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = (downloaded, current_build);
         Err(UpdateError::Install(
@@ -277,10 +269,9 @@ pub fn install(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateE
     }
 }
 
-/// Starts the new version. On macOS this opens the app bundle, elsewhere it
-/// executes the new binary directly.
+/// Starts the new version. macOS app bundles are opened through `open` so
+/// they launch as applications instead of as folders.
 pub fn launch(path: &Path) -> Result<(), UpdateError> {
-    #[cfg(target_os = "macos")]
     if path.extension().is_some_and(|extension| extension == "app") {
         std::process::Command::new("open")
             .arg("-n")
@@ -295,71 +286,10 @@ pub fn launch(path: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// Best-effort removal of backups left by a previous update.
+/// Best-effort removal of backups and staging files left by an earlier update.
 pub fn cleanup_old_versions() {
-    #[cfg(target_os = "windows")]
-    if let Ok(current) = std::env::current_exe()
-        && let Some(parent) = current.parent()
-        && let Some(name) = current.file_name().and_then(|name| name.to_str())
-    {
-        remove_backups(parent, name);
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let target = std::env::var_os("APPIMAGE")
-            .map(PathBuf::from)
-            .filter(|path| path.is_file())
-            .or_else(|| std::env::current_exe().ok());
-        if let Some(target) = target
-            && let Some(parent) = target.parent()
-            && let Some(name) = target.file_name().and_then(|name| name.to_str())
-        {
-            remove_backups(parent, name);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    if let Ok(current) = std::env::current_exe()
-        && let Some(app) = app_bundle(&current)
-        && let Some(parent) = app.parent()
-        && let Ok(entries) = fs::read_dir(parent)
-    {
-        let app_name = app
-            .file_name()
-            .map(|name| name.to_string_lossy())
-            .unwrap_or_default();
-        let prefix = format!(".{app_name}.old-");
-        let prefix = format!(
-            ".{}.old-",
-            app.file_name().unwrap_or_default().to_string_lossy()
-        );
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with(&prefix) || name.starts_with(".twg-update-") {
-                let path = entry.path();
-                if path.is_dir() {
-                    let _ = fs::remove_dir_all(path);
-                } else {
-                    let _ = fs::remove_file(path);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn remove_backups(directory: &Path, filename: &str) {
-    let prefix = format!("{filename}.old-");
-    let Ok(entries) = fs::read_dir(directory) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(&prefix) || name == format!("{filename}.new") {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    platform::cleanup_old_versions();
 }
 
 fn fetch(url: &str) -> Result<Vec<u8>, UpdateError> {
@@ -431,120 +361,206 @@ pub fn cache_dir() -> PathBuf {
     std::env::temp_dir().join("twg").join("updates")
 }
 
-#[cfg(target_os = "windows")]
-fn install_windows(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
-    let current = std::env::current_exe()?;
-    let parent = current
-        .parent()
-        .ok_or_else(|| UpdateError::Install("folder aplikasi tidak ditemukan".to_owned()))?;
-    let name = current
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| UpdateError::Install("nama exe tidak valid".to_owned()))?;
-    let staged = parent.join(format!("{name}.new"));
-    let backup = parent.join(format!("{name}.old-{current_build}"));
-    fs::copy(downloaded, &staged)?;
-    let _ = fs::remove_file(&backup);
-    fs::rename(&current, &backup).map_err(|error| {
-        UpdateError::Install(format!(
-            "tidak bisa mengganti {name} (folder mungkin read-only atau exe terkunci): {error}"
-        ))
-    })?;
-    if let Err(error) = fs::rename(&staged, &current) {
-        let _ = fs::rename(&backup, &current);
-        return Err(UpdateError::Install(format!(
-            "gagal memasang exe baru: {error}"
-        )));
-    }
-    Ok(current)
-}
+/// Platform-specific installation lives in one module that is compiled on
+/// every supported desktop OS, so a mistake in the macOS or Linux path is
+/// caught by `cargo clippy` on Windows as well.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod platform {
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
-fn install_linux(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
-    use std::os::unix::fs::PermissionsExt;
+    use super::UpdateError;
 
-    let target = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .filter(|path| path.is_file())
-        .or_else(|| std::env::current_exe().ok())
-        .ok_or_else(|| UpdateError::Install("path aplikasi tidak ditemukan".to_owned()))?;
-    let parent = target
-        .parent()
-        .ok_or_else(|| UpdateError::Install("folder aplikasi tidak ditemukan".to_owned()))?;
-    let name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| UpdateError::Install("nama aplikasi tidak valid".to_owned()))?;
-    let staged = parent.join(format!("{name}.new"));
-    let backup = parent.join(format!("{name}.old-{current_build}"));
-    fs::copy(downloaded, &staged)?;
-    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
-    let _ = fs::remove_file(&backup);
-    fs::rename(&target, &backup).map_err(|error| {
-        UpdateError::Install(format!(
-            "tidak bisa mengganti {name} (folder mungkin read-only): {error}"
-        ))
-    })?;
-    if let Err(error) = fs::rename(&staged, &target) {
-        let _ = fs::rename(&backup, &target);
-        return Err(UpdateError::Install(format!(
-            "gagal memasang file baru: {error}"
-        )));
+    pub(super) fn install(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
+        #[cfg(windows)]
+        {
+            install_windows(downloaded, current_build)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            install_linux(downloaded, current_build)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            install_macos(downloaded, current_build)
+        }
     }
-    Ok(target)
-}
 
-#[cfg(target_os = "macos")]
-fn install_macos(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
-    let current = std::env::current_exe()?;
-    let app = app_bundle(&current)
-        .ok_or_else(|| UpdateError::Install("bundle .app tidak ditemukan".to_owned()))?;
-    let parent = app
-        .parent()
-        .ok_or_else(|| UpdateError::Install("folder aplikasi tidak ditemukan".to_owned()))?;
-    let staging = parent.join(format!(".twg-update-{current_build}"));
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging)?;
-    let status = std::process::Command::new("ditto")
-        .arg("-x")
-        .arg("-k")
-        .arg(downloaded)
-        .arg(&staging)
-        .status()
-        .map_err(|error| UpdateError::Install(format!("ditto: {error}")))?;
-    if !status.success() {
-        return Err(UpdateError::Install(
-            "gagal mengekstrak bundle update".to_owned(),
-        ));
+    /// Removes backups and staging leftovers next to the running application.
+    pub(super) fn cleanup_old_versions() {
+        let Some(target) = application_target() else {
+            return;
+        };
+        let Some(directory) = target.parent() else {
+            return;
+        };
+        let Some(name) = target.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let backups = [format!("{name}.old-"), format!(".{name}.old-")];
+        let staged = format!("{name}.new");
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let stale = entry_name == staged
+                || entry_name.starts_with(".twg-update-")
+                || backups.iter().any(|prefix| entry_name.starts_with(prefix));
+            if !stale {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(path);
+            } else {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
-    let new_app = fs::read_dir(&staging)?
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
-        .ok_or_else(|| UpdateError::Install("bundle .app tidak ada di arsip".to_owned()))?;
-    let name = app
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| UpdateError::Install("nama bundle tidak valid".to_owned()))?;
-    let backup = parent.join(format!(".{name}.old-{current_build}"));
-    let _ = fs::remove_dir_all(&backup);
-    fs::rename(&app, &backup)
-        .map_err(|error| UpdateError::Install(format!("tidak bisa mengganti bundle: {error}")))?;
-    if let Err(error) = fs::rename(&new_app, &app) {
-        let _ = fs::rename(&backup, &app);
-        return Err(UpdateError::Install(format!(
-            "gagal memasang bundle baru: {error}"
-        )));
-    }
-    let _ = fs::remove_dir_all(&staging);
-    Ok(app)
-}
 
-#[cfg(target_os = "macos")]
-fn app_bundle(executable: &Path) -> Option<&Path> {
-    executable
-        .ancestors()
-        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+    /// The file or bundle the updater replaces: the AppImage on Linux, the
+    /// `.app` bundle on macOS, and the executable elsewhere.
+    fn application_target() -> Option<PathBuf> {
+        #[cfg(target_os = "linux")]
+        if let Some(appimage) = std::env::var_os("APPIMAGE")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+        {
+            return Some(appimage);
+        }
+        let current = std::env::current_exe().ok()?;
+        #[cfg(target_os = "macos")]
+        if let Some(app) = app_bundle(&current) {
+            return Some(app.to_path_buf());
+        }
+        Some(current)
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn install_windows(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
+        let current = std::env::current_exe()?;
+        let parent = current
+            .parent()
+            .ok_or_else(|| UpdateError::Install("folder aplikasi tidak ditemukan".to_owned()))?;
+        let name = current
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| UpdateError::Install("nama exe tidak valid".to_owned()))?;
+        let staged = parent.join(format!("{name}.new"));
+        let backup = parent.join(format!("{name}.old-{current_build}"));
+        fs::copy(downloaded, &staged)?;
+        let _ = fs::remove_file(&backup);
+        fs::rename(&current, &backup).map_err(|error| {
+            UpdateError::Install(format!(
+                "tidak bisa mengganti {name} (folder mungkin read-only atau exe terkunci): {error}"
+            ))
+        })?;
+        if let Err(error) = fs::rename(&staged, &current) {
+            let _ = fs::rename(&backup, &current);
+            return Err(UpdateError::Install(format!(
+                "gagal memasang exe baru: {error}"
+            )));
+        }
+        Ok(current)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn install_linux(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
+        let target = application_target()
+            .ok_or_else(|| UpdateError::Install("path aplikasi tidak ditemukan".to_owned()))?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| UpdateError::Install("folder aplikasi tidak ditemukan".to_owned()))?;
+        let name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| UpdateError::Install("nama aplikasi tidak valid".to_owned()))?;
+        let staged = parent.join(format!("{name}.new"));
+        let backup = parent.join(format!("{name}.old-{current_build}"));
+        fs::copy(downloaded, &staged)?;
+        make_executable(&staged)?;
+        let _ = fs::remove_file(&backup);
+        fs::rename(&target, &backup).map_err(|error| {
+            UpdateError::Install(format!(
+                "tidak bisa mengganti {name} (folder mungkin read-only): {error}"
+            ))
+        })?;
+        if let Err(error) = fs::rename(&staged, &target) {
+            let _ = fs::rename(&backup, &target);
+            return Err(UpdateError::Install(format!(
+                "gagal memasang file baru: {error}"
+            )));
+        }
+        Ok(target)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn make_executable(path: &Path) -> Result<(), UpdateError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+        Ok(())
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn install_macos(downloaded: &Path, current_build: u64) -> Result<PathBuf, UpdateError> {
+        let current = std::env::current_exe()?;
+        let app = app_bundle(&current)
+            .ok_or_else(|| UpdateError::Install("bundle .app tidak ditemukan".to_owned()))?
+            .to_path_buf();
+        let parent = app
+            .parent()
+            .ok_or_else(|| UpdateError::Install("folder aplikasi tidak ditemukan".to_owned()))?;
+        let staging = parent.join(format!(".twg-update-{current_build}"));
+        let _ = fs::remove_dir_all(&staging);
+        fs::create_dir_all(&staging)?;
+        let status = std::process::Command::new("ditto")
+            .arg("-x")
+            .arg("-k")
+            .arg(downloaded)
+            .arg(&staging)
+            .status()
+            .map_err(|error| UpdateError::Install(format!("ditto: {error}")))?;
+        if !status.success() {
+            return Err(UpdateError::Install(
+                "gagal mengekstrak bundle update".to_owned(),
+            ));
+        }
+        let new_app = fs::read_dir(&staging)?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+            .ok_or_else(|| UpdateError::Install("bundle .app tidak ada di arsip".to_owned()))?;
+        let name = app
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| UpdateError::Install("nama bundle tidak valid".to_owned()))?;
+        let backup = parent.join(format!(".{name}.old-{current_build}"));
+        let _ = fs::remove_dir_all(&backup);
+        fs::rename(&app, &backup).map_err(|error| {
+            UpdateError::Install(format!("tidak bisa mengganti bundle: {error}"))
+        })?;
+        if let Err(error) = fs::rename(&new_app, &app) {
+            let _ = fs::rename(&backup, &app);
+            return Err(UpdateError::Install(format!(
+                "gagal memasang bundle baru: {error}"
+            )));
+        }
+        let _ = fs::remove_dir_all(&staging);
+        Ok(app)
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn app_bundle(executable: &Path) -> Option<&Path> {
+        executable
+            .ancestors()
+            .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+    }
 }
 
 #[cfg(test)]
