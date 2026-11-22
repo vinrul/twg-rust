@@ -5,11 +5,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+bash tools/check-linux-deps.sh
+
+TOOL="${APPIMAGETOOL:-appimagetool}"
+if ! command -v "$TOOL" >/dev/null 2>&1; then
+  echo "appimagetool tidak ditemukan. Pasang dari https://github.com/AppImage/appimagetool" >&2
+  echo "atau set APPIMAGETOOL=/path/ke/appimagetool" >&2
+  exit 1
+fi
+
 cargo build --release -p twg-desktop
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 ARCH="$(uname -m)"
-TOOL="${APPIMAGETOOL:-appimagetool}"
 APPDIR="dist/TacticalGame3D.AppDir"
 OUT="dist/twg-desktop-${VERSION}-linux-${ARCH}.AppImage"
 
@@ -38,12 +46,6 @@ HERE="$(dirname "$(readlink -f "$0")")"
 exec "$HERE/usr/bin/twg-desktop" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
-
-if ! command -v "$TOOL" >/dev/null 2>&1; then
-  echo "appimagetool tidak ditemukan. Pasang dari https://github.com/AppImage/appimagetool" >&2
-  echo "atau set APPIMAGETOOL=/path/ke/appimagetool" >&2
-  exit 1
-fi
 
 "$TOOL" "$APPDIR" "$OUT"
 echo "Bundle: $OUT"

@@ -225,6 +225,10 @@ bash tools/package-linux-appimage.sh
 bash tools/package-macos.sh
 ```
 
+The Linux scripts run `bash tools/check-linux-deps.sh` first and stop with the
+`apt install` command when ALSA, udev, Wayland/X11, or xkbcommon headers are
+missing.
+
 Outputs go to `dist/` (ignored by git). Windows builds embed the `.ico` in the
 `.exe` and hide the console; the Linux bundle ships `.desktop` entries with
 `Terminal=false`; the AppImage script needs `appimagetool`; macOS produces

@@ -63,6 +63,20 @@ Catatan:
 
 ## Linux
 
+Build Linux memerlukan header ALSA, udev, dan Wayland/X11 yang dipakai
+`twg-desktop` lewat Bevy. Pasang sekali saja (Debian/Ubuntu/WSL):
+
+```bash
+sudo apt install -y pkg-config libasound2-dev libudev-dev libwayland-dev \
+  libx11-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+  libxkbcommon-dev
+```
+
+Tanpa paket tersebut `cargo build` berhenti di `alsa-sys` dengan
+`Package alsa was not found`. Kedua script packaging di bawah memanggil
+`tools/check-linux-deps.sh` lebih dulu agar kekurangan paket terdeteksi sebelum
+kompilasi panjang dimulai.
+
 Binary Linux tidak menyimpan ikon di dalam executable; ikon dipasang lewat
 XDG. Bundle menyertakan `.desktop` dengan `Terminal=false`, sehingga aplikasi
 dibuka tanpa terminal dari menu aplikasi.
@@ -95,7 +109,27 @@ Arsip siap distribusi: `dist/twg-linux-<arch>.tar.gz`.
 ### AppImage (untuk auto-update)
 
 Updater Linux mendeteksi env `APPIMAGE` dan mengganti file AppImage saat
-update. Build AppImage membutuhkan `appimagetool`:
+update. Build AppImage membutuhkan `appimagetool`. Di Ubuntu/WSL pasang ke
+`~/.local/bin` tanpa sudo:
+
+```bash
+mkdir -p ~/.local/bin
+curl -fL -o ~/.local/bin/appimagetool \
+  https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+chmod +x ~/.local/bin/appimagetool
+appimagetool --version
+```
+
+`appimagetool` sendiri berbentuk AppImage, jadi butuh FUSE 2: Ubuntu 22.04
+memakai `sudo apt install libfuse2`, Ubuntu 24.04 memakai `libfuse2t64`. Bila
+FUSE tidak tersedia (mis. WSL1), jalankan dengan ekstrak tanpa mount:
+
+```bash
+APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGETOOL=$HOME/.local/bin/appimagetool \
+  bash tools/package-linux-appimage.sh
+```
+
+Tanpa `APPIMAGE_EXTRACT_AND_RUN`, cukup:
 
 ```bash
 bash tools/package-linux-appimage.sh

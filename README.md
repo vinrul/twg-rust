@@ -177,6 +177,22 @@ agar build script yang sebelumnya gagal/ter-cache dijalankan ulang:
 cargo clean -p cxx -p draco_decoder
 ```
 
+### Linux
+
+`twg-desktop` memakai audio ALSA dan penanganan input udev, sehingga build
+gagal dengan `Package alsa was not found` bila header sistem belum terpasang.
+Pasang dependensi sekali saja (Debian/Ubuntu/WSL):
+
+```sh
+sudo apt install -y pkg-config libasound2-dev libudev-dev libwayland-dev \
+  libx11-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+  libxkbcommon-dev
+```
+
+Cek dengan `bash tools/check-linux-deps.sh`. Script packaging Linux memanggil
+pemeriksaan ini otomatis sebelum kompilasi, jadi kekurangan paket terdeteksi
+sebelum build panjang dimulai.
+
 ## Perintah
 
 ```bash

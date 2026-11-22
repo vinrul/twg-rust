@@ -4,6 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+bash tools/check-linux-deps.sh
+
 cargo build --release -p twg-desktop -p twg-online-admin
 
 OUT="dist/linux"
